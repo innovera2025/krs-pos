@@ -122,7 +122,7 @@ export function CustomerPickerModal({
               <span className="block text-[14px] font-semibold">
                 ลูกค้าทั่วไป · Walk-in
               </span>
-              <span className="block text-[11.5px]" style={{ color: "#94a3b8" }}>
+              <span className="block text-[11.5px]" style={{ color: "var(--soft)" }}>
                 ไม่ระบุข้อมูลลูกค้า
               </span>
             </span>
@@ -131,7 +131,7 @@ export function CustomerPickerModal({
           {state === "loading" && (
             <div
               className="py-8 text-center text-[13px]"
-              style={{ color: "#94a3b8" }}
+              style={{ color: "var(--soft)" }}
             >
               กำลังโหลดลูกค้า…
             </div>
@@ -147,7 +147,7 @@ export function CustomerPickerModal({
           {state === "ready" && filtered.length === 0 && (
             <div
               className="py-8 text-center text-[13px]"
-              style={{ color: "#94a3b8" }}
+              style={{ color: "var(--soft)" }}
             >
               ไม่พบลูกค้า · No matching customers
             </div>
@@ -180,7 +180,7 @@ export function CustomerPickerModal({
                     </span>
                     <span
                       className="mono block truncate text-[11.5px]"
-                      style={{ color: "#94a3b8" }}
+                      style={{ color: "var(--soft)" }}
                     >
                       {sub}
                     </span>

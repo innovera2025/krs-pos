@@ -98,11 +98,14 @@ export function NavRail() {
   return (
     <nav
       aria-label="Primary navigation"
+      // The rail width lives in the `.nav-rail` CSS class (globals.css) — NOT an
+      // inline `width` — so a `@media (max-width: 900px)` rule can override it on
+      // tablet (inline styles beat media queries; a class does not). Desktop stays
+      // 76px exactly.
+      className="nav-rail"
       style={{
-        width: 76,
         flexShrink: 0,
         background: "linear-gradient(180deg,#0c3026,#071a16)",
-        padding: "14px 10px",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
@@ -149,7 +152,7 @@ export function NavRail() {
               border: 0,
               transition: ".16s",
               background: active ? "rgba(255,255,255,.12)" : "transparent",
-              color: active ? "#ffffff" : "#82a89c",
+              color: active ? "#ffffff" : "#a0bfb5",
               boxShadow: active ? "inset 3px 0 0 #2ade96" : "none",
             }}
           >
@@ -247,7 +250,7 @@ function RoleToggle({
             lineHeight: 1.1,
             transition: ".16s",
             background: !isAdmin ? "rgba(35,200,132,.22)" : "transparent",
-            color: !isAdmin ? "#ffffff" : "#82a89c",
+            color: !isAdmin ? "#ffffff" : "#a0bfb5",
             boxShadow: !isAdmin ? "inset 0 0 0 1px rgba(42,222,150,.5)" : "none",
           }}
         >
@@ -273,7 +276,7 @@ function RoleToggle({
             lineHeight: 1.1,
             transition: ".16s",
             background: isAdmin ? "rgba(35,200,132,.22)" : "transparent",
-            color: isAdmin ? "#ffffff" : "#82a89c",
+            color: isAdmin ? "#ffffff" : "#a0bfb5",
             boxShadow: isAdmin ? "inset 0 0 0 1px rgba(42,222,150,.5)" : "none",
           }}
         >

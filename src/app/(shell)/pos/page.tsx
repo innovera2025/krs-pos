@@ -547,8 +547,10 @@ export default function POSPage() {
           "radial-gradient(circle at 35% -15%,rgba(31,169,113,.18),transparent 35%),var(--bg)",
       }}
     >
-      {/* Workspace: header + command + category panel + product grid */}
-      <main className="flex min-w-0 flex-1 flex-col gap-3.5 p-[18px] pl-5">
+      {/* Workspace: header + command + category panel + product grid.
+          A <div> (not <main>) — the (shell) layout already provides the single
+          <main> landmark, so exactly one main exists per page (a11y). */}
+      <div className="flex min-w-0 flex-1 flex-col gap-3.5 p-[18px] pl-5">
         <header className="flex h-[68px] items-center gap-3.5">
           <div className="flex-1">
             <h1 className="m-0 text-[24px] font-bold leading-[1.08] tracking-tight">
@@ -583,8 +585,10 @@ export default function POSPage() {
           </label>
         </section>
 
-        {/* Category panel + product grid */}
-        <section className="grid min-h-0 flex-1" style={{ gridTemplateColumns: "168px minmax(0,1fr)", gap: 14 }}>
+        {/* Category panel + product grid. The column template lives in the
+            `.pos-grid` CSS class so a `@media (max-width: 900px)` rule can narrow
+            the 168px category column on tablet without an inline style winning. */}
+        <section className="pos-grid grid min-h-0 flex-1">
           <CategoryPanel chips={chips} active={activeCat} onSelect={setActiveCat} />
 
           <section className="min-w-0 overflow-auto pr-1">
@@ -645,11 +649,13 @@ export default function POSPage() {
             )}
           </section>
         </section>
-      </main>
+      </div>
 
-      {/* Cart panel (408px) */}
+      {/* Cart panel — width lives in the `.pos-cart` CSS class (globals.css), not a
+          Tailwind `w-[...]` utility, so the `@media (max-width: 900px)` rule can
+          narrow it on tablet (408px desktop → 340px tablet). */}
       <aside
-        className="flex w-[408px] flex-shrink-0 flex-col border-l bg-white"
+        className="pos-cart flex flex-shrink-0 flex-col border-l bg-white"
         style={{
           borderColor: "var(--line)",
           boxShadow: "-16px 0 36px rgba(21,38,64,.06)",
@@ -700,7 +706,7 @@ export default function POSPage() {
         {/* Cart list */}
         <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-auto p-[18px]">
           {cart.length === 0 ? (
-            <div className="grid h-full place-items-center text-center" style={{ color: "#98a2b3" }}>
+            <div className="grid h-full place-items-center text-center" style={{ color: "var(--soft)" }}>
               <div className="max-w-[220px]">
                 <span
                   className="mx-auto mb-3.5 grid h-[70px] w-[70px] place-items-center rounded-[24px]"

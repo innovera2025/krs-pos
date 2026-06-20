@@ -24,7 +24,7 @@ export function AccountMappingSection() {
       <Card title="ผูกสินค้า → บัญชีรายได้" subtitle="Product → revenue & VAT mapping">
         <div
           className="grid gap-[10px] border-b py-2 text-[11.5px] font-semibold"
-          style={{ gridTemplateColumns: "0.9fr 1.6fr 1fr 1.4fr 0.7fr 110px", borderColor: "#eef2f6", color: "#94a3b8" }}
+          style={{ gridTemplateColumns: "0.9fr 1.6fr 1fr 1.4fr 0.7fr 110px", borderColor: "#eef2f6", color: "var(--soft)" }}
         >
           <div>SKU</div>
           <div>สินค้า</div>
@@ -68,7 +68,7 @@ export function AccountMappingSection() {
       <Card title="ผูกวิธีชำระ → บัญชีเงิน" subtitle="Payment method → cash/clearing account">
         <div
           className="grid gap-[10px] border-b py-2 text-[11.5px] font-semibold"
-          style={{ gridTemplateColumns: "1fr 2fr 110px", borderColor: "#eef2f6", color: "#94a3b8" }}
+          style={{ gridTemplateColumns: "1fr 2fr 110px", borderColor: "#eef2f6", color: "var(--soft)" }}
         >
           <div>วิธีชำระ</div>
           <div>บัญชี</div>
@@ -129,7 +129,7 @@ function Card({
     >
       <div className="mb-3">
         <div className="text-[14px] font-bold">{title}</div>
-        <div className="text-[11.5px]" style={{ color: "#94a3b8" }}>
+        <div className="text-[11.5px]" style={{ color: "var(--soft)" }}>
           {subtitle}
         </div>
       </div>

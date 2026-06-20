@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { ArrowDown, ArrowUp, AlertCircle, RotateCcw } from "lucide-react";
 import type { SyncJobDTO, SyncCountsDTO } from "@/types";
 import { useToast } from "@/components/ToastProvider";
 import { money } from "@/lib/money";
@@ -32,10 +32,13 @@ function notifySyncJobsChanged() {
 export function DataFlowTab({
   jobs,
   loading,
+  error,
   onRefetch,
 }: {
   jobs: SyncJobDTO[];
   loading: boolean;
+  /** True when GET /api/sync-jobs failed (tri-state error, like /pos /products). */
+  error: boolean;
   onRefetch: () => Promise<void> | void;
 }) {
   const { showToast } = useToast();
@@ -204,8 +207,32 @@ export function DataFlowTab({
         </div>
 
         {loading && jobs.length === 0 ? (
-          <div className="px-[18px] py-[50px] text-center text-[13px]" style={{ color: "#94a3b8" }}>
+          <div className="px-[18px] py-[50px] text-center text-[13px]" style={{ color: "var(--soft)" }}>
             กำลังโหลด...
+          </div>
+        ) : error && jobs.length === 0 ? (
+          <div className="flex flex-col items-center gap-3 px-[18px] py-[44px] text-center">
+            <span
+              className="grid h-[56px] w-[56px] place-items-center rounded-[18px]"
+              style={{ background: "var(--red-soft)", color: "#dc2626" }}
+            >
+              <AlertCircle size={26} strokeWidth={2} />
+            </span>
+            <div className="text-[13.5px] font-semibold" style={{ color: "var(--ink)" }}>
+              โหลดรายการซิงค์ไม่สำเร็จ
+            </div>
+            <p className="m-0 max-w-[320px] text-[12px] leading-relaxed" style={{ color: "var(--muted)" }}>
+              ตรวจสอบการเชื่อมต่อแล้วลองใหม่ · Could not load sync jobs — check the connection and retry.
+            </p>
+            <button
+              type="button"
+              onClick={() => void onRefetch()}
+              className="mt-1 inline-flex h-[38px] items-center gap-2 rounded-[10px] border px-4 text-[12.5px] font-semibold transition hover:bg-[#f8fafc]"
+              style={{ borderColor: "#e2e8f0", color: "#334155" }}
+            >
+              <RotateCcw size={15} strokeWidth={2} />
+              ลองใหม่ · Retry
+            </button>
           </div>
         ) : filtered.length === 0 ? (
           <div className="px-[18px] py-[50px] text-center">

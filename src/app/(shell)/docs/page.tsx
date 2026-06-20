@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { AdminOnly } from "@/components/AdminOnly";
 import { DOC_TABS, type DocTabKey } from "@/components/docs/docsContent";
 import { OverviewPanel } from "@/components/docs/OverviewPanel";
@@ -52,20 +52,45 @@ function DocsScreen() {
   const [docsTab, setDocsTab] = useState<DocTabKey>("overview");
   const ActivePanel = PANELS[docsTab];
 
+  // Refs to each pill so Left/Right arrows can move focus between tabs (ARIA
+  // tablist keyboard pattern). Indexed by DOC_TABS order.
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  function onTabKeyDown(e: React.KeyboardEvent<HTMLButtonElement>, index: number) {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    e.preventDefault();
+    const dir = e.key === "ArrowRight" ? 1 : -1;
+    const next = (index + dir + DOC_TABS.length) % DOC_TABS.length;
+    setDocsTab(DOC_TABS[next].key);
+    tabRefs.current[next]?.focus();
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/* Pill tab switcher */}
       <div
+        role="tablist"
+        aria-label="หมวดเอกสารออกแบบ · Design spec sections"
         className="flex gap-[7px] overflow-x-auto px-[22px] py-3.5"
         style={{ background: "var(--surface)", borderBottom: "1px solid var(--line)" }}
       >
-        {DOC_TABS.map((t) => {
+        {DOC_TABS.map((t, i) => {
           const active = docsTab === t.key;
           return (
             <button
               key={t.key}
               type="button"
-              aria-current={active ? "page" : undefined}
+              role="tab"
+              id={`docs-tab-${t.key}`}
+              aria-controls="docs-tabpanel"
+              aria-selected={active}
+              // Roving tabindex: only the active pill is tabbable; arrows move
+              // focus across the rest.
+              tabIndex={active ? 0 : -1}
+              ref={(el) => {
+                tabRefs.current[i] = el;
+              }}
+              onKeyDown={(e) => onTabKeyDown(e, i)}
               title={t.en}
               onClick={() => setDocsTab(t.key)}
               className="cursor-pointer whitespace-nowrap rounded-full px-[15px] py-[9px] text-[13px] font-semibold transition"
@@ -83,7 +108,13 @@ function DocsScreen() {
 
       {/* Active panel body */}
       <div className="min-h-0 flex-1 overflow-y-auto px-[22px] py-6" style={{ background: "var(--bg)" }}>
-        <div className="mx-auto" style={{ maxWidth: 980 }}>
+        <div
+          role="tabpanel"
+          id="docs-tabpanel"
+          aria-labelledby={`docs-tab-${docsTab}`}
+          className="mx-auto"
+          style={{ maxWidth: 980 }}
+        >
           {/* Subtle one-line note: this is a design-spec package (some items are roadmap). */}
           <div className="mb-4 text-[11.5px]" style={{ color: "var(--soft)" }}>
             เอกสารออกแบบระบบ · Product Design Package — บางรายการเป็นสเปก/แผนต่อยอด (roadmap) ไม่ใช่สถานะโค้ดปัจจุบัน

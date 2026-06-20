@@ -35,3 +35,9 @@ yarn-error.log*
 
 # design-tool metadata (e.g. WebP thumbnail exports under design/)
 .thumbnail
+
+# playwright e2e (runtime artifacts + downloaded browsers)
+/test-results/
+/playwright-report/
+/playwright/.cache/
+.playwright-mcp/

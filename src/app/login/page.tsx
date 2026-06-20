@@ -403,6 +403,9 @@ export default function LoginPage() {
               <input
                 id={emailId}
                 type="email"
+                // Start the login flow with focus on the email field so a cashier
+                // can type immediately (a11y — initial focus).
+                autoFocus
                 autoComplete="email"
                 inputMode="email"
                 placeholder="you@example.com"

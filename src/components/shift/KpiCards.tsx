@@ -23,13 +23,13 @@ export function KpiCards({ grossSales, shiftNumber, openedAt, txnCount }: KpiCar
     >
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-[13px]" style={{ color: "#93c5b1" }}>
+          <div className="text-[13px]" style={{ color: "#cfe9dd" }}>
             ยอดขายรวมรอบนี้ · Gross sales
           </div>
           <div className="mono mt-0.5 text-[32px] font-bold">{money(grossSales)}</div>
         </div>
         <div className="text-right">
-          <div className="text-[12px]" style={{ color: "#93c5b1" }}>
+          <div className="text-[12px]" style={{ color: "#cfe9dd" }}>
             รอบ {shiftNumber}
           </div>
           <div className="text-[12px]" style={{ color: "#cbd5e1" }}>

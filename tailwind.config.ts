@@ -13,7 +13,7 @@ const config: Config = {
         accent: { DEFAULT: "#f59e0b", soft: "#fff4d8" },
         ink: "#101828",
         muted: "#667085",
-        soft: "#98a2b3",
+        soft: "#6b7280",
         line: "#e4e7ec",
         "line-strong": "#cfd7e4",
         bg: "#eef3f7",

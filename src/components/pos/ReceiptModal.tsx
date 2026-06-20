@@ -62,7 +62,7 @@ export function ReceiptModal({
   // Reprint-from-history bills may already carry a real accounting doc number;
   // fresh P3 receipts have accountingDocNo === null → keep the placeholder.
   const acctNo = order.accountingDocNo ?? "— รอออกเอกสาร —";
-  const acctColor = order.accountingDocNo ? "#0f172a" : "#94a3b8";
+  const acctColor = order.accountingDocNo ? "#0f172a" : "var(--soft)";
 
   // display-receipt-payment-fallback: reprinted/seeded bills may arrive without
   // persisted payment lines. Fall back to a single line derived from the order's
@@ -147,7 +147,7 @@ export function ReceiptModal({
                 <span style={{ fontFamily: "var(--font-sans)" }}>{it.product.name}</span>
                 <span>{money(Number(it.lineTotal))}</span>
               </div>
-              <div style={{ color: "#94a3b8" }}>
+              <div style={{ color: "var(--soft)" }}>
                 {it.quantity} × {money(Number(it.unitPrice))}
               </div>
             </div>
@@ -213,7 +213,7 @@ export function ReceiptModal({
 
           <div
             className="mt-4 text-center text-[11px]"
-            style={{ color: "#94a3b8", fontFamily: "var(--font-sans)" }}
+            style={{ color: "var(--soft)", fontFamily: "var(--font-sans)" }}
           >
             ขอบคุณที่ใช้บริการ · Thank you
           </div>
@@ -230,7 +230,7 @@ export function ReceiptModal({
             </div>
             <div>
               <h2 className="m-0 text-[18px] font-bold">ชำระเงินสำเร็จ</h2>
-              <div className="text-[12.5px]" style={{ color: "#94a3b8" }}>
+              <div className="text-[12.5px]" style={{ color: "var(--soft)" }}>
                 Payment complete
               </div>
             </div>

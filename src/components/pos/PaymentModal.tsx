@@ -265,7 +265,7 @@ export function PaymentModal({
                   <div className="flex-1 text-[13px] font-semibold">
                     {methodLabel(line.method)}
                   </div>
-                  <span className="mono text-[13px]" style={{ color: "#94a3b8" }}>
+                  <span className="mono text-[13px]" style={{ color: "var(--soft)" }}>
                     ฿
                   </span>
                   <input

@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
+// This route reads request searchParams, so it is inherently dynamic. Declaring it
+// explicitly silences the benign DYNAMIC_SERVER_USAGE build log (the route is
+// already rendered on-demand `ƒ`; no behavior change).
+export const dynamic = "force-dynamic";
+
 // GET /api/customers — list customers for the POS customer picker (Phase 6a).
 //
 // Optional query filter:
