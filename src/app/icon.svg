@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32" role="img" aria-label="KRS POS">
+  <rect width="24" height="24" rx="5" fill="#0e3b2e"/>
+  <g fill="none" stroke="#2ade96" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" transform="translate(2.4 2.4) scale(0.8)">
+    <path d="M4 9.5 5.2 5h13.6L20 9.5M5 9.5h14v9.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1z"/>
+    <path d="M3 9.5a2.2 2.2 0 0 0 4.4 0 2.2 2.2 0 0 0 4.4 0 2.2 2.2 0 0 0 4.4 0 2.2 2.2 0 0 0 4.4 0"/>
+  </g>
+</svg>
