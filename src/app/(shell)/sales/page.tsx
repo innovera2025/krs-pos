@@ -95,6 +95,48 @@ export default function SalesPage() {
     }
   }
 
+  // ---- request tax invoice (PATCH /api/orders/[id] {action:"request-tax"}) ----
+  async function requestTax(order: OrderDTO) {
+    if (actionBusy) return;
+    // Defensive client gate (the drawer already disables the button for walk-in /
+    // no-tax-customer bills): a tax invoice needs a customer with a taxId.
+    const hasTaxCustomer =
+      order.customer != null &&
+      typeof order.customer.taxId === "string" &&
+      order.customer.taxId.trim().length > 0;
+    if (!hasTaxCustomer) {
+      showToast("บิลนี้เป็นลูกค้าทั่วไป ต้องระบุข้อมูลภาษีก่อน");
+      return;
+    }
+    setActionBusy(true);
+    try {
+      const res = await fetch(`/api/orders/${order.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "request-tax" }),
+      });
+      if (!res.ok) {
+        let msg = "ขอใบกำกับภาษีไม่สำเร็จ";
+        try {
+          const data = await res.json();
+          if (data?.error) msg = data.error;
+        } catch {
+          /* keep default */
+        }
+        showToast(msg);
+        return;
+      }
+      const updated = (await res.json()) as OrderDTO;
+      setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+      setDetail(null);
+      showToast("ส่งคำขอออกใบกำกับภาษีเข้าคิวแล้ว · Tax invoice queued");
+    } catch {
+      showToast("ขอใบกำกับภาษีไม่สำเร็จ");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   // ---- reprint ----
   function reprint(order: OrderDTO) {
     setReceiptOrder(order);
@@ -205,6 +247,7 @@ export default function SalesPage() {
         onClose={() => setDetail(null)}
         onRefund={(o) => patchOrder(o, "refund")}
         onVoid={(o) => patchOrder(o, "void")}
+        onRequestTax={requestTax}
         onPrint={reprint}
       />
 

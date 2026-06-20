@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ScanBarcode, ShoppingCart, UserRound, AlertCircle } from "lucide-react";
+import { ScanBarcode, ShoppingCart, UserRound, AlertCircle, ChevronRight } from "lucide-react";
 import type {
   Product,
   CartItem,
   CategorySlug,
+  CustomerDTO,
   DiscountType,
   PayLine,
   PayMethod,
@@ -24,6 +25,7 @@ import { ProductCard } from "@/components/pos/ProductCard";
 import { CartLine } from "@/components/pos/CartLine";
 import { TotalsBar } from "@/components/pos/TotalsBar";
 import { PaymentModal } from "@/components/pos/PaymentModal";
+import { CustomerPickerModal } from "@/components/pos/CustomerPickerModal";
 import { ReceiptModal } from "@/components/pos/ReceiptModal";
 import { methodToEnum } from "@/components/pos/paymentMeta";
 
@@ -67,6 +69,14 @@ export default function POSPage() {
   // Bill discount: text draft + ฿/% mode.
   const [discountDraft, setDiscountDraft] = useState("");
   const [discountType, setDiscountType] = useState<DiscountType>("amount");
+
+  // ---- customer + tax-invoice state (Phase 6a) ----
+  // Selected customer (null = walk-in / ลูกค้าทั่วไป) and whether a tax invoice
+  // was requested. customerHasTax drives the blue "มีข้อมูลภาษี" badge + the
+  // checkout tax gate (domain-tax-invoice-requires-tax-customer).
+  const [customer, setCustomer] = useState<CustomerDTO | null>(null);
+  const [taxRequested, setTaxRequested] = useState(false);
+  const [custPickerOpen, setCustPickerOpen] = useState(false);
 
   // ---- payment modal state (owned here so closePayment can preserve payLines) ----
   const [payOpen, setPayOpen] = useState(false);
@@ -222,10 +232,46 @@ export default function POSPage() {
   }
 
   /** Clear the cart back to a blank bill (shared by cancel + hold + new-sale). */
+  // Also resets the customer + tax-invoice selection so a new bill starts as a
+  // walk-in (matches Simple POS: cancel/hold/new-sale clear `customer`).
   function clearBill() {
     setCart([]);
     setDiscountDraft("");
     setDiscountType("amount");
+    setCustomer(null);
+    setTaxRequested(false);
+  }
+
+  // ---- customer picker (Phase 6a) ----
+  // Whether the selected customer has a usable tax id (state-customer-has-tax).
+  const customerHasTax =
+    customer != null &&
+    typeof customer.taxId === "string" &&
+    customer.taxId.trim().length > 0;
+
+  function pickCustomer(c: CustomerDTO) {
+    setCustomer(c);
+    // A customer without a usable taxId can't request a tax invoice; drop any
+    // stale tax flag (and clear the related payError) so checkout doesn't 422 —
+    // mirrors the pickWalkIn guard.
+    if (!c.taxId?.trim()) {
+      setTaxRequested(false);
+      setPayError("");
+    }
+    setCustPickerOpen(false);
+  }
+
+  // Walk-in clears the selected customer; a walk-in can't request a tax invoice,
+  // so the tax flag is dropped too.
+  function pickWalkIn() {
+    setCustomer(null);
+    setTaxRequested(false);
+    setCustPickerOpen(false);
+  }
+
+  function toggleTax() {
+    setTaxRequested((v) => !v);
+    setPayError("");
   }
 
   // cancel-vs-hold-difference: both clear the cart, but carry a different
@@ -352,6 +398,16 @@ export default function POSPage() {
   async function confirmPayment() {
     if (submitting || cart.length === 0) return;
 
+    // Phase 6a tax gate (client mirror of the server rule
+    // domain-tax-invoice-requires-tax-customer): a tax invoice requires a
+    // selected customer that has a tax id.
+    if (taxRequested && (!customer || !customerHasTax)) {
+      setPayError(
+        "ต้องเลือกลูกค้าที่มีเลขผู้เสียภาษีก่อนออกใบกำกับภาษี"
+      );
+      return;
+    }
+
     const totalSatang = totals.totalSatang;
     const paidSatang = payLines.reduce(
       (acc, l) => acc + bahtToSatang(l.amount),
@@ -418,6 +474,8 @@ export default function POSPage() {
           total: totalSatang / 100,
           amountPaid: amountPaidSatang / 100,
           change: changeSatang / 100,
+          customerId: customer?.id ?? null,
+          taxRequested,
         }),
       });
       if (!res.ok) {
@@ -598,23 +656,45 @@ export default function POSPage() {
         }}
       >
         <div className="flex items-center gap-3 border-b p-[18px]" style={{ borderColor: "var(--line)" }}>
-          <div
-            className="flex h-16 flex-1 items-center gap-3 rounded-[18px] border border-dashed px-3.5"
+          <button
+            type="button"
+            onClick={() => setCustPickerOpen(true)}
+            aria-label="เลือกลูกค้า"
+            className="flex h-16 flex-1 items-center gap-3 rounded-[18px] border border-dashed px-3.5 text-left transition hover:border-[#16a34a] hover:bg-[#f0fdf4]"
             style={{ borderColor: "var(--line-strong)", background: "#fbfdff" }}
           >
             <span
-              className="grid h-[38px] w-[38px] place-items-center rounded-[14px]"
+              className="grid h-[38px] w-[38px] flex-shrink-0 place-items-center rounded-[14px]"
               style={{ background: "#eef4ff", color: "#2563eb" }}
             >
               <UserRound size={18} strokeWidth={2} />
             </span>
-            <div className="min-w-0">
-              <strong className="block text-[13px]">ลูกค้าทั่วไป · Walk-in</strong>
-              <span className="block text-[11px]" style={{ color: "var(--muted)" }}>
-                สมาชิก / ใบกำกับภาษี (เร็วๆ นี้)
+            <span className="min-w-0 flex-1">
+              <strong className="block truncate text-[13px]">
+                {customer ? customer.name : "ลูกค้าทั่วไป · Walk-in"}
+              </strong>
+              <span className="block truncate text-[11px]" style={{ color: "var(--muted)" }}>
+                {customer
+                  ? customerHasTax
+                    ? `TIN ${customer.taxId}`
+                    : "สมาชิก · ไม่มีเลขภาษี"
+                  : "แตะเพื่อเลือกลูกค้า"}
               </span>
-            </div>
-          </div>
+            </span>
+            {customerHasTax && (
+              <span
+                className="flex-shrink-0 rounded-md px-2 py-[3px] text-[10px] font-semibold"
+                style={{
+                  background: "#eff6ff",
+                  color: "#2563eb",
+                  border: "1px solid #bfdbfe",
+                }}
+              >
+                มีข้อมูลภาษี
+              </span>
+            )}
+            <ChevronRight size={16} strokeWidth={2} color="#94a3b8" className="flex-shrink-0" />
+          </button>
         </div>
 
         {/* Cart list */}
@@ -665,12 +745,22 @@ export default function POSPage() {
         />
       </aside>
 
-      {/* Payment modal (Phase 3) */}
+      {/* Customer picker (Phase 6a) */}
+      <CustomerPickerModal
+        open={custPickerOpen}
+        onPick={pickCustomer}
+        onPickWalkIn={pickWalkIn}
+        onClose={() => setCustPickerOpen(false)}
+      />
+
+      {/* Payment modal (Phase 3 + Phase 6a tax toggle) */}
       <PaymentModal
         open={payOpen}
         totalSatang={totals.totalSatang}
         vatSatang={totals.vatSatang}
         itemCount={itemCount}
+        customer={customer}
+        taxRequested={taxRequested}
         payLines={payLines}
         cashReceived={cashReceived}
         reference={reference}
@@ -682,6 +772,7 @@ export default function POSPage() {
         onRemoveLine={removePayLine}
         onCashReceived={onCashReceived}
         onSetReference={onSetReference}
+        onToggleTax={toggleTax}
         onConfirm={confirmPayment}
         onClose={closePayment}
       />

@@ -35,6 +35,7 @@ export async function GET(req: Request) {
       items: { include: { product: true } },
       payments: true,
       cashier: { select: { id: true, name: true } },
+      customer: true,
     },
     orderBy: { createdAt: "desc" },
     take: 200,
@@ -63,6 +64,10 @@ type OrderRequestBody = {
   amountPaid: number;
   change: number;
   cashierId?: string | null;
+  // Phase 6a — customer linkage + tax-invoice request. customerId nullable =
+  // walk-in. taxRequested requires a customerId whose Customer has a taxId.
+  customerId?: string | null;
+  taxRequested?: boolean;
 };
 
 // The six valid tender methods (mirrors the PaymentType enum).
@@ -136,6 +141,8 @@ export async function POST(req: Request) {
     amountPaid = 0,
     change = 0,
     cashierId,
+    customerId,
+    taxRequested = false,
   } = body;
 
   // --- input boundary validation ---
@@ -231,7 +238,55 @@ export async function POST(req: Request) {
     ? PaymentType.CASH
     : normalizedPays[0].method;
 
+  // --- Phase 6a: customer linkage + tax-invoice gating (server-authoritative) ---
+  // A walk-in (no customerId) is the default and never blocks checkout. When a
+  // customerId IS sent it must reference an existing Customer (anti-tamper). When
+  // a tax invoice is requested the linked customer MUST have a non-empty taxId
+  // (domain-tax-invoice-requires-tax-customer) — the client also gates this, but
+  // the server is the source of truth and re-checks it here.
+  const normalizedCustomerId =
+    typeof customerId === "string" && customerId.trim().length > 0
+      ? customerId.trim()
+      : null;
+  const wantsTax = taxRequested === true;
+
   try {
+    // Customer resolution runs inside the sanitized try so a DB failure on the
+    // findUnique maps to the route's INTERNAL 500 (not an unsanitized throw). The
+    // BAD_CUSTOMER / TAX_REQUIRES_TAX_CUSTOMER short-circuit returns behave
+    // identically here as outside the try.
+    let resolvedCustomer:
+      | { id: string; taxId: string | null }
+      | null = null;
+    if (normalizedCustomerId) {
+      resolvedCustomer = await prisma.customer.findUnique({
+        where: { id: normalizedCustomerId },
+        select: { id: true, taxId: true },
+      });
+      if (!resolvedCustomer) {
+        return NextResponse.json(
+          { error: "ไม่พบลูกค้าที่เลือก", code: "BAD_CUSTOMER" },
+          { status: 422 }
+        );
+      }
+    }
+
+    if (wantsTax) {
+      const hasTaxId =
+        resolvedCustomer != null &&
+        typeof resolvedCustomer.taxId === "string" &&
+        resolvedCustomer.taxId.trim().length > 0;
+      if (!hasTaxId) {
+        return NextResponse.json(
+          {
+            error: "ต้องเลือกลูกค้าที่มีเลขผู้เสียภาษีก่อนออกใบกำกับภาษี",
+            code: "TAX_REQUIRES_TAX_CUSTOMER",
+          },
+          { status: 422 }
+        );
+      }
+    }
+
     // Server-authoritative per-line price: recompute unitPrice/lineTotal from the
     // DB product prices (anti-tamper). Stored bill money (subtotal/discount/tax/
     // total/amountPaid/change) is the VAT-inclusive client computation as sent.
@@ -282,6 +337,8 @@ export async function POST(req: Request) {
           amountPaid: round2(Number(amountPaid)),
           change: round2(Number(change)),
           cashierId: cashierId || null,
+          customerId: normalizedCustomerId,
+          taxRequested: wantsTax,
           shiftId,
           items: { create: lineItems },
           payments: {
@@ -296,6 +353,7 @@ export async function POST(req: Request) {
           items: { include: { product: true } },
           payments: true,
           cashier: { select: { id: true, name: true } },
+          customer: true,
         },
       });
 

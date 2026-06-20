@@ -2,7 +2,7 @@
 
 import { X, Trash2, Check, AlertTriangle } from "lucide-react";
 import { Modal } from "@/components/Modal";
-import type { PayLine, PayMethod } from "@/types";
+import type { CustomerDTO, PayLine, PayMethod } from "@/types";
 import { formatSatang } from "@/lib/money";
 import { bahtToSatang, sumPaySatang } from "@/lib/pricing";
 import { PAY_METHODS, methodIcon, methodLabel } from "./paymentMeta";
@@ -15,6 +15,11 @@ type PaymentModalProps = {
   vatSatang: number;
   /** Number of physical items in the cart (display only). */
   itemCount: number;
+
+  /** Selected customer (null = walk-in / ลูกค้าทั่วไป). Phase 6a. */
+  customer: CustomerDTO | null;
+  /** Whether a tax invoice was requested (tax toggle state). Phase 6a. */
+  taxRequested: boolean;
 
   payLines: PayLine[];
   /** Cash received (baht text mirror). */
@@ -32,6 +37,8 @@ type PaymentModalProps = {
   onRemoveLine: (id: string) => void;
   onCashReceived: (value: string) => void;
   onSetReference: (value: string) => void;
+  /** Toggle the tax-invoice request (action-tax-toggle). Phase 6a. */
+  onToggleTax: () => void;
   onConfirm: () => void;
   /** Close (X) — PRESERVES payLines per the source-of-truth behavior. */
   onClose: () => void;
@@ -50,6 +57,8 @@ export function PaymentModal({
   totalSatang,
   vatSatang,
   itemCount,
+  customer,
+  taxRequested,
   payLines,
   cashReceived,
   reference,
@@ -61,9 +70,19 @@ export function PaymentModal({
   onRemoveLine,
   onCashReceived,
   onSetReference,
+  onToggleTax,
   onConfirm,
   onClose,
 }: PaymentModalProps) {
+  // Customer summary + tax eligibility (state-customer-has-tax).
+  const customerLabel = customer?.name ?? "ลูกค้าทั่วไป";
+  const customerHasTax =
+    customer != null &&
+    typeof customer.taxId === "string" &&
+    customer.taxId.trim().length > 0;
+  // Warn (mirrors Simple POS taxWarn): tax requested but the selected customer
+  // has no tax id (or is walk-in).
+  const taxWarn = taxRequested && !customerHasTax;
   // Which methods are currently in use across the split lines (drives tile state).
   const activeMethods = new Set(payLines.map((l) => l.method));
 
@@ -124,11 +143,59 @@ export function PaymentModal({
                 {formatSatang(vatSatang)}
               </span>
             </div>
-            <div className="flex justify-between">
-              <span>ลูกค้า</span>
-              <span style={{ color: "#cbd5e1" }}>ลูกค้าทั่วไป</span>
+            <div className="flex justify-between gap-2">
+              <span className="flex-shrink-0">ลูกค้า</span>
+              <span
+                className="max-w-[140px] truncate text-right"
+                style={{ color: "#cbd5e1" }}
+              >
+                {customerLabel}
+              </span>
             </div>
           </div>
+
+          <div className="flex-1" />
+
+          {/* Tax-invoice toggle (action-tax-toggle). */}
+          <label
+            className="flex cursor-pointer items-center gap-2.5 rounded-[11px] p-3"
+            style={{
+              background: taxRequested ? "#1e3a5f" : "#1e293b",
+              border: `1px solid ${taxRequested ? "#2563eb" : "#334155"}`,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={taxRequested}
+              onChange={onToggleTax}
+              aria-label="ขอใบกำกับภาษี"
+              className="h-[18px] w-[18px]"
+              style={{ accentColor: "#2563eb" }}
+            />
+            <span>
+              <span className="block text-[12.5px] font-semibold text-white">
+                ขอใบกำกับภาษี
+              </span>
+              <span className="block text-[10.5px]" style={{ color: "#94a3b8" }}>
+                Request tax invoice
+              </span>
+            </span>
+          </label>
+          {taxWarn && (
+            <div
+              className="mt-2 flex items-start gap-[7px] text-[11px]"
+              style={{ color: "#fca5a5" }}
+            >
+              <AlertTriangle
+                size={14}
+                strokeWidth={1.8}
+                className="mt-px flex-shrink-0"
+              />
+              <span>
+                ลูกค้านี้ยังไม่มีข้อมูลภาษี ต้องเลือกลูกค้าที่มีเลขผู้เสียภาษีก่อน
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Right: methods + split + cash + reference + confirm */}

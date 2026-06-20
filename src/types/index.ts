@@ -105,6 +105,19 @@ export type SaleStatus =
  */
 export type SyncStatus = "PENDING" | "DAILY" | "SYNCED" | "FAILED" | "SKIPPED";
 
+/**
+ * A customer (member) as returned by GET /api/customers (Phase 6a). `taxId`
+ * presence is what the UI keys "มีข้อมูลภาษี" / tax-invoice eligibility on.
+ */
+export type CustomerDTO = {
+  id: string;
+  name: string;
+  taxId?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  branchId: string;
+};
+
 /** The order object returned by the orders API — drives the receipt + history. */
 export type OrderDTO = {
   id: string;
@@ -122,10 +135,55 @@ export type OrderDTO = {
   accountingDocNo?: string | null;
   taxRequested: boolean;
   shiftId?: string | null;
+  // Phase 6a — customer linkage (null/undefined = walk-in / ลูกค้าทั่วไป).
+  customerId?: string | null;
+  customer?: CustomerDTO | null;
   createdAt: string;
   items: OrderItemDTO[];
   payments: OrderPaymentLine[];
   cashier?: { id: string; name: string } | null;
+};
+
+/**
+ * KRS sync job kinds (mirrors the Prisma SyncJobType enum). Declared in Phase 6a
+ * for the type surface; the /data KRS Data Link screen that renders them is 6b.
+ */
+export type SyncJobType =
+  | "SALE"
+  | "REFUND"
+  | "STOCK"
+  | "PULL"
+  | "TAX_INVOICE"
+  | "STOCK_ADJ"
+  | "RECEIVE";
+
+/** Sync job lifecycle (mirrors the Prisma SyncJobStatus enum). */
+export type SyncJobStatus =
+  | "PENDING"
+  | "SYNCED"
+  | "FAILED"
+  | "RETRYING"
+  | "SKIPPED";
+
+/** Outbound (POS → KRS) vs inbound (KRS → POS) direction. */
+export type SyncDirection = "INSERT" | "PULL";
+
+/**
+ * A sync job as serialized by the /api/sync-jobs API (Phase 6b). Declared now so
+ * the request-tax flow + 6b UI share one shape. Money fields are 2dp strings.
+ */
+export type SyncJobDTO = {
+  id: string;
+  type: SyncJobType;
+  direction: SyncDirection;
+  ref: string;
+  amount: string | number;
+  status: SyncJobStatus;
+  provider: string;
+  error?: string | null;
+  response?: string | null;
+  branchId: string;
+  createdAt: string;
 };
 
 /** A shift row as serialized by the shift API (money fields are 2dp strings). */

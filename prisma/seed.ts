@@ -273,6 +273,62 @@ async function main() {
     });
   }
 
+  // ---- Phase 6a: 3 seed customers for the customer picker + tax-invoice flow.
+  // Two have a tax id (eligible for a tax invoice), one is a member with no tax
+  // id (named, but tax-invoice ineligible — exercises the disabled path).
+  // Idempotent: tax customers upsert on the unique taxId; the no-taxId member is
+  // find-or-create on name (taxId is null, so it can't key the upsert).
+  const siamTrade = await prisma.customer.upsert({
+    where: { taxId: "0105551234567" },
+    update: {},
+    create: {
+      name: "บริษัท สยามเทรด จำกัด",
+      taxId: "0105551234567",
+      address: "1200 ถนนพระราม 4 แขวงคลองเตย เขตคลองเตย กรุงเทพฯ 10110",
+      branchId: "BR-01",
+    },
+  });
+  await prisma.customer.upsert({
+    where: { taxId: "0993000111222" },
+    update: {},
+    create: {
+      name: "ร้านกาแฟ ดอยคำ",
+      taxId: "0993000111222",
+      address: "88 หมู่ 5 ตำบลแม่งอน อำเภอฝาง จังหวัดเชียงใหม่ 50320",
+      branchId: "BR-01",
+    },
+  });
+  // คุณสมชาย ใจดี — member with NO tax id. find-or-create on name keeps it
+  // idempotent (a null taxId cannot be used as the upsert key).
+  let somchai = await prisma.customer.findFirst({
+    where: { name: "คุณสมชาย ใจดี", taxId: null },
+    select: { id: true },
+  });
+  if (!somchai) {
+    somchai = await prisma.customer.create({
+      data: {
+        name: "คุณสมชาย ใจดี",
+        taxId: null,
+        phone: "081-234-5678",
+        branchId: "BR-01",
+      },
+      select: { id: true },
+    });
+  }
+
+  // Link 2 existing seeded bills to customers so the SaleDetailDrawer + the
+  // request-tax path are testable:
+  //  - POS-20260616-0041 → สยามเทรด (has taxId) → canTax = true
+  //  - POS-20260616-0038 → คุณสมชาย (member, no taxId) → named but tax-ineligible
+  await prisma.order.update({
+    where: { orderNumber: "POS-20260616-0041" },
+    data: { customerId: siamTrade.id },
+  });
+  await prisma.order.update({
+    where: { orderNumber: "POS-20260616-0038" },
+    data: { customerId: somchai.id },
+  });
+
   console.log("Seed completed.");
 }
 

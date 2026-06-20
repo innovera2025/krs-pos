@@ -10,6 +10,72 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Customer / member (Phase 6a). Minimal by design: name + optional tax fields
+// (taxId/address) needed to legally print a tax invoice header. The customer
+// picker SELECTS seeded customers (no add-customer CRUD in 6a). A bill links to
+// at most one customer (Order.customerId, nullable = walk-in). `address` carries
+// the tax-invoice "ที่อยู่ออกใบกำกับ" address from the Simple POS IA.
+model Customer {
+  id        String   @id @default(cuid())
+  name      String
+  taxId     String?  @unique
+  phone     String?
+  address   String?
+  // Multi-branch-ready data model (domain-multi-branch-ready) — single-branch
+  // deployments use the BR-01 default.
+  branchId  String   @default("BR-01")
+  orders    Order[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// KRS accounting sync job (Phase 6a). A SIMULATED state machine — there is NO
+// real KRS transport in P6; actions mutate `status` with canned responses, and
+// `provider` is an open string field so other accounting providers can plug in
+// later (real transport = production-readiness). 6a only creates the PENDING
+// TAX_INVOICE job; the full 8-job seed + /data UI is Phase 6b.
+model SyncJob {
+  id        String        @id @default(cuid())
+  type      SyncJobType
+  direction SyncDirection @default(INSERT)
+  ref       String
+  amount    Decimal       @db.Decimal(12, 2) @default(0)
+  status    SyncJobStatus @default(PENDING)
+  provider  String        @default("KRS")
+  error     String?
+  response  String?
+  branchId  String        @default("BR-01")
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+}
+
+// Sync job kinds mirroring the Simple POS jobTypeLabel set (sale/refund/stock/
+// pull/tax_invoice/stock_adj/receive).
+enum SyncJobType {
+  SALE
+  REFUND
+  STOCK
+  PULL
+  TAX_INVOICE
+  STOCK_ADJ
+  RECEIVE
+}
+
+// Outbound (POS → KRS) vs inbound (KRS → POS) data flow.
+enum SyncDirection {
+  INSERT
+  PULL
+}
+
+// Sync job lifecycle states (Simple POS: pending/synced/failed/retrying/skipped).
+enum SyncJobStatus {
+  PENDING
+  SYNCED
+  FAILED
+  RETRYING
+  SKIPPED
+}
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -80,6 +146,11 @@ model Order {
   branchId     String      @default("BR-01")
   cashierId    String?
   cashier      User?       @relation(fields: [cashierId], references: [id])
+  // Customer linkage (Phase 6a). Nullable = walk-in (ลูกค้าทั่วไป); a checkout
+  // never blocks when no customer is selected. Required (with a taxId) only when
+  // a tax invoice is requested (domain-tax-invoice-requires-tax-customer).
+  customerId   String?
+  customer     Customer?   @relation(fields: [customerId], references: [id])
   // Shift linkage (Phase 5 Decision A2: add shiftId FK on Order). Nullable so a
   // checkout never blocks when no shift is open — the POST sets it to the current
   // OPEN shift if one exists, else leaves it null. The Z-report aggregates the

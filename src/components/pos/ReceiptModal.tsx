@@ -196,6 +196,21 @@ export function ReceiptModal({
             )}
           </div>
 
+          {/* Tax-payer block (display-receipt-taxpayer) — printed only when a tax
+              invoice was requested for a customer with a TIN (Simple POS parity). */}
+          {order.taxRequested && order.customer?.taxId && (
+            <div
+              className="mt-2.5 border-t border-dashed pt-2.5 text-[11.5px] leading-[1.8]"
+              style={{ borderColor: "#cbd5e1", color: "#475569" }}
+            >
+              <div className="font-semibold" style={{ color: "#0f172a" }}>
+                ข้อมูลผู้เสียภาษี
+              </div>
+              <div style={{ fontFamily: "var(--font-sans)" }}>{order.customer.name}</div>
+              <div>TIN {order.customer.taxId}</div>
+            </div>
+          )}
+
           <div
             className="mt-4 text-center text-[11px]"
             style={{ color: "#94a3b8", fontFamily: "var(--font-sans)" }}

@@ -14,11 +14,13 @@ import {
 
 type SaleDetailDrawerProps = {
   order: OrderDTO | null;
-  /** Disable action buttons while a refund/void request is in flight. */
+  /** Disable action buttons while a refund/void/request-tax request is in flight. */
   busy: boolean;
   onClose: () => void;
   onRefund: (order: OrderDTO) => void;
   onVoid: (order: OrderDTO) => void;
+  /** Request a tax invoice (action-request-tax-invoice). Phase 6a. */
+  onRequestTax: (order: OrderDTO) => void;
   onPrint: (order: OrderDTO) => void;
 };
 
@@ -32,7 +34,9 @@ type SaleDetailDrawerProps = {
  *  - คืนเงิน · Refund — only when status COMPLETED (canRefund)
  *  - ยกเลิก · Void   — only when COMPLETED AND syncStatus !== SYNCED (canVoid)
  *  - พิมพ์ · Print   — always
- *  - ขอใบกำกับ      — disabled (Phase 6: real tax-invoice flow + customer)
+ *  - ขอใบกำกับ      — enabled only when the bill has a customer with a taxId
+ *    (canTax); a walk-in / no-tax-customer bill keeps it disabled with a note
+ *    (Phase 6a: domain-tax-invoice-requires-tax-customer).
  */
 export function SaleDetailDrawer({
   order,
@@ -40,6 +44,7 @@ export function SaleDetailDrawer({
   onClose,
   onRefund,
   onVoid,
+  onRequestTax,
   onPrint,
 }: SaleDetailDrawerProps) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -110,8 +115,16 @@ export function SaleDetailDrawer({
   const acctColor = order.accountingDocNo ? "#15803d" : "var(--soft)";
   const canRefund = order.status === "COMPLETED";
   const canVoid = order.status === "COMPLETED" && order.syncStatus !== "SYNCED";
-  // Walk-in note: the seeded bills are all general customers (Phase 6 adds named).
-  const taxNote = true;
+  // Phase 6a: a tax invoice can only be requested when the bill is COMPLETED AND
+  // has a customer with a non-empty taxId (domain-tax-invoice-requires-tax-
+  // customer). Walk-in / no-tax-customer / non-COMPLETED bills keep the button
+  // disabled (mirrors the route's 409 INVALID_STATE + 422 gates).
+  const customerName = order.customer?.name ?? WALK_IN_LABEL;
+  const canTax =
+    order.status === "COMPLETED" &&
+    order.customer != null &&
+    typeof order.customer.taxId === "string" &&
+    order.customer.taxId.trim().length > 0;
 
   return (
     <div
@@ -139,7 +152,7 @@ export function SaleDetailDrawer({
               {order.orderNumber}
             </div>
             <div className="text-[12px]" style={{ color: "var(--soft)" }}>
-              {formatSaleTime(order.createdAt)} · {WALK_IN_LABEL}
+              {formatSaleTime(order.createdAt)} · {customerName}
             </div>
           </div>
           <button
@@ -193,7 +206,7 @@ export function SaleDetailDrawer({
             </div>
           </div>
 
-          {taxNote ? (
+          {!canTax ? (
             <div
               className="mt-4 rounded-[11px] border px-[13px] py-[11px] text-[12px]"
               style={{ background: "#fffbeb", borderColor: "#fde68a", color: "#a16207" }}
@@ -208,12 +221,19 @@ export function SaleDetailDrawer({
           className="flex flex-col gap-[9px] border-t px-[22px] py-4"
           style={{ borderColor: "#f1f5f9" }}
         >
-          {/* ขอใบกำกับภาษี — disabled placeholder (Phase 6). */}
+          {/* ขอใบกำกับภาษี — enabled only when the bill has a tax customer
+              (canTax). Walk-in / no-tax-customer bills keep it disabled with the
+              warning note shown above. */}
           <button
             type="button"
-            disabled
-            title="ขอใบกำกับภาษี — Phase 6"
-            className="flex h-[46px] items-center justify-center gap-2 rounded-[11px] text-[13.5px] font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={() => onRequestTax(order)}
+            disabled={!canTax || busy}
+            title={
+              canTax
+                ? "ขอใบกำกับภาษี"
+                : "ลูกค้าทั่วไป — ต้องระบุข้อมูลภาษีก่อน"
+            }
+            className="flex h-[46px] items-center justify-center gap-2 rounded-[11px] text-[13.5px] font-bold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:opacity-50"
             style={{ background: "#2563eb" }}
           >
             ขอใบกำกับภาษี · Request tax invoice

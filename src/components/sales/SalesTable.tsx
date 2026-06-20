@@ -75,7 +75,7 @@ export function SalesTable({ orders, onOpenSale }: SalesTableProps) {
                       className="overflow-hidden text-ellipsis whitespace-nowrap text-[13px] font-medium"
                       style={{ color: "#334155" }}
                     >
-                      {WALK_IN_LABEL}
+                      {o.customer?.name ?? WALK_IN_LABEL}
                     </div>
                     <div className="mono text-[11px]" style={{ color: "var(--soft)" }}>
                       {acctNo}
