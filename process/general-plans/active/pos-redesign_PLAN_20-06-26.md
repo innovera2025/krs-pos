@@ -1,6 +1,6 @@
 # KRS POS Redesign — Development Plan
 
-- Status: 🔨 IN PROGRESS — **Phases 1–6 DONE — all 165/165 functions built** (P6 complete: 6a Customer/tax + 6b KRS Data Link + 6c Design Spec docs; **6c = /docs 10-panel design-spec hub, static, AdminOnly**, build + Playwright render + 0-finding review + regression verified, P1–6b committed, 6c pending commit); `/login` UI stub. **Only Phase 7 (hardening/QA + production-readiness items) remains.** KRS transport simulated; RBAC client stub.
+- Status: ✅ **PROGRAM COMPLETE — Phases 1–7 ALL DONE.** All 165/165 functions built across 7 Taste screens (+/login stub); P7 = hardening (error boundaries, contrast/a11y, ARIA tablists, tablet ≤900px responsive, /data error state) + Playwright e2e (9/9). type-check + build + e2e + responsive smoke + 0-finding review verified; P1–6c committed, P7 pending commit. KRS transport simulated; RBAC client stub. **Remaining = the separate `production-readiness` program** (real auth/RBAC, Decimal, idempotency, atomic stock, audit, real KRS, ESLint/CI — see `pos-security-gap-audit_20-06-26.md`).
 - Created: 2026-06-20 · last finalized: 2026-06-20
 - Plan type: COMPLEX (multi-phase program — **7 phases**: P1–P6 build + P7 cross-cutting hardening)
 - Owner program: POS redesign (relates to the `production-readiness` security/correctness program)
@@ -85,7 +85,7 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 | **P4** | ✅ done | Catalog/stock management + Users & Roles + RBAC (client stub) | P1, P3 | 20 | 12 build-new-ui, 8 full-stack-new |
 | **P5** | ✅ done | Shift open/close + Z-report + Sales History with refund/void/reprint | P3, P4 | 23 | 11 build-new-ui, 12 full-stack-new |
 | **P6** | ✅ done | KRS Data Link (sync/offline) + Customer/member + tax invoice + Design Spec docs (split 6a/6b/6c) | P2, P3, P4, P5 | 67 (6a:10 + 6b:45 + 6c:12 ✅) | 51 full-stack-new, 16 build-new-ui |
-| **P7** | ⏳ planned | Integration hardening, responsive QA, regression, polish | P2, P3, P4, P5, P6 | — | cross-cutting / QA |
+| **P7** | ✅ done | Integration hardening, responsive QA, regression, polish | P2, P3, P4, P5, P6 | — | cross-cutting / QA |
 
 ### Phase 1 — Design-system foundation + app shell, rail, theme, routing
 
@@ -323,7 +323,7 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 ### Phase 7 — Integration hardening, responsive QA, regression, polish
 
-- **Status:** ⏳ planned
+- **Status:** ✅ done (bounded pass: root + shell `error.tsx` + `not-found.tsx`; contrast/token fixes incl. `soft` `#6b7280`, NavRail icon, muted text → `var(--soft)`; single `<main>`; login autoFocus; full ARIA tablists on /data + /docs; **tablet ≤900px responsive** via CSS-class width overrides [rail 76→64, cart 408→340, grid 168→132], desktop unchanged; /data fetch-error state; **Playwright e2e — 9/9 pass** [8-route smoke + checkout happy-path]). type-check + build + e2e + responsive smoke (1280 & 768, 0 overflow) + 0-finding adversarial review verified; pending commit. See `pos-redesign-phase-7_REPORT_20-06-26.md`. **Closes the redesign program.** ≤760px mobile-nav + all production-readiness items intentionally OUT (separate program).
 - **Depends on:** Phase 2, Phase 3, Phase 4, Phase 5, Phase 6
 - **Goal:** Cross-cutting quality pass across all routes — responsive reflow (mobile rail collapse + Taste breakpoints), API error states, accessibility/contrast, performance, route-level browser smoke, and regression against all prior phases. No new Simple POS functions; make everything already built robust. Addresses deferred review items (responsive rail, POS a11y labels, login focus modality).
 - **Verification gate:** npm run type-check + npm run build pass (+ optional Playwright e2e on the checkout flow). Responsive QA across all 7 routes + /login; a11y/contrast pass; error.tsx route boundaries; browser smoke of every route; regression checks on earlier phases.
