@@ -85,6 +85,20 @@ textarea:focus-visible,
   }
 }
 
+/* Connected live-status dot pulse (Phase 6b KRS Data Link live pill), ported from
+   the Simple POS source-of-truth. Neutralized by the reduced-motion block below. */
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+}
+
 /* Honor reduced-motion app-wide, not just on /login. */
 @media (prefers-reduced-motion: reduce) {
   *,

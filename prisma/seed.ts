@@ -329,6 +329,156 @@ async function main() {
     data: { customerId: somchai.id },
   });
 
+  // ---- Phase 6b: 8 seed SyncJobs (J-1042..J-1035) for the /data KRS Data Link
+  // screen — the exact dataset from the Simple POS source-of-truth. The badge on
+  // the NavRail "data" item sources its count from status=FAILED (here: 2 → J-1042
+  // vat_code mismatch and J-1035 DS-001 mismatch). Explicit non-CUID string ids are
+  // valid for a `@id String` field; upsert on `where:{id}` keeps the seed
+  // idempotent (re-run = no-op on existing rows). `updatedAt` is set explicitly so
+  // the table time matches the source-of-truth (Asia/Bangkok afternoon of the
+  // 2026-06-16 seed day); @updatedAt only auto-writes on UPDATE, not on create.
+  type SeedJob = {
+    id: string;
+    type:
+      | "SALE"
+      | "REFUND"
+      | "STOCK"
+      | "PULL"
+      | "TAX_INVOICE"
+      | "STOCK_ADJ"
+      | "RECEIVE";
+    direction: "INSERT" | "PULL";
+    ref: string;
+    amount: number;
+    status: "PENDING" | "SYNCED" | "FAILED" | "RETRYING" | "SKIPPED";
+    error: string | null;
+    response: string;
+    // ISO (UTC); the time-of-day below is the Asia/Bangkok afternoon shown in the
+    // table (UTC = Bangkok − 7h). PENDING has no time in the source — we keep a
+    // createdAt so the row sorts, but the UI shows "—" for a PENDING updated time.
+    updatedAt: string;
+  };
+
+  const seedJobs: SeedJob[] = [
+    {
+      id: "J-1042",
+      type: "SALE",
+      direction: "INSERT",
+      ref: "POS-20260616-0039",
+      amount: 240.0,
+      status: "FAILED",
+      error:
+        'FIELD_MAP_MISMATCH: ฟิลด์ "vat_code" ใน POS ยังไม่ได้จับคู่กับคอลัมน์ KRS.sales.tax_code',
+      response:
+        'HTTP 422 · {"code":"field_not_mapped","field":"vat_code","target":"KRS.sales.tax_code"}',
+      updatedAt: "2026-06-16T06:21:00.000Z", // 13:21
+    },
+    {
+      id: "J-1041",
+      type: "SALE",
+      direction: "INSERT",
+      ref: "POS-20260616-0041",
+      amount: 962.3,
+      status: "SYNCED",
+      error: null,
+      response: 'HTTP 200 · INSERT KRS.sales · {"krs_id":"BK-48280","rows":1}',
+      updatedAt: "2026-06-16T06:59:00.000Z", // 13:59
+    },
+    {
+      id: "J-1040",
+      type: "REFUND",
+      direction: "INSERT",
+      ref: "POS-20260616-0038",
+      amount: -65.0,
+      status: "SYNCED",
+      error: null,
+      response: 'HTTP 200 · INSERT KRS.sales · {"krs_id":"BK-48201","rows":1}',
+      updatedAt: "2026-06-16T05:51:00.000Z", // 12:51
+    },
+    {
+      id: "J-1039",
+      type: "SALE",
+      direction: "INSERT",
+      ref: "POS-20260616-0035",
+      amount: 540.0,
+      status: "RETRYING",
+      error:
+        "NETWORK_TIMEOUT: เชื่อมต่อ KRS (203.0.113.45:3306) ไม่สำเร็จ กำลังลองใหม่ (2/5)",
+      response: "HTTP 504 · gateway timeout",
+      updatedAt: "2026-06-16T06:25:00.000Z", // 13:25
+    },
+    {
+      id: "J-1038",
+      type: "SALE",
+      direction: "INSERT",
+      ref: "POS-20260616-0034",
+      amount: 88.0,
+      status: "PENDING",
+      error: null,
+      response: "อยู่ในคิวรอ insert เข้า KRS.sales",
+      updatedAt: "2026-06-16T06:18:00.000Z", // queued; table shows "—" for PENDING
+    },
+    {
+      id: "J-1037",
+      type: "PULL",
+      direction: "PULL",
+      ref: "KRS.products",
+      amount: 0,
+      status: "SYNCED",
+      error: null,
+      response:
+        "HTTP 200 · ดึง 17 แถวจาก KRS.products → map → อัปเดต POS catalog",
+      updatedAt: "2026-06-16T06:05:00.000Z", // 13:05
+    },
+    {
+      id: "J-1036",
+      type: "STOCK",
+      direction: "INSERT",
+      ref: "POS-20260616-0041",
+      amount: 411.0,
+      status: "SYNCED",
+      error: null,
+      response: 'HTTP 200 · INSERT KRS.stock_movements · {"rows":3}',
+      updatedAt: "2026-06-16T06:59:00.000Z", // 13:59
+    },
+    {
+      id: "J-1035",
+      type: "STOCK",
+      direction: "INSERT",
+      ref: "GRN-20260616-007",
+      amount: 8750.0,
+      status: "FAILED",
+      error:
+        'FIELD_MAP_MISMATCH: สินค้า "บราวนี่ (DS-001)" ไม่มีคู่ฟิลด์ sku → KRS.products.item_code',
+      response: 'HTTP 422 · {"code":"field_not_mapped","sku":"DS-001"}',
+      updatedAt: "2026-06-16T03:42:00.000Z", // 10:42
+    },
+  ];
+
+  for (const j of seedJobs) {
+    await prisma.syncJob.upsert({
+      where: { id: j.id },
+      update: {},
+      create: {
+        id: j.id,
+        type: j.type,
+        direction: j.direction,
+        ref: j.ref,
+        amount: j.amount,
+        status: j.status,
+        provider: "KRS",
+        error: j.error,
+        response: j.response,
+        branchId: "BR-01",
+        // Anchor createdAt to the same historical timestamp as updatedAt so the row
+        // is internally consistent (createdAt <= updatedAt); otherwise createdAt
+        // defaults to the seed-run day (2026-06-20) and sorts after updatedAt.
+        createdAt: new Date(j.updatedAt),
+        updatedAt: new Date(j.updatedAt),
+      },
+    });
+  }
+
   console.log("Seed completed.");
 }
 

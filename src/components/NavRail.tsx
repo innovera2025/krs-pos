@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   Store,
@@ -50,15 +51,47 @@ const NAV_ITEMS: NavItem[] = [
  * (session role + route middleware) = production-readiness.
  *
  * The red failed-job badge on the `data` item (display-sidebar-failed-badge-source)
- * is wired in Phase 6; for now the count is 0 and the dot is hidden.
+ * is sourced (Phase 6b) from GET /api/sync-jobs/failed-count — a single
+ * COUNT(status=FAILED). It is fetched once on mount, starting at 0 so there is no
+ * layout shift and a fetch failure leaves the badge hidden (the rail must never
+ * break a navigation). Because the rail lives in the persistent (shell) layout and
+ * never remounts on intra-shell nav, it also re-fetches whenever DataFlowTab
+ * dispatches a `krs:sync-jobs-changed` window event (after retry/skip/pull/insert),
+ * so the badge clears once the true FAILED count drops to 0.
  */
 export function NavRail() {
   const pathname = usePathname();
   const router = useRouter();
   const { role, setRole } = useRole();
 
-  // Phase 6 will source this from the real failed-sync-job count.
-  const failedJobCount = 0;
+  // Failed-sync-job count for the `data` badge (display-sidebar-failed-badge-
+  // source). Init 0 → no layout shift; errors are swallowed (the rail must never
+  // break navigation). Re-fetched on mount and whenever DataFlowTab dispatches
+  // `krs:sync-jobs-changed`, so the badge clears after a retry/skip.
+  const [failedJobCount, setFailedJobCount] = useState(0);
+  useEffect(() => {
+    let mounted = true;
+    // A still-mounted check avoids a setState-after-unmount warning if a fetch
+    // resolves after the rail (theoretically) unmounts.
+    const loadFailedCount = () => {
+      fetch("/api/sync-jobs/failed-count")
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data: { count?: number } | null) => {
+          if (mounted && data && typeof data.count === "number") {
+            setFailedJobCount(data.count);
+          }
+        })
+        .catch(() => {
+          /* ignore — leave the badge hidden on error */
+        });
+    };
+    loadFailedCount();
+    window.addEventListener("krs:sync-jobs-changed", loadFailedCount);
+    return () => {
+      mounted = false;
+      window.removeEventListener("krs:sync-jobs-changed", loadFailedCount);
+    };
+  }, []);
 
   const visibleItems = NAV_ITEMS.filter((item) => canAccess(item.key, role));
 

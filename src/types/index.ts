@@ -184,6 +184,23 @@ export type SyncJobDTO = {
   response?: string | null;
   branchId: string;
   createdAt: string;
+  // `updatedAt` drives the "เวลา"/time column + drawer "อัปเดต" line — every
+  // server action (retry/skip/pull/insert-all) advances it. Serialized by the
+  // /api/sync-jobs API (Phase 6b).
+  updatedAt: string;
+};
+
+/**
+ * Per-status SyncJob counts for the Data Flow KPI cards + (potential) future
+ * server aggregation. The /data screen derives these client-side from the fetched
+ * job list; the shape is shared so a server count endpoint can reuse it later.
+ */
+export type SyncCountsDTO = {
+  pending: number;
+  synced: number;
+  failed: number;
+  retrying: number;
+  skipped: number;
 };
 
 /** A shift row as serialized by the shift API (money fields are 2dp strings). */
