@@ -1,6 +1,6 @@
 # KRS POS Redesign — Development Plan
 
-- Status: 🔨 IN PROGRESS — **Phases 1–5 done** (P5 = sales history + shift/Z-report + refund/void + 3rd tracked migration + A2 shiftId; build + live-smoke + 14-agent review verified; P1–4 committed, P5 pending commit); `/login` UI stub; Phases 6–7 planned.
+- Status: 🔨 IN PROGRESS — **Phases 1–5 done + Phase 6a done** (P6 split into 6a Customer/tax · 6b KRS Data Link · 6c Design Spec docs; **6a = Customer model + tax invoice + 4th tracked migration**, build + live-smoke + 10-agent review verified, P1–5 committed, 6a pending commit); `/login` UI stub; P6b/6c + P7 remaining.
 - Created: 2026-06-20 · last finalized: 2026-06-20
 - Plan type: COMPLEX (multi-phase program — **7 phases**: P1–P6 build + P7 cross-cutting hardening)
 - Owner program: POS redesign (relates to the `production-readiness` security/correctness program)
@@ -84,7 +84,7 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 | **P3** | ✅ done (committed) | Payment + receipt/print + hold bill — complete the sell-to-receipt flow | P2 | 28 | 27 build-new-ui, 1 full-stack-new |
 | **P4** | ✅ done | Catalog/stock management + Users & Roles + RBAC (client stub) | P1, P3 | 20 | 12 build-new-ui, 8 full-stack-new |
 | **P5** | ✅ done | Shift open/close + Z-report + Sales History with refund/void/reprint | P3, P4 | 23 | 11 build-new-ui, 12 full-stack-new |
-| **P6** | ▶ next | KRS Data Link (sync/offline) + Customer/member + tax invoice + Design Spec docs | P2, P3, P4, P5 | 67 | 51 full-stack-new, 16 build-new-ui |
+| **P6** | ◐ 6a done · 6b next | KRS Data Link (sync/offline) + Customer/member + tax invoice + Design Spec docs (split 6a/6b/6c) | P2, P3, P4, P5 | 67 (6a:10 ✅) | 51 full-stack-new, 16 build-new-ui |
 | **P7** | ⏳ planned | Integration hardening, responsive QA, regression, polish | P2, P3, P4, P5, P6 | — | cross-cutting / QA |
 
 ### Phase 1 — Design-system foundation + app shell, rail, theme, routing
@@ -245,7 +245,7 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 ### Phase 6 — KRS Data Link (sync/offline) + Customer/member + tax invoice + Design Spec docs
 
-- **Status:** ⏳ planned
+- **Status:** ◐ **split into 3 sub-phases** (see `pos-redesign-phase-6_RESEARCH_20-06-26.md`): **6a Customer + tax invoice — ✅ DONE** (10 fn; Customer + SyncJob models + 4th tracked migration `20260620144152_phase6a_customer_syncjob`; customer picker in /pos, tax toggle + `domain-tax-invoice-requires-tax-customer` validation, request-tax → PENDING TAX_INVOICE SyncJob; build + live-smoke + 10-agent review (5/5 fixed) verified; pending commit) · **6b KRS Data Link UI — ▶ NEXT** (~38 fn; 4 tabs, sync queue, LATENT cards, nav badge; SyncJob model already exists) · **6c Design Spec docs — ⏳ planned** (13 fn, static). KRS transport is **simulated** (real integration = production-readiness).
 - **Depends on:** Phase 2, Phase 3, Phase 4, Phase 5
 - **Goal:** Deliver the admin KRS integration surface and the customer-dependent features, then port the remaining latent/doc functions so nothing is dropped. Build the offline-resilient SyncJob queue (IndexedDB, backoff, idempotency, state machine) feeding the 4 data tabs (Connection, Mapping incl. the LATENT account/sync-mode/stock-method tables+cards, Data Flow, Live Data) and the sync detail drawer + sidebar failed badge. Add Customer model -> customer picker, tax-info state, request-tax-invoice flow, and wire live/offline status + receipt sync badge to real connection. Finish with the static Design Spec docs hub.
 - **Verification gate:** npm run type-check + npm run build pass. Manual: KRS Data Link (admin-only) renders all 4 tabs; Connection tab tests connection (status connected/testing/disconnected) + insert-test-row (green in Live Data) + editable fields + SSL toggle updating the conn-string; Mapping tab renders outbound + inbound tables AND the previously-latent account-mapping tables + sync-mode cards + stock-method cards (all clickable/wired), with incomplete mapping (vat_code) blocking sync via FIELD_MAP_MISMATCH; Data Flow tab shows clickable sync-count cards filtering the jobs table, pull/insert-all-pending, and a sync detail drawer with retry/skip; sidebar data badge equals the failed-job count and nulls when none; sales still complete while 'offline' (queued) proving sell-first. Customer picker selects member/walk-in with tax badge; requesting a tax invoice is blocked for walk-in and queues a tax_invoice job otherwise; receipt sync badge + live/offline pill reflect real connection state. Design Spec docs hub renders all 10 panels. Seed adds 8 sync jobs (failed badge = 2). Requires Customer model + SyncJob model + sync API.
@@ -259,14 +259,14 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 | `screen-data-flow-tab` | Data Flow tab (การไหลของข้อมูล) | data | 🔴 no | 🔴 no | full-stack-new | — |
 | `screen-data-livedata-tab` | Live Data tab (ตรวจข้อมูล) | data | 🔴 no | 🔴 no | full-stack-new | — |
 | `screen-design-spec-hub` | Design Spec hub (เอกสารดีไซน์) | docs | 🔴 no | 🔴 no | build-new-ui | — |
-| `overlay-customer-picker` | Customer Picker modal (เลือกลูกค้า) | pos | 🟡 partial | 🔴 no | full-stack-new | — |
+| `overlay-customer-picker` | Customer Picker modal (เลือกลูกค้า) | pos | 🟡 partial | 🔴 no | full-stack-new | ✅ (6a) |
 | `overlay-sync-detail-drawer` | Sync Detail drawer | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-open-customer-picker` | Open customer picker (openCustPicker) | pos | 🟡 partial | 🔴 no | full-stack-new | — |
-| `action-customer-search` | Customer search (onCustQuery) | pos | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-pick-customer` | Pick customer (pickCustomer) | pos | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-pick-walkin` | Pick walk-in (pickWalkIn) | pos | 🟡 partial | 🔴 no | build-new-ui | — |
-| `action-tax-toggle` | Request tax invoice toggle (toggleTax) | pos | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-request-tax-invoice` | Request tax invoice from history (requestTax) | sales | 🔴 no | 🔴 no | full-stack-new | — |
+| `action-open-customer-picker` | Open customer picker (openCustPicker) | pos | 🟡 partial | 🔴 no | full-stack-new | ✅ (6a) |
+| `action-customer-search` | Customer search (onCustQuery) | pos | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
+| `action-pick-customer` | Pick customer (pickCustomer) | pos | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
+| `action-pick-walkin` | Pick walk-in (pickWalkIn) | pos | 🟡 partial | 🔴 no | build-new-ui | ✅ (6a) |
+| `action-tax-toggle` | Request tax invoice toggle (toggleTax) | pos | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
+| `action-request-tax-invoice` | Request tax invoice from history (requestTax) | sales | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
 | `action-db-test-connection` | Test KRS connection (testConnection) | data | 🔴 no | 🔴 no | full-stack-new | — |
 | `action-db-insert-test-row` | Insert test row (insertTestRow) | data | 🔴 no | 🔴 no | full-stack-new | — |
 | `action-db-edit-fields` | Edit connection fields (setDb) | data | 🔴 no | 🔴 no | full-stack-new | — |
@@ -289,10 +289,10 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 | `state-sync-empty` | Sync table empty state | data | 🔴 no | 🔴 no | full-stack-new | — |
 | `state-db-connection` | DB connection status (connected/testing/disconnected) | data | 🔴 no | 🔴 no | full-stack-new | — |
 | `state-mapping-incomplete` | Field-mapping incomplete state | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `state-customer-has-tax` | Customer tax-info state | pos | 🔴 no | 🔴 no | full-stack-new | — |
+| `state-customer-has-tax` | Customer tax-info state | pos | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
 | `flow-sync-to-krs` | Flow: sync to KRS (map field → insert / pull / fix failed) | data | 🟡 partial | 🔴 no | full-stack-new | — |
 | `domain-sell-first-accounting-async` | Sell-first, accounting-async (POS keeps selling) | global | 🟡 partial | 🔴 no | full-stack-new | — |
-| `domain-tax-invoice-requires-tax-customer` | Tax invoice requires customer with tax ID | pos | 🔴 no | 🔴 no | full-stack-new | — |
+| `domain-tax-invoice-requires-tax-customer` | Tax invoice requires customer with tax ID | pos | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
 | `domain-mapping-blocks-sync` | Incomplete mapping blocks sync | data | 🔴 no | 🔴 no | full-stack-new | — |
 | `domain-realtime-stock-sync` | Realtime stock sync to KRS | data | 🟡 partial | 🔴 no | full-stack-new | — |
 | `domain-accounting-providers` | External accounting providers / KRS integration | data | 🔴 no | 🔴 no | full-stack-new | — |
@@ -301,7 +301,7 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 | `display-account-mappings` | Account mapping tables (product/payment/tax/inventory) | data | 🔴 no | 🔴 no | full-stack-new | — |
 | `display-sync-mode-options` | Sync-mode option cards | data | 🔴 no | 🔴 no | full-stack-new | — |
 | `display-stock-method-options` | Stock-method option cards | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-close-customer-picker` | Close customer picker (closeCustPicker + backdrop) | pos | 🔴 no | 🔴 no | full-stack-new | — |
+| `action-close-customer-picker` | Close customer picker (closeCustPicker + backdrop) | pos | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
 | `action-close-sync-detail` | Close sync detail drawer (closeSyncDetail + backdrop) | data | 🔴 no | 🔴 no | full-stack-new | — |
 | `display-account-mapping-tables-LATENT` | Account mapping tables are computed but NOT rendered (latent) | data | 🔴 no | 🔴 no | full-stack-new | — |
 | `display-sync-mode-cards-LATENT` | Sync-mode option cards computed but NOT rendered (latent) | data | 🔴 no | 🔴 no | full-stack-new | — |
