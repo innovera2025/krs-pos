@@ -1,6 +1,6 @@
 # KRS POS Redesign — Development Plan
 
-- Status: 🔨 IN PROGRESS — **Phase 1 committed**; **Phase 2 done (build-verified + pricing-tested, pending commit)**; `/login` UI stub; Phases 3–7 planned.
+- Status: 🔨 IN PROGRESS — **Phase 1 committed**; **Phase 2 done & committed** (build-verified + pricing-tested + **live `/pos` DB smoke verified**); `/login` UI stub; Phases 3–7 planned.
 - Created: 2026-06-20 · last finalized: 2026-06-20
 - Plan type: COMPLEX (multi-phase program — **7 phases**: P1–P6 build + P7 cross-cutting hardening)
 - Owner program: POS redesign (relates to the `production-readiness` security/correctness program)
@@ -16,7 +16,7 @@
 ## Current status snapshot
 
 - ✅ **Phase 1 (shell/rail/theme/routing) — COMMITTED** (feat/design/docs commits) incl. `/login` UI stub + favicon + review-loop bug-fix pass (Modal a11y/Escape/focus-trap, money() guards, contrast, reduced-motion, toast live-region, nav landmark).
-- ✅ **Phase 2 (`/pos` checkout core redesign) — build-verified + pricing-tested (32/32 invariants).** Taste 3-col register, integer-satang VAT-inclusive totals + proportional discount, per-line/bill discount (฿/%), states, in-cart badge, low/out-of-stock, 17-item seed edit. ⏳ live DB smoke pending; pending commit.
+- ✅ **Phase 2 (`/pos` checkout core redesign) — build-verified + pricing-tested (32/32 invariants).** Taste 3-col register, integer-satang VAT-inclusive totals + proportional discount, per-line/bill discount (฿/%), states, in-cart badge, low/out-of-stock, 17-item seed. ✅ **live DB smoke verified** (ephemeral Postgres: 17 products, `/api/products` 200, `/pos` 200, 0 errors). Committed `5871f46`.
 - 🧭 **8 routes live:** `/login` (UI stub) · `/pos` (old/partial checkout, DB-dependent) · `/products` `/users` `/sales` `/shift` `/data` `/docs` (placeholders) · `/` → `/pos` redirect.
 - ⏸️ **Deferred:** `domain-multi-branch-ready` (branchId) → Phase 4 (needs a DB). Real auth/RBAC → `production-readiness` program (see Login addendum + §8).
 
@@ -76,7 +76,7 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 | Phase | Status | Title | Depends on | # functions | Gap profile |
 |---|---|---|---|---|---|
 | **P1** | ✅ done (committed) | Design-system foundation + app shell, rail, theme, routing | none | 8 | 4 redesign-existing, 3 build-new-ui, 1 backend-needed |
-| **P2** | ✅ done · pending commit | Checkout core redesigned — product grid, cart, discounts, VAT-inclusive totals | P1 | 19 | 8 redesign-existing, 11 build-new-ui |
+| **P2** | ✅ done (committed) | Checkout core redesigned — product grid, cart, discounts, VAT-inclusive totals | P1 | 19 | 8 redesign-existing, 11 build-new-ui |
 | **P3** | ▶ next | Payment + receipt/print + hold bill — complete the sell-to-receipt flow | P2 | 28 | 27 build-new-ui, 1 full-stack-new |
 | **P4** | ⏳ planned | Catalog/stock management + Users & Roles + RBAC enforcement | P1, P3 | 20 | 12 build-new-ui, 8 full-stack-new |
 | **P5** | ⏳ planned | Shift open/close + Z-report + Sales History with refund/void/reprint | P3, P4 | 23 | 11 build-new-ui, 12 full-stack-new |
@@ -105,9 +105,9 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 ### Phase 2 — Checkout core redesigned — product grid, cart, discounts, VAT-inclusive totals
 
-- **Status:** ✅ done · pending commit
+- **Status:** ✅ done (committed)
 - **Depends on:** Phase 1
-- **Note:** implemented & build-verified + **pricing-tested (32/32 invariants)**; seed expanded to 17/4 (apply needs a DB); live `/pos` smoke pending. See `pos-redesign-phase-2_REPORT_20-06-26.md`.
+- **Note:** implemented & build-verified + **pricing-tested (32/32 invariants)**; seed expanded to 17/4; **live `/pos` smoke ✅ verified** (ephemeral Postgres: 17 products, API 200, /pos 200, 0 errors). See `pos-redesign-phase-2_REPORT_20-06-26.md`.
 - **Goal:** Rebuild the POS Checkout as the Taste 3-column register on top of the current app: category panel + searchable/barcode product grid (17-item catalog, low/out-of-stock styling, in-cart badge), full cart with per-line + bill discounts and a faithful VAT-inclusive computeTotals (proportional discount allocation + clamping). End state: a fully interactive cart that computes correct totals but stops at the pay button.
 - **Verification gate:** npm run type-check + npm run build pass. Manual: search filters by name/EN/SKU; category chips filter the grid; adding a product shows in-cart badge; +/-/trash adjust and remove lines; per-line and bill discounts (฿ and %) recompute totals; VAT shows as 'VAT 7% (รวมในราคา)' extracted inclusive with proportional bill-discount allocation (preVat = total − vat); low-stock (<=10) cards render amber, out-of-stock blocked; seed expanded to 17 products / 4 categories; empty-cart and no-results states render in Taste style.
 - **Functions in this phase (19):**

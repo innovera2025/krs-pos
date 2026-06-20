@@ -3,7 +3,7 @@
 - Date: 2026-06-20
 - Plan: `process/general-plans/active/pos-redesign_PLAN_20-06-26.md` (Phase 2)
 - Research: `process/general-plans/reports/pos-redesign-phase-2_RESEARCH_20-06-26.md`
-- Status: ✅ **build-verified + pricing-tested** · ⏳ live `/pos` DB smoke pending (no Docker/DB available here)
+- Status: ✅ **build-verified + pricing-tested + live `/pos` DB smoke verified** (2026-06-20)
 - Scope: `/pos` checkout core only — **no Phase 3** (payment modal / receipt / hold-bill); pay-button entry point preserved.
 
 ## What was built (19 Phase-2 functions)
@@ -42,7 +42,7 @@ Rewrote `/pos` into the Taste 3-column register (rail preserved). Function cover
 - `npm run type-check` — **PASS**
 - `npm run build` — **PASS** (`/pos` = 9.53 kB; all 15 routes compile)
 - `lib/pricing.ts` invariants — **32/32 PASS** (tsx)
-- ⏳ **Live `/pos` smoke not run** — no Docker/DB in this environment. To smoke: `docker compose up -d db` → `cp .env.example .env` (set vars) → `npm run prisma:generate && npm run db:push && npm run prisma:seed` (applies the 17-item catalog) → `npm run dev` → exercise browse/search/category/cart/discount/VAT.
+- ✅ **Live `/pos` smoke PASSED (2026-06-20)** — ran against an **ephemeral Postgres** (loopback-only container, not via the committed compose which intentionally publishes no port): `db push` + `prisma:seed` → DB held **17 products / 4 categories** (3 low-stock); `next start` (clean rebuild) → **`GET /api/products` 200 (17 products, no `password` field leaked)**, **`GET /pos` 200** with Taste SSR markers (`VAT 7%`, `ยอดก่อนภาษี`/`ยอดสุทธิ`, `ตะกร้าว่าง`, `ทั้งหมด`) and **0 module/SSR errors**, no "load-failed". Note: an initial `/pos` 500 was a **stale `.next`** artifact (from mixing `build`/`dev` on a shared `.next` this session), fixed by `rm -rf .next && npm run build` — not a code defect. Ephemeral DB torn down after; `.env` (gitignored) left for local dev.
 
 ## Regression (vs Phase 0 / Phase 1)
 - **PASS (static):** all routes still build; shell/rail/routing untouched. `git diff` confirms **no changes** to `prisma/schema.prisma`, `src/app/api/**`, `src/lib/prisma.ts`, `(shell)/layout.tsx`, `NavRail`, `ToastProvider`, `Modal`, `/login`.
