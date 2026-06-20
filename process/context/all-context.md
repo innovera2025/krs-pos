@@ -87,6 +87,7 @@ For most substantial tasks:
 | schema, models, migrations, seeding | `all-context.md`, `database/all-database.md` | `prisma/schema.prisma` |
 | the sale / checkout flow or API routes | `all-context.md` | `src/app/api/orders/route.ts`, `src/app/page.tsx` |
 | Docker / local DB / deployment image | `all-context.md`, `container/all-container.md` | `docker-compose.yml`, `Dockerfile` |
+| UI/frontend or POS redesign work | `all-context.md` | `design/Simple POS.dc.html`, `design/KRS POS Taste Redesign.html`, then `src/app/page.tsx` |
 | testing or verification | `all-context.md`, `tests/all-tests.md` | — |
 | creating a new plan | `all-context.md`, `planning/all-planning.md` | `process/development-protocols/references/example-simple-prd.md` |
 | context maintenance | `all-context.md` | run the `vc-audit-context` skill after edits |
@@ -116,6 +117,10 @@ krs-pos/
   tailwind.config.ts
   tsconfig.json            -- path alias @/* -> ./src/*
   package.json
+  design/
+    Simple POS.dc.html             -- original complete POS design/function inventory
+    KRS POS Taste Redesign.html    -- approved Joi/Taste redesign visual direction
+    _ds/                           -- pguard-derived design-system reference only; not KRS POS truth
   .env.example             -- DATABASE_URL only
   process/                 -- agent harness context + plans (this dir)
 ```
@@ -125,7 +130,9 @@ krs-pos/
 - **Framework:** Next.js **14.2.5** (App Router) — server route handlers (`route.ts`) + a client POS page
 - **Language:** TypeScript **5.5** (strict), `allowJs`, `moduleResolution: bundler`
 - **Runtime:** Node **20** (`.nvmrc`)
-- **UI:** React **18.3** + Tailwind CSS **3.4** (no component library; hand-written JSX)
+- **UI:** React **18.3** + Tailwind CSS **3.4** (no component library; hand-written JSX). For UI work,
+  inspect the `design/` source files first: preserve functions from `Simple POS.dc.html` and apply the
+  approved `KRS POS Taste Redesign.html` visual language.
 - **Database:** PostgreSQL **16** (alpine in Docker) via **Prisma 5.18** ORM (`@prisma/client` + `prisma`)
 - **State:** local React state only (`useState`/`useEffect`/`useMemo`) — no Redux/Zustand/etc.
 - **API style:** REST-ish Next.js route handlers returning `NextResponse.json(...)`
