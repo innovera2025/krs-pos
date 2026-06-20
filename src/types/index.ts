@@ -87,10 +87,29 @@ export type OrderItemDTO = {
   product: { id: string; name: string; sku: string };
 };
 
-/** The order object returned by POST /api/orders — drives the receipt. */
+/**
+ * Sale status (mirrors the Prisma OrderStatus enum). `VOIDED` was added in Phase
+ * 5 — void ≠ cancelled in the POS domain. The Sales History UI surfaces
+ * COMPLETED ("ชำระแล้ว"), REFUNDED, and VOIDED.
+ */
+export type SaleStatus =
+  | "PENDING"
+  | "COMPLETED"
+  | "REFUNDED"
+  | "VOIDED"
+  | "CANCELLED";
+
+/**
+ * Sync lifecycle (mirrors the Prisma SyncStatus enum). Phase 5 stub field; the
+ * real KRS sync state machine is Phase 6.
+ */
+export type SyncStatus = "PENDING" | "DAILY" | "SYNCED" | "FAILED" | "SKIPPED";
+
+/** The order object returned by the orders API — drives the receipt + history. */
 export type OrderDTO = {
   id: string;
   orderNumber: string;
+  status: SaleStatus;
   subtotal: string | number;
   tax: string | number;
   discount: string | number;
@@ -98,8 +117,54 @@ export type OrderDTO = {
   amountPaid: string | number;
   change: string | number;
   paymentType: string;
+  // Phase 5 fields (sales history / sync / tax-invoice filter).
+  syncStatus: SyncStatus;
+  accountingDocNo?: string | null;
+  taxRequested: boolean;
+  shiftId?: string | null;
   createdAt: string;
   items: OrderItemDTO[];
   payments: OrderPaymentLine[];
   cashier?: { id: string; name: string } | null;
+};
+
+/** A shift row as serialized by the shift API (money fields are 2dp strings). */
+export type ShiftDTO = {
+  id: string;
+  shiftNumber: string;
+  status: "OPEN" | "CLOSED";
+  openedAt: string;
+  closedAt: string | null;
+  openingFloat: string;
+  countedCash: string | null;
+  cashierId: string | null;
+  branchId: string;
+};
+
+/** One row of the by-payment-method Z-report breakdown. */
+export type ZReportMethod = {
+  method: string;
+  label: string;
+  count: number;
+  amount: string;
+};
+
+/** Z-report aggregates for a shift (all money values are 2dp strings). */
+export type ZReportDTO = {
+  grossSales: string;
+  txnCount: number;
+  byMethod: ZReportMethod[];
+  refundsTotal: string;
+  discountsTotal: string;
+  vatTotal: string;
+  cashSales: string;
+  cashRefunds: string;
+  openingFloat: string;
+  expectedCash: string;
+};
+
+/** The GET /api/shift payload: current shift + its Z-report (null if none). */
+export type ShiftResponse = {
+  shift: ShiftDTO | null;
+  zReport: ZReportDTO | null;
 };

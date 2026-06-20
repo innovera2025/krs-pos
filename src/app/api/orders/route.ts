@@ -1,16 +1,43 @@
 import { NextResponse } from "next/server";
-import { Prisma, PaymentType } from "@prisma/client";
+import { Prisma, PaymentType, OrderStatus, SyncStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { bangkokYyyymmdd, bangkokDayWindow } from "@/lib/datetime";
 
-// GET /api/orders — list recent orders
-export async function GET() {
+/** Valid OrderStatus values for the optional `?status=` filter (Phase 5 history). */
+function isOrderStatus(v: string): v is OrderStatus {
+  return (Object.values(OrderStatus) as string[]).includes(v);
+}
+
+/** Valid SyncStatus values for the optional `?sync=` filter (Phase 5 history). */
+function isSyncStatus(v: string): v is SyncStatus {
+  return (Object.values(SyncStatus) as string[]).includes(v);
+}
+
+// GET /api/orders — list recent orders (Phase 5 Sales History).
+//
+// Optional query filters (validated against the enums; unknown values are
+// ignored so a stray param never 500s the history page):
+//   ?status=COMPLETED|REFUNDED|VOIDED|PENDING|CANCELLED
+//   ?sync=PENDING|DAILY|SYNCED|FAILED|SKIPPED
+// `payments` is included so the sales list + reprint (ReceiptModal) have tenders.
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const statusParam = searchParams.get("status");
+  const syncParam = searchParams.get("sync");
+
+  const where: Prisma.OrderWhereInput = {};
+  if (statusParam && isOrderStatus(statusParam)) where.status = statusParam;
+  if (syncParam && isSyncStatus(syncParam)) where.syncStatus = syncParam;
+
   const orders = await prisma.order.findMany({
+    where,
     include: {
       items: { include: { product: true } },
+      payments: true,
       cashier: { select: { id: true, name: true } },
     },
     orderBy: { createdAt: "desc" },
-    take: 50,
+    take: 200,
   });
   return NextResponse.json(orders);
 }
@@ -58,32 +85,13 @@ function round2(baht: number): number {
   return Math.round(baht * 100) / 100;
 }
 
-const BANGKOK_TZ = "Asia/Bangkok";
-
-/**
- * Resolve the Asia/Bangkok calendar date for an instant. Uses en-CA which
- * formats as `YYYY-MM-DD`, so the parts come back already zero-padded.
- */
-function bangkokDateParts(now: Date): { y: number; m: number; d: number } {
-  const [yy, mm, dd] = new Intl.DateTimeFormat("en-CA", {
-    timeZone: BANGKOK_TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  })
-    .format(now)
-    .split("-");
-  return { y: Number(yy), m: Number(mm), d: Number(dd) };
-}
-
 /**
  * Generate the daily POS number: POS-YYYYMMDD-#### where #### = (count of orders
  * created today, in Asia/Bangkok) + 1, zero-padded to 4.
  *
  * The calendar date AND the count window are computed in Asia/Bangkok (not the
  * process-local/UTC clock) so an early-morning Thai sale doesn't roll onto the
- * previous UTC day. Bangkok has a fixed +07:00 offset (no DST), so the day's
- * window is [Bangkok-midnight − 7h, +24h) expressed as UTC instants.
+ * previous UTC day (shared helpers in lib/datetime.ts).
  *
  * TODO(production-readiness): this count-based sequence is not collision-safe
  * under concurrency — a DB sequence/counter is the hardening owned by the
@@ -93,11 +101,8 @@ async function nextPosNo(
   tx: Prisma.TransactionClient,
   now: Date
 ): Promise<string> {
-  const { y, m, d } = bangkokDateParts(now);
-  const yyyymmdd = `${y}${String(m).padStart(2, "0")}${String(d).padStart(2, "0")}`;
-  // Bangkok midnight for that date, expressed as a UTC instant (UTC = Bangkok − 7h).
-  const startOfDay = new Date(Date.UTC(y, m - 1, d, -7, 0, 0, 0));
-  const startOfNextDay = new Date(Date.UTC(y, m - 1, d + 1, -7, 0, 0, 0));
+  const yyyymmdd = bangkokYyyymmdd(now);
+  const { startOfDay, startOfNextDay } = bangkokDayWindow(now);
   const countToday = await tx.order.count({
     where: { createdAt: { gte: startOfDay, lt: startOfNextDay } },
   });
@@ -252,6 +257,17 @@ export async function POST(req: Request) {
 
     const now = new Date();
 
+    // Phase 5 (Decision A2): link the new order to the current OPEN shift if one
+    // exists, else leave shiftId null. This MUST NOT block checkout when no shift
+    // is open — a sale can happen before a shift is opened, and that order simply
+    // carries no shiftId. Totals/pricing logic below is unchanged.
+    const openShift = await prisma.shift.findFirst({
+      where: { status: "OPEN" },
+      orderBy: { openedAt: "desc" },
+      select: { id: true },
+    });
+    const shiftId = openShift?.id ?? null;
+
     const order = await prisma.$transaction(async (tx) => {
       const orderNumber = await nextPosNo(tx, now);
 
@@ -266,6 +282,7 @@ export async function POST(req: Request) {
           amountPaid: round2(Number(amountPaid)),
           change: round2(Number(change)),
           cashierId: cashierId || null,
+          shiftId,
           items: { create: lineItems },
           payments: {
             create: normalizedPays.map((p) => ({

@@ -63,6 +63,28 @@ textarea:focus-visible,
   }
 }
 
+/* Drawer/overlay entrance keyframes (Phase 5 sale-detail drawer), ported from the
+   Simple POS source-of-truth (fadeIn .12s backdrop, slideIn .2s right panel). */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
 /* Honor reduced-motion app-wide, not just on /login. */
 @media (prefers-reduced-motion: reduce) {
   *,

@@ -96,6 +96,183 @@ async function main() {
     });
   }
 
+  // Resolve the admin user to own the seeded shift + bills (Phase 5).
+  const admin = await prisma.user.findUnique({
+    where: { email: "admin@krs-pos.local" },
+    select: { id: true },
+  });
+
+  // ---- Phase 5: one OPEN shift so the /shift screen has a live shift to close.
+  // Opening float ฿2,000 matches the Simple POS cash-counting reference. Upsert on
+  // shiftNumber keeps the seed idempotent (re-run = no-op).
+  const shift = await prisma.shift.upsert({
+    where: { shiftNumber: "SH-20260616-01" },
+    update: {},
+    create: {
+      shiftNumber: "SH-20260616-01",
+      status: "OPEN",
+      openingFloat: 2000,
+      openedAt: new Date("2026-06-16T01:30:00.000Z"), // 08:30 Asia/Bangkok
+      cashierId: admin?.id ?? null,
+      branchId: "BR-01",
+    },
+  });
+
+  // A representative product for each seeded bill's single line item (payments are
+  // required for reprint; a single OrderItem keeps the receipt detail realistic).
+  const repProduct = await prisma.product.findUnique({
+    where: { sku: "BV-002" },
+    select: { id: true, price: true },
+  });
+
+  // ---- Phase 5: 6 seed bills (POS-20260616-0036..0041) exercising every status,
+  // sync state, and accounting-doc combination from the research dataset. VAT is
+  // VAT-inclusive (tax = total * 7 / 107). Upsert on orderNumber → idempotent;
+  // the nested payments/items are created once (update:{} is a no-op on re-run).
+  type SeedBill = {
+    orderNumber: string;
+    status: "COMPLETED" | "REFUNDED" | "VOIDED";
+    syncStatus: "PENDING" | "DAILY" | "SYNCED" | "FAILED" | "SKIPPED";
+    total: number; // VAT-inclusive baht (negative for refund, 0 for void)
+    // Original POSITIVE tender for the PaymentLine. Refund/void are status
+    // transitions that DON'T rewrite PaymentLines, so the row keeps the original
+    // positive payment (matching live runtime). Defaults to `total` when omitted
+    // (COMPLETED bills, where total is already positive).
+    paymentAmount?: number;
+    accountingDocNo: string | null;
+    taxRequested: boolean;
+    paymentType: "CASH" | "CARD" | "QR" | "TRANSFER";
+    createdAt: string; // ISO (UTC); times below are Asia/Bangkok afternoon
+  };
+
+  const seedBills: SeedBill[] = [
+    {
+      orderNumber: "POS-20260616-0041",
+      status: "COMPLETED",
+      syncStatus: "SYNCED",
+      total: 962.30,
+      accountingDocNo: "TAX-2026-000418",
+      taxRequested: true,
+      paymentType: "TRANSFER",
+      createdAt: "2026-06-16T06:58:00.000Z", // 13:58
+    },
+    {
+      orderNumber: "POS-20260616-0040",
+      status: "COMPLETED",
+      syncStatus: "DAILY",
+      total: 130.0,
+      accountingDocNo: null,
+      taxRequested: false,
+      paymentType: "CASH",
+      createdAt: "2026-06-16T06:42:00.000Z", // 13:42
+    },
+    {
+      orderNumber: "POS-20260616-0039",
+      status: "COMPLETED",
+      syncStatus: "FAILED",
+      total: 240.0,
+      accountingDocNo: null,
+      taxRequested: true,
+      paymentType: "QR",
+      createdAt: "2026-06-16T06:20:00.000Z", // 13:20
+    },
+    {
+      // Refunded bill: total stored negative (−65.00) with a credit-note doc, but
+      // the PaymentLine keeps the original POSITIVE tender (+65.00) — refund is a
+      // status transition that doesn't rewrite payment rows.
+      orderNumber: "POS-20260616-0038",
+      status: "REFUNDED",
+      syncStatus: "SYNCED",
+      total: -65.0,
+      paymentAmount: 65.0,
+      accountingDocNo: "CN-2026-000087",
+      taxRequested: false,
+      paymentType: "CASH",
+      createdAt: "2026-06-16T05:50:00.000Z", // 12:50
+    },
+    {
+      // Voided bill: zeroed total, skipped from sync, but the PaymentLine keeps the
+      // original POSITIVE tender (+185.00) — void is a status transition that
+      // doesn't rewrite payment rows.
+      orderNumber: "POS-20260616-0037",
+      status: "VOIDED",
+      syncStatus: "SKIPPED",
+      total: 0.0,
+      paymentAmount: 185.0,
+      accountingDocNo: null,
+      taxRequested: false,
+      paymentType: "CASH",
+      createdAt: "2026-06-16T05:31:00.000Z", // 12:31
+    },
+    {
+      orderNumber: "POS-20260616-0036",
+      status: "COMPLETED",
+      syncStatus: "DAILY",
+      total: 185.0,
+      accountingDocNo: null,
+      taxRequested: false,
+      paymentType: "CARD",
+      createdAt: "2026-06-16T04:58:00.000Z", // 11:58
+    },
+  ];
+
+  for (const b of seedBills) {
+    const total = b.total;
+    // VAT-inclusive 7% extraction; rounded to 2dp (matches integer-satang display).
+    const tax = Math.round((total * 7) / 107 * 100) / 100;
+    const unitPrice = repProduct ? Number(repProduct.price) : 65;
+    // Voided bills carry a zero line; others a single representative line at total.
+    const lineTotal = b.status === "VOIDED" ? 0 : total;
+
+    await prisma.order.upsert({
+      where: { orderNumber: b.orderNumber },
+      update: {},
+      create: {
+        orderNumber: b.orderNumber,
+        status: b.status,
+        subtotal: total,
+        tax,
+        discount: 0,
+        total,
+        paymentType: b.paymentType,
+        amountPaid: b.paymentType === "CASH" && total > 0 ? total : 0,
+        change: 0,
+        branchId: "BR-01",
+        cashierId: admin?.id ?? null,
+        shiftId: shift.id,
+        syncStatus: b.syncStatus,
+        accountingDocNo: b.accountingDocNo,
+        taxRequested: b.taxRequested,
+        createdAt: new Date(b.createdAt),
+        ...(repProduct
+          ? {
+              items: {
+                create: [
+                  {
+                    productId: repProduct.id,
+                    quantity: 1,
+                    unitPrice,
+                    lineTotal,
+                  },
+                ],
+              },
+            }
+          : {}),
+        payments: {
+          create: [
+            {
+              method: b.paymentType,
+              // POSITIVE original tender: refund/void don't rewrite PaymentLines,
+              // so the row keeps the original positive amount that aggregates sum.
+              // COMPLETED bills fall back to `total` (already positive).
+              amount: b.paymentAmount ?? total,
+            },
+          ],
+        },
+      },
+    });
+  }
+
   console.log("Seed completed.");
 }
 

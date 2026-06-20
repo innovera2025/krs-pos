@@ -59,6 +59,28 @@ export function ReceiptModal({
   const changeNum = Number(order.change);
   const hasChange = changeNum > 0.01;
   const cashierName = order.cashier?.name ?? "นิดา ส.";
+  // Reprint-from-history bills may already carry a real accounting doc number;
+  // fresh P3 receipts have accountingDocNo === null → keep the placeholder.
+  const acctNo = order.accountingDocNo ?? "— รอออกเอกสาร —";
+  const acctColor = order.accountingDocNo ? "#0f172a" : "#94a3b8";
+
+  // display-receipt-payment-fallback: reprinted/seeded bills may arrive without
+  // persisted payment lines. Fall back to a single line derived from the order's
+  // primary method + total so the receipt still renders a payment row.
+  const payLines =
+    order.payments && order.payments.length > 0
+      ? order.payments.map((p) => ({
+          id: p.id,
+          method: p.method,
+          amount: p.amount,
+        }))
+      : [
+          {
+            id: "fallback-pay",
+            method: order.paymentType,
+            amount: order.total,
+          },
+        ];
 
   return (
     // onClose is a no-op: receipt closes ONLY via New Sale (no X, no backdrop).
@@ -104,8 +126,8 @@ export function ReceiptModal({
             </div>
             <div className="flex justify-between">
               <span>เลขเอกสารบัญชี</span>
-              <span className="font-semibold" style={{ color: "#94a3b8" }}>
-                — รอออกเอกสาร —
+              <span className="font-semibold" style={{ color: acctColor }}>
+                {acctNo}
               </span>
             </div>
             <div className="flex justify-between">
@@ -158,7 +180,7 @@ export function ReceiptModal({
             className="mt-2.5 border-t border-dashed pt-2.5 text-[11.5px] leading-[1.8]"
             style={{ borderColor: "#cbd5e1", color: "#475569" }}
           >
-            {order.payments.map((p) => (
+            {payLines.map((p) => (
               <div key={p.id} className="flex justify-between">
                 <span style={{ fontFamily: "var(--font-sans)" }}>
                   {methodLabel(p.method.toLowerCase())}

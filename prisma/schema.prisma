@@ -24,6 +24,8 @@ model User {
   // Users & Roles table and selected by the users API.
   branchId  String   @default("BR-01")
   orders    Order[]
+  // Shifts this user opened/owns as cashier (Phase 5: flow-shift-lifecycle).
+  shifts    Shift[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -78,6 +80,21 @@ model Order {
   branchId     String      @default("BR-01")
   cashierId    String?
   cashier      User?       @relation(fields: [cashierId], references: [id])
+  // Shift linkage (Phase 5 Decision A2: add shiftId FK on Order). Nullable so a
+  // checkout never blocks when no shift is open — the POST sets it to the current
+  // OPEN shift if one exists, else leaves it null. The Z-report aggregates the
+  // shift's orders by this FK.
+  shiftId      String?
+  shift        Shift?      @relation(fields: [shiftId], references: [id])
+  // Sync lifecycle stub (Phase 5). Real KRS sync state machine is Phase 6; this
+  // field exists now so the seed can express synced/daily/failed/skipped states
+  // and the void-lock rule (domain-synced-bills-locked) can be enforced.
+  syncStatus   SyncStatus  @default(PENDING)
+  // Accounting document number (TAX-…, CN-…). Issued by the accounting layer
+  // (Phase 6); held here so seeded/synced bills can display their doc number.
+  accountingDocNo String?
+  // Whether a tax invoice was requested for this bill (filter chip ขอใบกำกับ).
+  taxRequested Boolean     @default(false)
   items        OrderItem[]
   // Split-payment breakdown (Phase 3). `paymentType` above stays the primary/
   // dominant method for reporting/back-compat; `payments` carries every tendered
@@ -91,7 +108,20 @@ enum OrderStatus {
   PENDING
   COMPLETED
   REFUNDED
+  // Void ≠ Cancelled in the POS domain (Simple POS source-of-truth). A voided
+  // bill is zeroed and skipped from sync; CANCELLED is kept for back-compat.
+  VOIDED
   CANCELLED
+}
+
+// Sync lifecycle states (Phase 5 stub; real KRS sync = Phase 6). Mirrors the
+// Simple POS sync values: pending / daily / synced / failed / skipped.
+enum SyncStatus {
+  PENDING
+  DAILY
+  SYNCED
+  FAILED
+  SKIPPED
 }
 
 enum PaymentType {
@@ -144,4 +174,29 @@ model StockMovement {
   reference String?
   branchId  String            @default("BR-01")
   createdAt DateTime          @default(now())
+}
+
+// Cash-drawer shift (Phase 5: flow-shift-lifecycle). A shift is opened with an
+// opening cash float, accumulates orders (Order.shiftId), and is closed with the
+// counted cash — driving the Z-report and cash-variance. Append-only: a closed
+// shift is never deleted (domain-no-destructive-delete).
+model Shift {
+  id           String       @id @default(cuid())
+  shiftNumber  String       @unique
+  status       ShiftStatus  @default(OPEN)
+  openedAt     DateTime     @default(now())
+  closedAt     DateTime?
+  openingFloat Decimal      @db.Decimal(10, 2) @default(0)
+  countedCash  Decimal?     @db.Decimal(10, 2)
+  cashierId    String?
+  cashier      User?        @relation(fields: [cashierId], references: [id])
+  branchId     String       @default("BR-01")
+  orders       Order[]
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+}
+
+enum ShiftStatus {
+  OPEN
+  CLOSED
 }
