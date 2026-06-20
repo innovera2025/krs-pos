@@ -1,6 +1,6 @@
 # KRS POS Redesign — Development Plan
 
-- Status: 🔨 IN PROGRESS — **Phases 1–3 committed** (P3 = payment/receipt/hold + first tracked migration; build + live-smoke verified); `/login` UI stub; Phases 4–7 planned.
+- Status: 🔨 IN PROGRESS — **Phases 1–4 done** (P4 = catalog/stock + users/roles + RBAC stub + 2nd tracked migration + branchId; build + live-smoke + 13-agent review verified; P1–3 committed, P4 pending commit); `/login` UI stub; Phases 5–7 planned.
 - Created: 2026-06-20 · last finalized: 2026-06-20
 - Plan type: COMPLEX (multi-phase program — **7 phases**: P1–P6 build + P7 cross-cutting hardening)
 - Owner program: POS redesign (relates to the `production-readiness` security/correctness program)
@@ -18,8 +18,10 @@
 - ✅ **Phase 1 (shell/rail/theme/routing) — COMMITTED** (feat/design/docs commits) incl. `/login` UI stub + favicon + review-loop bug-fix pass (Modal a11y/Escape/focus-trap, money() guards, contrast, reduced-motion, toast live-region, nav landmark).
 - ✅ **Phase 2 (`/pos` checkout core) — committed; build + pricing (32/32) + live DB smoke verified.** Taste 3-col register, integer-satang VAT-inclusive totals + proportional discount, per-line/bill discount (฿/%), 17-item seed.
 - ✅ **Phase 3 (payment + receipt/print + hold) — committed; build + tracked-migration + live pay→order smoke verified.** Payment modal (6 methods/split/cash+change/ref), 80mm receipt (print/QR/new-sale-only), hold bill; schema `PaymentType` +EWALLET/OTHER + `PaymentLine` model + posNo `POS-YYYYMMDD-####`.
-- 🧭 **8 routes live:** `/login` (UI stub) · `/pos` (old/partial checkout, DB-dependent) · `/products` `/users` `/sales` `/shift` `/data` `/docs` (placeholders) · `/` → `/pos` redirect.
-- ⏸️ **Deferred:** `domain-multi-branch-ready` (branchId) → Phase 4 (needs a DB). Real auth/RBAC → `production-readiness` program (see Login addendum + §8).
+- ✅ **Phase 4 (catalog/stock + Users & Roles + RBAC stub) — done (pending commit); build + type-check + 2nd tracked migration + live smoke (users CRUD, receive-stock, product edit, validation, page render, P0/P2/P3 regression) verified; 13-agent adversarial review → 7/7 confirmed findings fixed.** Products & Inventory + Users & Roles screens; APIs users GET/POST/PATCH · products PATCH · stock-movements POST; RoleProvider/NavRail/AdminOnly RBAC **client stub**; schema `User.isActive` + `branchId` on User/Order/Product + `StockMovement`+enum. See `pos-redesign-phase-4_REPORT_20-06-26.md`.
+- 🧭 **8 routes live:** `/login` (UI stub) · `/pos` (Taste checkout, DB-dependent) · `/products` `/users` (Taste admin screens) · `/sales` `/shift` `/data` `/docs` (placeholders) · `/` → `/pos` redirect.
+- ✅ **Resolved:** `domain-multi-branch-ready` (branchId) — implemented in Phase 4 on User/Order/Product (`BR-01` default).
+- ⏸️ **Deferred:** Real auth/RBAC **enforcement** → `production-readiness` program (the Phase-4 RBAC is a client demo stub; see Login addendum + §8).
 
 ---
 
@@ -79,8 +81,8 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 | **P1** | ✅ done (committed) | Design-system foundation + app shell, rail, theme, routing | none | 8 | 4 redesign-existing, 3 build-new-ui, 1 backend-needed |
 | **P2** | ✅ done (committed) | Checkout core redesigned — product grid, cart, discounts, VAT-inclusive totals | P1 | 19 | 8 redesign-existing, 11 build-new-ui |
 | **P3** | ✅ done (committed) | Payment + receipt/print + hold bill — complete the sell-to-receipt flow | P2 | 28 | 27 build-new-ui, 1 full-stack-new |
-| **P4** | ▶ next | Catalog/stock management + Users & Roles + RBAC enforcement | P1, P3 | 20 | 12 build-new-ui, 8 full-stack-new |
-| **P5** | ⏳ planned | Shift open/close + Z-report + Sales History with refund/void/reprint | P3, P4 | 23 | 11 build-new-ui, 12 full-stack-new |
+| **P4** | ✅ done | Catalog/stock management + Users & Roles + RBAC (client stub) | P1, P3 | 20 | 12 build-new-ui, 8 full-stack-new |
+| **P5** | ▶ next | Shift open/close + Z-report + Sales History with refund/void/reprint | P3, P4 | 23 | 11 build-new-ui, 12 full-stack-new |
 | **P6** | ⏳ planned | KRS Data Link (sync/offline) + Customer/member + tax invoice + Design Spec docs | P2, P3, P4, P5 | 67 | 51 full-stack-new, 16 build-new-ui |
 | **P7** | ⏳ planned | Integration hardening, responsive QA, regression, polish | P2, P3, P4, P5, P6 | — | cross-cutting / QA |
 
@@ -177,7 +179,7 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 ### Phase 4 — Catalog/stock management + Users & Roles + RBAC enforcement
 
-- **Status:** ▶ next
+- **Status:** ✅ done (build + type-check + 2nd tracked migration `20260620124520_phase4_catalog_stock_users` + live smoke verified; 13-agent adversarial review → 7/7 confirmed findings fixed; pending commit). See `pos-redesign-phase-4_REPORT_20-06-26.md`. **RBAC is a CLIENT DEMO stub (not enforced server-side) — real enforcement = production-readiness.**
 - **Depends on:** Phase 1, Phase 3
 - **Goal:** Build the two admin-only management screens and turn the dormant Role enum into real enforcement. Products screen (search, monogram rows, add/edit ProductForm, receive-stock GRN + movement). Users screen (role summary cards, filter chips, add-user modal + validation, activate/deactivate). RBAC: navAccess filters the rail, route guards + redirect, real session, and the demo role-switch.
 - **Verification gate:** npm run type-check + npm run build pass. Manual: as Admin the rail shows all 7 items; switching to Seller hides data/products/users/docs and redirects off any admin view to POS; Products screen lists rows with category-tinted Thai-char monograms, low-stock badge, search by name/EN/SKU, add-product form creates via POST /api/products, receive-stock generates a GRN and bumps the lowest-stock item; Users screen shows Seller/Admin permission summary cards, filter chips, add-user modal validates name + email format and prepends the user, and the row toggle flips active/inactive (no hard delete). Requires PUT/PATCH product endpoints, POST/PATCH user endpoints, and User.isActive added to schema.
@@ -185,26 +187,26 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 | Function (id) | What it is | Screen | In Taste | In app | Gap | Done? |
 |---|---|---|---|---|---|---|
-| `screen-products-inventory` | Products & Inventory (สินค้า/สต็อก) | products | 🔴 no | 🟡 partial | build-new-ui | — |
-| `screen-users-roles` | Users & Roles (จัดการผู้ใช้) | users | 🔴 no | 🟡 partial | build-new-ui | — |
-| `overlay-add-user-modal` | Add User modal (เพิ่มผู้ใช้ใหม่) | users | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-set-role-seller` | Switch to Seller role (setRoleSeller) | global | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-set-role-admin` | Switch to Admin role (setRoleAdmin) | global | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-receive-stock` | Receive stock / GRN (receiveStock) | products | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-add-product-button` | Add product button | products | 🔴 no | 🟡 partial | build-new-ui | — |
-| `action-products-search` | Products search (onProdQuery) | products | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-user-filter-chips` | User role filter chips (setUserFilter) | users | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-open-add-user` | Open add-user modal (openAddUser) | users | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-set-nu-fields` | Edit new-user fields (setNu) | users | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-save-user` | Save new user (saveUser) | users | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-toggle-user-status` | Activate/deactivate user (toggleUserStatus) | users | 🔴 no | 🔴 no | full-stack-new | — |
-| `state-user-active-inactive` | User active/inactive state | users | 🔴 no | 🔴 no | full-stack-new | — |
-| `rolegate-seller-vs-admin` | Role-gated menu access (navAccess) | global | 🔴 no | 🔴 no | full-stack-new | — |
-| `rolegate-seller-permissions` | Seller permission set | users | 🔴 no | 🔴 no | full-stack-new | — |
-| `rolegate-admin-permissions` | Admin permission set | users | 🔴 no | 🔴 no | full-stack-new | — |
-| `flow-product-stock` | Flow: product CRUD + stock movement | products | 🔴 no | 🟡 partial | full-stack-new | — |
-| `action-close-add-user` | Close add-user modal (closeAddUser / cancel / backdrop) | users | 🔴 no | 🔴 no | build-new-ui | — |
-| `state-product-row-monogram` | Products table monogram = first char of Thai name | products | 🔴 no | 🔴 no | build-new-ui | — |
+| `screen-products-inventory` | Products & Inventory (สินค้า/สต็อก) | products | 🔴 no | 🟡 partial | build-new-ui | ✅ |
+| `screen-users-roles` | Users & Roles (จัดการผู้ใช้) | users | 🔴 no | 🟡 partial | build-new-ui | ✅ |
+| `overlay-add-user-modal` | Add User modal (เพิ่มผู้ใช้ใหม่) | users | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-set-role-seller` | Switch to Seller role (setRoleSeller) | global | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-set-role-admin` | Switch to Admin role (setRoleAdmin) | global | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-receive-stock` | Receive stock / GRN (receiveStock) | products | 🔴 no | 🔴 no | full-stack-new | ✅ |
+| `action-add-product-button` | Add product button | products | 🔴 no | 🟡 partial | build-new-ui | ✅ |
+| `action-products-search` | Products search (onProdQuery) | products | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-user-filter-chips` | User role filter chips (setUserFilter) | users | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-open-add-user` | Open add-user modal (openAddUser) | users | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-set-nu-fields` | Edit new-user fields (setNu) | users | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-save-user` | Save new user (saveUser) | users | 🔴 no | 🔴 no | full-stack-new | ✅ |
+| `action-toggle-user-status` | Activate/deactivate user (toggleUserStatus) | users | 🔴 no | 🔴 no | full-stack-new | ✅ |
+| `state-user-active-inactive` | User active/inactive state | users | 🔴 no | 🔴 no | full-stack-new | ✅ |
+| `rolegate-seller-vs-admin` | Role-gated menu access (navAccess) | global | 🔴 no | 🔴 no | full-stack-new | ✅ (client stub) |
+| `rolegate-seller-permissions` | Seller permission set | users | 🔴 no | 🔴 no | full-stack-new | ✅ |
+| `rolegate-admin-permissions` | Admin permission set | users | 🔴 no | 🔴 no | full-stack-new | ✅ |
+| `flow-product-stock` | Flow: product CRUD + stock movement | products | 🔴 no | 🟡 partial | full-stack-new | ✅ |
+| `action-close-add-user` | Close add-user modal (closeAddUser / cancel / backdrop) | users | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `state-product-row-monogram` | Products table monogram = first char of Thai name | products | 🔴 no | 🔴 no | build-new-ui | ✅ |
 
 ### Phase 5 — Shift open/close + Z-report + Sales History with refund/void/reprint
 
