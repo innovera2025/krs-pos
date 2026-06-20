@@ -2,11 +2,20 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ScanBarcode, ShoppingCart, UserRound, AlertCircle } from "lucide-react";
-import type { Product, CartItem, CategorySlug, DiscountType } from "@/types";
+import type {
+  Product,
+  CartItem,
+  CategorySlug,
+  DiscountType,
+  PayLine,
+  PayMethod,
+  OrderDTO,
+} from "@/types";
 import { useToast } from "@/components/ToastProvider";
 import {
   bahtToSatang,
   computeTotals,
+  remainingPaySatang,
   type PricingItem,
 } from "@/lib/pricing";
 import { slugForCategoryName } from "@/components/pos/categoryMeta";
@@ -14,6 +23,9 @@ import { CategoryPanel, type CategoryChip } from "@/components/pos/CategoryPanel
 import { ProductCard } from "@/components/pos/ProductCard";
 import { CartLine } from "@/components/pos/CartLine";
 import { TotalsBar } from "@/components/pos/TotalsBar";
+import { PaymentModal } from "@/components/pos/PaymentModal";
+import { ReceiptModal } from "@/components/pos/ReceiptModal";
+import { methodToEnum } from "@/components/pos/paymentMeta";
 
 /**
  * Default stock fallback (domain-stock-default-50): the schema always carries
@@ -48,7 +60,18 @@ export default function POSPage() {
   const [discountDraft, setDiscountDraft] = useState("");
   const [discountType, setDiscountType] = useState<DiscountType>("amount");
 
-  const [checkingOut, setCheckingOut] = useState(false);
+  // ---- payment modal state (owned here so closePayment can preserve payLines) ----
+  const [payOpen, setPayOpen] = useState(false);
+  const [payLines, setPayLines] = useState<PayLine[]>([]);
+  const [cashReceived, setCashReceived] = useState("");
+  const [reference, setReference] = useState("");
+  const [payError, setPayError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  // ---- receipt modal state ----
+  const [receiptOrder, setReceiptOrder] = useState<OrderDTO | null>(null);
+  const [receiptOpen, setReceiptOpen] = useState(false);
+
   const searchRef = useRef<HTMLInputElement>(null);
 
   // Fetch products (DB-dependent) with graceful loading/empty/error states.
@@ -190,12 +213,28 @@ export default function POSPage() {
     );
   }
 
-  function cancelBill() {
-    if (cart.length === 0) return;
+  /** Clear the cart back to a blank bill (shared by cancel + hold + new-sale). */
+  function clearBill() {
     setCart([]);
     setDiscountDraft("");
     setDiscountType("amount");
+  }
+
+  // cancel-vs-hold-difference: both clear the cart, but carry a different
+  // intent/toast. Cancel = abandon the sale; hold = park it for later.
+  function cancelBill() {
+    if (cart.length === 0) return;
+    clearBill();
     showToast("ยกเลิกบิลแล้ว");
+  }
+
+  function holdBill() {
+    if (cart.length === 0) {
+      showToast("ตะกร้าว่าง ไม่สามารถพักบิลได้");
+      return;
+    }
+    clearBill();
+    showToast("พักบิลไว้แล้ว");
   }
 
   // Enter on an exact SKU match = scan-to-cart.
@@ -210,14 +249,121 @@ export default function POSPage() {
     }
   }
 
-  // ---- preserved cash checkout (NOT the Phase 3 payment modal) ----
-  async function pay() {
-    if (cart.length === 0 || checkingOut) return;
-    setCheckingOut(true);
+  // ---- payment modal (Phase 3) ----
+
+  // Open payment prefilled with a single cash line = total (action-open-payment).
+  function openPayment() {
+    if (cart.length === 0) {
+      showToast("ตะกร้าว่าง · Cart is empty");
+      return;
+    }
+    const totalBaht = (totals.totalSatang / 100).toFixed(2);
+    setPayLines([{ method: "cash", amount: totalBaht }]);
+    setCashReceived("");
+    setReference("");
+    setPayError("");
+    setPayOpen(true);
+  }
+
+  // Close (X): mark closed but PRESERVE payLines/cash/reference for re-open.
+  function closePayment() {
+    setPayOpen(false);
+  }
+
+  // Select a method: single line → retarget it; multi-line → the first line whose
+  // method isn't locked (state-pay-method-locked-line), else the last line.
+  function setPayMethod(method: PayMethod) {
+    setPayLines((prev) => {
+      if (prev.length === 0) return [{ method, amount: "0.00" }];
+      const next = [...prev];
+      if (next.length === 1) {
+        next[0] = { ...next[0], method };
+      } else {
+        const i = next.findIndex((l) => !l.locked);
+        const target = i >= 0 ? i : next.length - 1;
+        next[target] = { ...next[target], method };
+      }
+      return next;
+    });
+    setPayError("");
+  }
+
+  function setPayAmount(index: number, value: string) {
+    setPayLines((prev) =>
+      prev.map((l, i) => (i === index ? { ...l, amount: value } : l))
+    );
+    setPayError("");
+  }
+
+  // Add a split line prefilled with the remaining unpaid amount.
+  function addPayLine() {
+    setPayLines((prev) => {
+      const remaining = remainingPaySatang(
+        totals.totalSatang,
+        prev.map((l) => l.amount)
+      );
+      return [
+        ...prev,
+        { method: "transfer", amount: (remaining / 100).toFixed(2) },
+      ];
+    });
+    setPayError("");
+  }
+
+  // Remove a split line (guarded to keep at least one).
+  function removePayLine(index: number) {
+    setPayLines((prev) =>
+      prev.length > 1 ? prev.filter((_, i) => i !== index) : prev
+    );
+    setPayError("");
+  }
+
+  function onCashReceived(value: string) {
+    setCashReceived(value);
+    setPayError("");
+  }
+
+  function onSetReference(value: string) {
+    setReference(value);
+  }
+
+  // Confirm → validate, POST /api/orders, open the receipt on success.
+  async function confirmPayment() {
+    if (submitting || cart.length === 0) return;
+
+    const totalSatang = totals.totalSatang;
+    const paidSatang = payLines.reduce(
+      (acc, l) => acc + bahtToSatang(l.amount),
+      0
+    );
+    // Split sum must equal the total within 0.01 baht (1 satang).
+    if (Math.abs(paidSatang - totalSatang) > 1) {
+      setPayError(
+        `ยอดชำระ (${(paidSatang / 100).toFixed(2)}) ไม่ตรงกับยอดที่ต้องจ่าย (${(
+          totalSatang / 100
+        ).toFixed(2)})`
+      );
+      return;
+    }
+    // If a cash line exists, cash received must cover its amount.
+    const cashLine = payLines.find((l) => l.method === "cash");
+    const receivedSatang = bahtToSatang(cashReceived);
+    if (cashLine && receivedSatang + 1 < bahtToSatang(cashLine.amount)) {
+      setPayError("รับเงินสดน้อยกว่ายอดเงินสดที่ต้องจ่าย");
+      return;
+    }
+
+    // Change = received − cash due (only when a cash line exists), floored at 0.
+    const changeSatang = cashLine
+      ? Math.max(receivedSatang - bahtToSatang(cashLine.amount), 0)
+      : 0;
+    // amountPaid: cash received if there's a cash line, else the split total.
+    const amountPaidSatang = cashLine ? receivedSatang : paidSatang;
+
+    setSubmitting(true);
+    setPayError("");
     try {
-      // TODO(phase3): server-side inclusive-tax recompute + idempotency key.
-      // The pricing here is authoritative client-side for Phase 2; Phase 3 / the
-      // production-readiness program harden the server contract.
+      const trimmedRef = reference.trim();
       const res = await fetch("/api/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -226,22 +372,74 @@ export default function POSPage() {
             productId: i.product.id,
             quantity: i.quantity,
           })),
-          paymentType: "CASH",
-          amountPaid: totals.totalSatang / 100,
+          paymentLines: payLines.map((l) => ({
+            method: methodToEnum(l.method),
+            amount: bahtToSatang(l.amount) / 100,
+            reference: trimmedRef.length > 0 ? trimmedRef : null,
+          })),
+          subtotal: totals.subtotalSatang / 100,
+          discount: totals.billDiscountSatang / 100,
+          tax: totals.vatSatang / 100,
+          total: totalSatang / 100,
+          amountPaid: amountPaidSatang / 100,
+          change: changeSatang / 100,
         }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const order = await res.json();
-      showToast(`ขายสำเร็จ · บิล ${order.orderNumber ?? ""}`.trim());
-      setCart([]);
-      setDiscountDraft("");
-      setDiscountType("amount");
+      if (!res.ok) {
+        let msg = "ชำระเงินไม่สำเร็จ ลองใหม่อีกครั้ง";
+        try {
+          const data = await res.json();
+          if (data?.error) msg = data.error;
+        } catch {
+          /* keep default message */
+        }
+        setPayError(msg);
+        return;
+      }
+      const order = (await res.json()) as OrderDTO;
+      // Success: open the receipt, clear the cart + payment state.
+      setReceiptOrder(order);
+      setReceiptOpen(true);
+      setPayOpen(false);
+      setPayLines([]);
+      setCashReceived("");
+      setReference("");
+      setPayError("");
+      clearBill();
     } catch {
-      showToast("ชำระเงินไม่สำเร็จ ลองใหม่อีกครั้ง");
+      setPayError("ชำระเงินไม่สำเร็จ ลองใหม่อีกครั้ง");
     } finally {
-      setCheckingOut(false);
+      setSubmitting(false);
     }
   }
+
+  // ---- receipt actions ----
+  function printReceipt() {
+    showToast("กำลังเปิดหน้าต่างพิมพ์ใบเสร็จ");
+    setTimeout(() => {
+      try {
+        window.print();
+      } catch {
+        /* printing unavailable in this environment */
+      }
+    }, 120);
+  }
+
+  function emailReceipt() {
+    showToast("ส่งลิงก์ใบเสร็จให้ลูกค้าแล้ว");
+  }
+
+  // New sale — the ONLY way to dismiss the receipt.
+  function newSale() {
+    setReceiptOpen(false);
+    setReceiptOrder(null);
+  }
+
+  // Total item count (physical pieces) for the payment summary.
+  const itemCount = useMemo(
+    () => cart.reduce((acc, i) => acc + i.quantity, 0),
+    [cart]
+  );
 
   const productTitle =
     activeCat === "all"
@@ -424,12 +622,43 @@ export default function POSPage() {
           onToggleDiscountType={() =>
             setDiscountType((t) => (t === "amount" ? "percent" : "amount"))
           }
+          onHoldBill={holdBill}
           onCancelBill={cancelBill}
-          onPay={pay}
-          payDisabled={cart.length === 0 || checkingOut}
-          checkingOut={checkingOut}
+          onPay={openPayment}
+          payDisabled={cart.length === 0 || submitting}
+          checkingOut={submitting}
         />
       </aside>
+
+      {/* Payment modal (Phase 3) */}
+      <PaymentModal
+        open={payOpen}
+        totalSatang={totals.totalSatang}
+        vatSatang={totals.vatSatang}
+        itemCount={itemCount}
+        payLines={payLines}
+        cashReceived={cashReceived}
+        reference={reference}
+        payError={payError}
+        submitting={submitting}
+        onSetMethod={setPayMethod}
+        onSetAmount={setPayAmount}
+        onAddLine={addPayLine}
+        onRemoveLine={removePayLine}
+        onCashReceived={onCashReceived}
+        onSetReference={onSetReference}
+        onConfirm={confirmPayment}
+        onClose={closePayment}
+      />
+
+      {/* Receipt modal — dismissal is New-Sale-only */}
+      <ReceiptModal
+        open={receiptOpen}
+        order={receiptOrder}
+        onPrint={printReceipt}
+        onEmail={emailReceipt}
+        onNewSale={newSale}
+      />
     </div>
   );
 }

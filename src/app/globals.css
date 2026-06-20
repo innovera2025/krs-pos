@@ -74,3 +74,28 @@ textarea:focus-visible,
     scroll-behavior: auto !important;
   }
 }
+
+/* 80mm thermal receipt print isolation (domain-receipt-80mm).
+   Hide everything except the .print-receipt paper, then pin it full-bleed at
+   72mm so a thermal printer / PDF renders only the receipt. */
+@media print {
+  @page {
+    size: 80mm auto;
+    margin: 4mm;
+  }
+  body * {
+    visibility: hidden;
+  }
+  .print-receipt,
+  .print-receipt * {
+    visibility: visible;
+  }
+  .print-receipt {
+    position: fixed;
+    inset: 0;
+    width: 72mm;
+  }
+  .no-print {
+    display: none;
+  }
+}

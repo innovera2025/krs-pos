@@ -65,6 +65,10 @@ model Order {
   cashierId    String?
   cashier      User?       @relation(fields: [cashierId], references: [id])
   items        OrderItem[]
+  // Split-payment breakdown (Phase 3). `paymentType` above stays the primary/
+  // dominant method for reporting/back-compat; `payments` carries every tendered
+  // line (method + amount + optional reference) — feeds the P5 by-method Z-report.
+  payments     PaymentLine[]
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 }
@@ -81,6 +85,18 @@ enum PaymentType {
   CARD
   QR
   TRANSFER
+  EWALLET
+  OTHER
+}
+
+model PaymentLine {
+  id        String      @id @default(cuid())
+  orderId   String
+  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  method    PaymentType
+  amount    Decimal     @db.Decimal(10, 2)
+  reference String?
+  createdAt DateTime    @default(now())
 }
 
 model OrderItem {

@@ -166,3 +166,28 @@ export function computeTotals(items: PricingItem[], bill: BillDiscount): Totals 
     lines,
   };
 }
+
+/**
+ * Sum a set of split-payment line amounts in **integer satang**.
+ *
+ * Each input is a baht amount (number or numeric string as typed in the UI);
+ * non-finite/blank entries contribute 0. Summing in satang keeps the split total
+ * float-drift-free so it can be compared exactly against the bill total.
+ */
+export function sumPaySatang(amountsBaht: Array<number | string>): number {
+  return amountsBaht.reduce<number>((acc, baht) => acc + bahtToSatang(baht), 0);
+}
+
+/**
+ * Remaining unpaid amount in **integer satang**, floored at 0.
+ *
+ * `remaining = max(totalSatang - Σ paid, 0)`. Used to prefill a newly-added
+ * split line with the still-owed amount.
+ */
+export function remainingPaySatang(
+  totalSatang: number,
+  amountsBaht: Array<number | string>
+): number {
+  const total = Number.isFinite(totalSatang) ? Math.max(totalSatang, 0) : 0;
+  return Math.max(total - sumPaySatang(amountsBaht), 0);
+}

@@ -12,6 +12,7 @@ type TotalsBarProps = {
   discountType: DiscountType;
   onDiscountChange: (raw: string) => void;
   onToggleDiscountType: () => void;
+  onHoldBill: () => void;
   onCancelBill: () => void;
   onPay: () => void;
   /** Disable pay (empty cart or in-flight checkout). */
@@ -32,6 +33,7 @@ export function TotalsBar({
   discountType,
   onDiscountChange,
   onToggleDiscountType,
+  onHoldBill,
   onCancelBill,
   onPay,
   payDisabled,
@@ -115,8 +117,16 @@ export function TotalsBar({
         </div>
       </div>
 
-      {/* Actions */}
-      <div className="mt-[15px]">
+      {/* Actions — hold (พักบิล) + cancel (ยกเลิกบิล), side by side per Taste */}
+      <div className="mt-[15px] grid grid-cols-2 gap-[9px]">
+        <button
+          type="button"
+          onClick={onHoldBill}
+          className="h-[46px] w-full rounded-[15px] border bg-white text-[13px] font-bold"
+          style={{ borderColor: "var(--line)", color: "#475569" }}
+        >
+          พักบิล
+        </button>
         <button
           type="button"
           onClick={onCancelBill}

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma, PaymentType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 // GET /api/orders — list recent orders
@@ -16,83 +17,271 @@ export async function GET() {
 
 type IncomingItem = { productId: string; quantity: number };
 
-// POST /api/orders — create an order (checkout)
-export async function POST(req: Request) {
-  const body = await req.json();
-  const {
-    items,
-    paymentType = "CASH",
-    amountPaid = 0,
-    discount = 0,
-    taxRate = 0,
-    cashierId,
-  }: {
-    items: IncomingItem[];
-    paymentType?: string;
-    amountPaid?: number;
-    discount?: number;
-    taxRate?: number;
-    cashierId?: string;
-  } = body;
+type IncomingPaymentLine = {
+  method: string;
+  amount: number; // baht
+  reference?: string | null;
+};
 
-  if (!items || items.length === 0) {
-    return NextResponse.json({ error: "No items in order" }, { status: 400 });
+type OrderRequestBody = {
+  items: IncomingItem[];
+  paymentLines: IncomingPaymentLine[];
+  // Client-computed, VAT-inclusive money (baht). The cart's integer-satang engine
+  // (lib/pricing.ts) is authoritative for Phase 3; the server recompute below is
+  // per-line price authority only (anti-tamper on unitPrice), not total recompute.
+  subtotal: number;
+  discount: number;
+  tax: number;
+  total: number;
+  amountPaid: number;
+  change: number;
+  cashierId?: string | null;
+};
+
+// The six valid tender methods (mirrors the PaymentType enum).
+const VALID_METHODS = new Set<PaymentType>([
+  PaymentType.CASH,
+  PaymentType.CARD,
+  PaymentType.QR,
+  PaymentType.TRANSFER,
+  PaymentType.EWALLET,
+  PaymentType.OTHER,
+]);
+
+function isPaymentType(v: string): v is PaymentType {
+  return (VALID_METHODS as Set<string>).has(v);
+}
+
+/** Round a baht number to 2dp via integer satang to avoid float drift on store. */
+function round2(baht: number): number {
+  if (!Number.isFinite(baht)) return 0;
+  return Math.round(baht * 100) / 100;
+}
+
+/**
+ * Generate the daily POS number: POS-YYYYMMDD-#### where #### = (count of orders
+ * created today) + 1, zero-padded to 4. Uses the server clock (new Date()).
+ *
+ * TODO(production-readiness): this count-based sequence is not collision-safe
+ * under concurrency — a DB sequence/counter is the hardening owned by the
+ * production-readiness program. Do not regress to a timestamp id.
+ */
+async function nextPosNo(
+  tx: Prisma.TransactionClient,
+  now: Date
+): Promise<string> {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  const startOfDay = new Date(y, now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const startOfNextDay = new Date(y, now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+  const countToday = await tx.order.count({
+    where: { createdAt: { gte: startOfDay, lt: startOfNextDay } },
+  });
+  const seq = String(countToday + 1).padStart(4, "0");
+  return `POS-${y}${m}${d}-${seq}`;
+}
+
+// POST /api/orders — create an order (checkout)
+//
+// TODO(production-readiness): Decimal-safe server recompute, idempotency key,
+// atomic conditional stock decrement. Those hardenings are owned by the
+// production-readiness program; Phase 3 must not regress them.
+export async function POST(req: Request) {
+  let body: Partial<OrderRequestBody>;
+  try {
+    body = (await req.json()) as Partial<OrderRequestBody>;
+  } catch {
+    return NextResponse.json(
+      { error: "Invalid JSON body", code: "BAD_REQUEST" },
+      { status: 400 }
+    );
   }
 
-  // Fetch products and validate stock
-  const productIds = items.map((i) => i.productId);
-  const products = await prisma.product.findMany({
-    where: { id: { in: productIds } },
-  });
+  const {
+    items,
+    paymentLines = [],
+    subtotal = 0,
+    discount = 0,
+    tax = 0,
+    total = 0,
+    amountPaid = 0,
+    change = 0,
+    cashierId,
+  } = body;
 
-  let subtotal = 0;
-  const lineItems = items.map((item) => {
-    const product = products.find((p) => p.id === item.productId);
-    if (!product) throw new Error(`Product not found: ${item.productId}`);
-    const unitPrice = Number(product.price);
-    const lineTotal = unitPrice * item.quantity;
-    subtotal += lineTotal;
-    return {
-      productId: product.id,
-      quantity: item.quantity,
-      unitPrice,
-      lineTotal,
-    };
-  });
+  // --- input boundary validation ---
+  if (!Array.isArray(items) || items.length === 0) {
+    return NextResponse.json(
+      { error: "No items in order", code: "NO_ITEMS" },
+      { status: 400 }
+    );
+  }
+  if (
+    items.some(
+      (i) =>
+        !i ||
+        typeof i.productId !== "string" ||
+        !Number.isFinite(i.quantity) ||
+        i.quantity <= 0
+    )
+  ) {
+    return NextResponse.json(
+      { error: "Invalid line item", code: "BAD_ITEM" },
+      { status: 400 }
+    );
+  }
 
-  const tax = (subtotal - discount) * (taxRate / 100);
-  const total = subtotal - discount + tax;
-  const change = Math.max(0, amountPaid - total);
+  if (!Array.isArray(paymentLines) || paymentLines.length === 0) {
+    return NextResponse.json(
+      { error: "No payment lines", code: "NO_PAYMENT" },
+      { status: 422 }
+    );
+  }
 
-  const orderNumber = `ORD-${Date.now()}`;
+  // Normalize + validate every payment line.
+  const normalizedPays: { method: PaymentType; amount: number; reference: string | null }[] =
+    [];
+  for (const pl of paymentLines) {
+    if (!pl || typeof pl.method !== "string" || !isPaymentType(pl.method)) {
+      return NextResponse.json(
+        { error: "Invalid payment method", code: "BAD_METHOD" },
+        { status: 422 }
+      );
+    }
+    const amt = round2(Number(pl.amount));
+    if (!Number.isFinite(amt) || amt < 0) {
+      return NextResponse.json(
+        { error: "Invalid payment amount", code: "BAD_AMOUNT" },
+        { status: 422 }
+      );
+    }
+    const reference =
+      typeof pl.reference === "string" && pl.reference.trim().length > 0
+        ? pl.reference.trim()
+        : null;
+    normalizedPays.push({ method: pl.method, amount: amt, reference });
+  }
 
-  // Transaction: create order + decrement stock
-  const order = await prisma.$transaction(async (tx) => {
-    const created = await tx.order.create({
-      data: {
-        orderNumber,
-        subtotal,
-        tax,
-        discount,
-        total,
-        paymentType: paymentType as never,
-        amountPaid,
-        change,
-        cashierId: cashierId || null,
-        items: { create: lineItems },
+  const totalBaht = round2(Number(total));
+
+  // Split sum must equal the bill total within 0.01 baht.
+  const paySum = round2(
+    normalizedPays.reduce((acc, p) => acc + p.amount, 0)
+  );
+  if (Math.abs(paySum - totalBaht) > 0.01) {
+    return NextResponse.json(
+      {
+        error: `ยอดชำระ (${paySum.toFixed(2)}) ไม่ตรงกับยอดที่ต้องจ่าย (${totalBaht.toFixed(2)})`,
+        code: "PAYMENT_MISMATCH",
       },
-      include: { items: { include: { product: true } } },
+      { status: 422 }
+    );
+  }
+
+  // If any cash line is present, amountPaid (cash received) must cover the total.
+  const hasCash = normalizedPays.some((p) => p.method === PaymentType.CASH);
+  if (hasCash && round2(Number(amountPaid)) + 0.01 < totalBaht) {
+    return NextResponse.json(
+      { error: "รับเงินสดน้อยกว่ายอดที่ต้องจ่าย", code: "INSUFFICIENT_CASH" },
+      { status: 422 }
+    );
+  }
+
+  // Primary/dominant method for reporting/back-compat: cash if any cash line,
+  // else the first line's method.
+  const primaryMethod: PaymentType = hasCash
+    ? PaymentType.CASH
+    : normalizedPays[0].method;
+
+  try {
+    // Server-authoritative per-line price: recompute unitPrice/lineTotal from the
+    // DB product prices (anti-tamper). Stored bill money (subtotal/discount/tax/
+    // total/amountPaid/change) is the VAT-inclusive client computation as sent.
+    const productIds = items.map((i) => i.productId);
+    const products = await prisma.product.findMany({
+      where: { id: { in: productIds } },
     });
 
-    for (const item of lineItems) {
-      await tx.product.update({
-        where: { id: item.productId },
-        data: { stock: { decrement: item.quantity } },
+    const lineItems = items.map((item) => {
+      const product = products.find((p) => p.id === item.productId);
+      if (!product) {
+        throw new ProductNotFoundError(item.productId);
+      }
+      const unitPrice = Number(product.price);
+      const lineTotal = round2(unitPrice * item.quantity);
+      return {
+        productId: product.id,
+        quantity: item.quantity,
+        unitPrice,
+        lineTotal,
+      };
+    });
+
+    const now = new Date();
+
+    const order = await prisma.$transaction(async (tx) => {
+      const orderNumber = await nextPosNo(tx, now);
+
+      const created = await tx.order.create({
+        data: {
+          orderNumber,
+          subtotal: round2(Number(subtotal)),
+          tax: round2(Number(tax)),
+          discount: round2(Number(discount)),
+          total: totalBaht,
+          paymentType: primaryMethod,
+          amountPaid: round2(Number(amountPaid)),
+          change: round2(Number(change)),
+          cashierId: cashierId || null,
+          items: { create: lineItems },
+          payments: {
+            create: normalizedPays.map((p) => ({
+              method: p.method,
+              amount: p.amount,
+              reference: p.reference,
+            })),
+          },
+        },
+        include: {
+          items: { include: { product: true } },
+          payments: true,
+          cashier: { select: { id: true, name: true } },
+        },
       });
+
+      // TODO(production-readiness): atomic conditional stock decrement
+      // (WHERE stock >= qty) to prevent overselling under concurrency.
+      for (const item of lineItems) {
+        await tx.product.update({
+          where: { id: item.productId },
+          data: { stock: { decrement: item.quantity } },
+        });
+      }
+
+      return created;
+    });
+
+    return NextResponse.json(order, { status: 201 });
+  } catch (err) {
+    if (err instanceof ProductNotFoundError) {
+      return NextResponse.json(
+        { error: `Product not found: ${err.productId}`, code: "PRODUCT_NOT_FOUND" },
+        { status: 404 }
+      );
     }
+    // Sanitized 500 — never leak internals to the client.
+    console.error("POST /api/orders failed:", err);
+    return NextResponse.json(
+      { error: "Could not create order", code: "INTERNAL" },
+      { status: 500 }
+    );
+  }
+}
 
-    return created;
-  });
-
-  return NextResponse.json(order, { status: 201 });
+class ProductNotFoundError extends Error {
+  constructor(public readonly productId: string) {
+    super(`Product not found: ${productId}`);
+    this.name = "ProductNotFoundError";
+  }
 }

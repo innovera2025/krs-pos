@@ -43,3 +43,62 @@ export type CategorySlug =
 
 /** Bill-level discount input mode for the ฿/% toggle. */
 export type DiscountType = "amount" | "percent";
+
+/**
+ * The six POS tender methods (mirrors the Prisma PaymentType enum). Lowercase
+ * keys are the UI/state representation; they are upper-cased at the API boundary.
+ */
+export type PayMethod =
+  | "cash"
+  | "transfer"
+  | "qr"
+  | "card"
+  | "ewallet"
+  | "other";
+
+/**
+ * One split-payment line in the payment modal.
+ * `amount` is the raw baht text as typed (mirrored so the field can be cleared);
+ * `locked` marks a line whose method must not be retargeted by tile selection
+ * (state-pay-method-locked-line).
+ */
+export type PayLine = {
+  method: PayMethod;
+  /** Baht as typed (string mirror). */
+  amount: string;
+  locked?: boolean;
+};
+
+/** A persisted PaymentLine as returned by the orders API. */
+export type OrderPaymentLine = {
+  id: string;
+  method: string;
+  amount: string | number;
+  reference: string | null;
+};
+
+/** An order item as returned by the orders API (with product joined). */
+export type OrderItemDTO = {
+  id: string;
+  quantity: number;
+  unitPrice: string | number;
+  lineTotal: string | number;
+  product: { id: string; name: string; sku: string };
+};
+
+/** The order object returned by POST /api/orders — drives the receipt. */
+export type OrderDTO = {
+  id: string;
+  orderNumber: string;
+  subtotal: string | number;
+  tax: string | number;
+  discount: string | number;
+  total: string | number;
+  amountPaid: string | number;
+  change: string | number;
+  paymentType: string;
+  createdAt: string;
+  items: OrderItemDTO[];
+  payments: OrderPaymentLine[];
+  cashier?: { id: string; name: string } | null;
+};
