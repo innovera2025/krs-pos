@@ -4,7 +4,10 @@ import { prisma } from "@/lib/prisma";
 // GET /api/orders — list recent orders
 export async function GET() {
   const orders = await prisma.order.findMany({
-    include: { items: { include: { product: true } }, cashier: true },
+    include: {
+      items: { include: { product: true } },
+      cashier: { select: { id: true, name: true } },
+    },
     orderBy: { createdAt: "desc" },
     take: 50,
   });
