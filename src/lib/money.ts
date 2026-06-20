@@ -22,3 +22,14 @@ export function money(n: number | string): string {
     })
   );
 }
+
+/**
+ * Format an integer-satang amount (1 baht = 100 satang) as Thai Baht.
+ *
+ * Phase 2 cart math is done in integer satang (see lib/pricing.ts) to avoid
+ * float drift; this converts that exact integer back to a display string.
+ */
+export function formatSatang(satang: number): string {
+  if (!Number.isFinite(satang)) return "฿0.00";
+  return money(satang / 100);
+}
