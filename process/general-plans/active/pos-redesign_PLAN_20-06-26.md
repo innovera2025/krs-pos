@@ -1,6 +1,6 @@
 # KRS POS Redesign — Development Plan
 
-- Status: 🔨 IN PROGRESS — **Phase 1 done (build-verified) but PENDING COMMIT**; `/login` UI stub added; Phases 2–7 planned. (This finalize pass is a planning/doc update only — no app code changes.)
+- Status: 🔨 IN PROGRESS — **Phase 1 committed**; **Phase 2 done (build-verified + pricing-tested, pending commit)**; `/login` UI stub; Phases 3–7 planned.
 - Created: 2026-06-20 · last finalized: 2026-06-20
 - Plan type: COMPLEX (multi-phase program — **7 phases**: P1–P6 build + P7 cross-cutting hardening)
 - Owner program: POS redesign (relates to the `production-readiness` security/correctness program)
@@ -15,7 +15,8 @@
 
 ## Current status snapshot
 
-- ✅ **Phase 1 (shell/rail/theme/routing) — code-complete, `npm run type-check` + `npm run build` pass.** ⚠️ **Not committed yet** (uncommitted in the worktree). Also added: `/login` UI (stub) + favicon, and a review-loop bug-fix pass (Modal a11y/Escape/focus-trap, money() guards, contrast, reduced-motion, toast live-region, nav landmark).
+- ✅ **Phase 1 (shell/rail/theme/routing) — COMMITTED** (feat/design/docs commits) incl. `/login` UI stub + favicon + review-loop bug-fix pass (Modal a11y/Escape/focus-trap, money() guards, contrast, reduced-motion, toast live-region, nav landmark).
+- ✅ **Phase 2 (`/pos` checkout core redesign) — build-verified + pricing-tested (32/32 invariants).** Taste 3-col register, integer-satang VAT-inclusive totals + proportional discount, per-line/bill discount (฿/%), states, in-cart badge, low/out-of-stock, 17-item seed edit. ⏳ live DB smoke pending; pending commit.
 - 🧭 **8 routes live:** `/login` (UI stub) · `/pos` (old/partial checkout, DB-dependent) · `/products` `/users` `/sales` `/shift` `/data` `/docs` (placeholders) · `/` → `/pos` redirect.
 - ⏸️ **Deferred:** `domain-multi-branch-ready` (branchId) → Phase 4 (needs a DB). Real auth/RBAC → `production-readiness` program (see Login addendum + §8).
 
@@ -74,9 +75,9 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 | Phase | Status | Title | Depends on | # functions | Gap profile |
 |---|---|---|---|---|---|
-| **P1** | ✅ done · pending commit | Design-system foundation + app shell, rail, theme, routing | none | 8 | 4 redesign-existing, 3 build-new-ui, 1 backend-needed |
-| **P2** | ▶ next | Checkout core redesigned — product grid, cart, discounts, VAT-inclusive totals | P1 | 19 | 8 redesign-existing, 11 build-new-ui |
-| **P3** | ⏳ planned | Payment + receipt/print + hold bill — complete the sell-to-receipt flow | P2 | 28 | 27 build-new-ui, 1 full-stack-new |
+| **P1** | ✅ done (committed) | Design-system foundation + app shell, rail, theme, routing | none | 8 | 4 redesign-existing, 3 build-new-ui, 1 backend-needed |
+| **P2** | ✅ done · pending commit | Checkout core redesigned — product grid, cart, discounts, VAT-inclusive totals | P1 | 19 | 8 redesign-existing, 11 build-new-ui |
+| **P3** | ▶ next | Payment + receipt/print + hold bill — complete the sell-to-receipt flow | P2 | 28 | 27 build-new-ui, 1 full-stack-new |
 | **P4** | ⏳ planned | Catalog/stock management + Users & Roles + RBAC enforcement | P1, P3 | 20 | 12 build-new-ui, 8 full-stack-new |
 | **P5** | ⏳ planned | Shift open/close + Z-report + Sales History with refund/void/reprint | P3, P4 | 23 | 11 build-new-ui, 12 full-stack-new |
 | **P6** | ⏳ planned | KRS Data Link (sync/offline) + Customer/member + tax invoice + Design Spec docs | P2, P3, P4, P5 | 67 | 51 full-stack-new, 16 build-new-ui |
@@ -84,9 +85,9 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 ### Phase 1 — Design-system foundation + app shell, rail, theme, routing
 
-- **Status:** ✅ done · pending commit
+- **Status:** ✅ done (committed)
 - **Depends on:** nothing (can start first)
-- **Note:** code-complete & build-verified, **pending commit** (uncommitted in worktree). `domain-multi-branch-ready` (branchId) **deferred to Phase 4** (needs a DB) — the other 7 functions are done.
+- **Note:** COMMITTED (feat/design/docs commits). `domain-multi-branch-ready` (branchId) **deferred to Phase 4** (needs a DB) — the other 7 functions are done.
 - **Goal:** Establish the approved Taste visual language as a reusable token/component layer and replace the bare header with a routed app shell so every later screen drops into a consistent frame. Add multi-branch schema groundwork early so no later migration is forced. No POS behavior changes yet beyond restyling chrome.
 - **Verification gate:** npm run type-check + npm run build pass. Manual: app renders the forest-gradient rail with the 7 nav items (role-filter stubbed to admin), clicking each rail item routes to a placeholder screen, toast primitive shows + auto-dismisses at ~2.2s, money() helper renders ฿ with mono tabular nums, shared Modal/Drawer close on backdrop click via stopPropagation guard, and Prisma migration adds branchId (default BR-01) to relevant entities without breaking existing /api/products + /api/orders.
 - **Functions in this phase (8):**
@@ -104,37 +105,38 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 ### Phase 2 — Checkout core redesigned — product grid, cart, discounts, VAT-inclusive totals
 
-- **Status:** ▶ next
+- **Status:** ✅ done · pending commit
 - **Depends on:** Phase 1
+- **Note:** implemented & build-verified + **pricing-tested (32/32 invariants)**; seed expanded to 17/4 (apply needs a DB); live `/pos` smoke pending. See `pos-redesign-phase-2_REPORT_20-06-26.md`.
 - **Goal:** Rebuild the POS Checkout as the Taste 3-column register on top of the current app: category panel + searchable/barcode product grid (17-item catalog, low/out-of-stock styling, in-cart badge), full cart with per-line + bill discounts and a faithful VAT-inclusive computeTotals (proportional discount allocation + clamping). End state: a fully interactive cart that computes correct totals but stops at the pay button.
 - **Verification gate:** npm run type-check + npm run build pass. Manual: search filters by name/EN/SKU; category chips filter the grid; adding a product shows in-cart badge; +/-/trash adjust and remove lines; per-line and bill discounts (฿ and %) recompute totals; VAT shows as 'VAT 7% (รวมในราคา)' extracted inclusive with proportional bill-discount allocation (preVat = total − vat); low-stock (<=10) cards render amber, out-of-stock blocked; seed expanded to 17 products / 4 categories; empty-cart and no-results states render in Taste style.
 - **Functions in this phase (19):**
 
 | Function (id) | What it is | Screen | In Taste | In app | Gap | Done? |
 |---|---|---|---|---|---|---|
-| `screen-pos-checkout` | POS Checkout (ขายหน้าร้าน) | pos | 🟢 yes | 🟡 partial | redesign-existing | — |
-| `action-product-search` | Product search / barcode scan (onSearch) | pos | 🟢 yes | 🟢 yes | redesign-existing | — |
-| `action-category-filter` | Category filter (setActiveCat) | pos | 🟢 yes | 🔴 no | redesign-existing | — |
-| `action-add-to-cart` | Add product to cart (add) | pos | 🟢 yes | 🟢 yes | redesign-existing | — |
-| `action-cart-inc` | Increase line qty (inc) | pos | 🟢 yes | 🟢 yes | redesign-existing | — |
-| `action-cart-dec` | Decrease line qty (dec) | pos | 🟢 yes | 🟢 yes | redesign-existing | — |
-| `action-cart-remove` | Remove cart line (removeLine) | pos | 🟡 partial | 🟡 partial | build-new-ui | — |
-| `action-line-discount` | Per-line item discount (lineDiscount) | pos | 🟡 partial | 🔴 no | build-new-ui | — |
-| `action-bill-discount` | Bill-level discount (onBillDisc) | pos | 🟢 yes | 🔴 no | build-new-ui | — |
-| `action-toggle-disc-type` | Toggle discount type ฿/% (toggleDiscType) | pos | 🟡 partial | 🔴 no | build-new-ui | — |
-| `action-cancel-bill` | Cancel / clear bill (cancelBill) | pos | 🟢 yes | 🔴 no | build-new-ui | — |
-| `state-cart-empty` | Empty cart state | pos | 🟢 yes | 🟢 yes | redesign-existing | — |
-| `state-no-products-found` | No products match search | pos | 🟢 yes | 🟢 yes | redesign-existing | — |
-| `state-product-in-cart` | Product in-cart indicator | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `state-low-out-of-stock` | Low/out-of-stock state | pos | 🟡 partial | 🔴 no | build-new-ui | — |
-| `domain-vat-7-inclusive` | VAT 7% inclusive of price | global | 🟢 yes | 🔴 no | build-new-ui | — |
-| `display-seed-catalog` | Seed product catalog (17 items, 4 categories) | pos | 🟢 yes | 🟡 partial | build-new-ui | — |
-| `domain-vat-proportional-discount-allocation` | VAT recomputed with proportional discount allocation | global | 🟡 partial | 🔴 no | build-new-ui | — |
-| `domain-stock-default-50` | Default stock fallback = 50 for unmapped ids | products | 🔴 no | 🔴 no | build-new-ui | — |
+| `screen-pos-checkout` | POS Checkout (ขายหน้าร้าน) | pos | 🟢 yes | 🟡 partial | redesign-existing | ✅ |
+| `action-product-search` | Product search / barcode scan (onSearch) | pos | 🟢 yes | 🟢 yes | redesign-existing | ✅ |
+| `action-category-filter` | Category filter (setActiveCat) | pos | 🟢 yes | 🔴 no | redesign-existing | ✅ |
+| `action-add-to-cart` | Add product to cart (add) | pos | 🟢 yes | 🟢 yes | redesign-existing | ✅ |
+| `action-cart-inc` | Increase line qty (inc) | pos | 🟢 yes | 🟢 yes | redesign-existing | ✅ |
+| `action-cart-dec` | Decrease line qty (dec) | pos | 🟢 yes | 🟢 yes | redesign-existing | ✅ |
+| `action-cart-remove` | Remove cart line (removeLine) | pos | 🟡 partial | 🟡 partial | build-new-ui | ✅ |
+| `action-line-discount` | Per-line item discount (lineDiscount) | pos | 🟡 partial | 🔴 no | build-new-ui | ✅ |
+| `action-bill-discount` | Bill-level discount (onBillDisc) | pos | 🟢 yes | 🔴 no | build-new-ui | ✅ |
+| `action-toggle-disc-type` | Toggle discount type ฿/% (toggleDiscType) | pos | 🟡 partial | 🔴 no | build-new-ui | ✅ |
+| `action-cancel-bill` | Cancel / clear bill (cancelBill) | pos | 🟢 yes | 🔴 no | build-new-ui | ✅ |
+| `state-cart-empty` | Empty cart state | pos | 🟢 yes | 🟢 yes | redesign-existing | ✅ |
+| `state-no-products-found` | No products match search | pos | 🟢 yes | 🟢 yes | redesign-existing | ✅ |
+| `state-product-in-cart` | Product in-cart indicator | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `state-low-out-of-stock` | Low/out-of-stock state | pos | 🟡 partial | 🔴 no | build-new-ui | ✅ |
+| `domain-vat-7-inclusive` | VAT 7% inclusive of price | global | 🟢 yes | 🔴 no | build-new-ui | ✅ |
+| `display-seed-catalog` | Seed product catalog (17 items, 4 categories) | pos | 🟢 yes | 🟡 partial | build-new-ui | ✅ |
+| `domain-vat-proportional-discount-allocation` | VAT recomputed with proportional discount allocation | global | 🟡 partial | 🔴 no | build-new-ui | ✅ |
+| `domain-stock-default-50` | Default stock fallback = 50 for unmapped ids | products | 🔴 no | 🔴 no | build-new-ui | ✅ |
 
 ### Phase 3 — Payment + receipt/print + hold bill — complete the sell-to-receipt flow
 
-- **Status:** ⏳ planned
+- **Status:** ▶ next
 - **Depends on:** Phase 2
 - **Goal:** Wire the full payment lifecycle: payment modal with all 6 methods, split payment, cash panel with quick-cash + change-due, reference no, validation banner, real posNo sequence, stock decrement, then the 80mm receipt modal (print + email/share + faux QR + sync badge) whose only exit is New Sale. Hold/cancel behavior ported faithfully.
 - **Verification gate:** npm run type-check + npm run build pass. Manual: pay button (disabled on empty cart) opens modal prefilled with a cash line = total; selecting among 6 methods works; split lines add/remove and must sum to total within 0.01 (else payError); cash panel shows quick-cash buttons + change-due; confirm generates POS-YYYYMMDD-#### (distinct from accountingDocNo, shown '— รอออกเอกสาร —'), decrements stock, opens the 80mm receipt; receipt prints via window.print() (@page 80mm), shows qty×price line detail + QR to rcpt.krspos.co/{shortId} + pending sync badge; receipt closes ONLY via New Sale; payment modal closes only via X (no backdrop); hold clears with toast, cancel no-ops on empty.
