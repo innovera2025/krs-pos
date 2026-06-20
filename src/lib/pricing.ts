@@ -76,7 +76,10 @@ function clamp(n: number, min: number, max: number): number {
 
 /** Convert a baht amount (number or numeric string) to integer satang. */
 export function bahtToSatang(baht: number | string): number {
-  const raw = typeof baht === "string" ? Number(baht.trim()) : baht;
+  // Strip thousands grouping separators (e.g. "1,250.00") before parsing so a
+  // grouped string doesn't silently become NaN -> ฿0.
+  const cleaned = typeof baht === "string" ? baht.replace(/,/g, "").trim() : baht;
+  const raw = Number(cleaned);
   if (!Number.isFinite(raw)) return 0;
   return Math.round(raw * 100);
 }

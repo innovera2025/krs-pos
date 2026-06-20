@@ -27,8 +27,7 @@ export function FauxQR({ size = 104 }: { size?: number }) {
       viewBox="0 0 103 103"
       width={size}
       height={size}
-      role="img"
-      aria-label="QR ใบเสร็จดิจิทัล"
+      aria-hidden="true"
     >
       {cells.map((cell, i) => (
         <rect key={i} x={cell.x} y={cell.y} width="9" height="9" fill="#0f172a" />

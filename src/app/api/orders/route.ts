@@ -58,9 +58,32 @@ function round2(baht: number): number {
   return Math.round(baht * 100) / 100;
 }
 
+const BANGKOK_TZ = "Asia/Bangkok";
+
+/**
+ * Resolve the Asia/Bangkok calendar date for an instant. Uses en-CA which
+ * formats as `YYYY-MM-DD`, so the parts come back already zero-padded.
+ */
+function bangkokDateParts(now: Date): { y: number; m: number; d: number } {
+  const [yy, mm, dd] = new Intl.DateTimeFormat("en-CA", {
+    timeZone: BANGKOK_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  })
+    .format(now)
+    .split("-");
+  return { y: Number(yy), m: Number(mm), d: Number(dd) };
+}
+
 /**
  * Generate the daily POS number: POS-YYYYMMDD-#### where #### = (count of orders
- * created today) + 1, zero-padded to 4. Uses the server clock (new Date()).
+ * created today, in Asia/Bangkok) + 1, zero-padded to 4.
+ *
+ * The calendar date AND the count window are computed in Asia/Bangkok (not the
+ * process-local/UTC clock) so an early-morning Thai sale doesn't roll onto the
+ * previous UTC day. Bangkok has a fixed +07:00 offset (no DST), so the day's
+ * window is [Bangkok-midnight − 7h, +24h) expressed as UTC instants.
  *
  * TODO(production-readiness): this count-based sequence is not collision-safe
  * under concurrency — a DB sequence/counter is the hardening owned by the
@@ -70,16 +93,16 @@ async function nextPosNo(
   tx: Prisma.TransactionClient,
   now: Date
 ): Promise<string> {
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  const startOfDay = new Date(y, now.getMonth(), now.getDate(), 0, 0, 0, 0);
-  const startOfNextDay = new Date(y, now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+  const { y, m, d } = bangkokDateParts(now);
+  const yyyymmdd = `${y}${String(m).padStart(2, "0")}${String(d).padStart(2, "0")}`;
+  // Bangkok midnight for that date, expressed as a UTC instant (UTC = Bangkok − 7h).
+  const startOfDay = new Date(Date.UTC(y, m - 1, d, -7, 0, 0, 0));
+  const startOfNextDay = new Date(Date.UTC(y, m - 1, d + 1, -7, 0, 0, 0));
   const countToday = await tx.order.count({
     where: { createdAt: { gte: startOfDay, lt: startOfNextDay } },
   });
   const seq = String(countToday + 1).padStart(4, "0");
-  return `POS-${y}${m}${d}-${seq}`;
+  return `POS-${yyyymmdd}-${seq}`;
 }
 
 // POST /api/orders — create an order (checkout)
@@ -123,6 +146,7 @@ export async function POST(req: Request) {
         !i ||
         typeof i.productId !== "string" ||
         !Number.isFinite(i.quantity) ||
+        !Number.isInteger(i.quantity) ||
         i.quantity <= 0
     )
   ) {
@@ -179,9 +203,16 @@ export async function POST(req: Request) {
     );
   }
 
-  // If any cash line is present, amountPaid (cash received) must cover the total.
-  const hasCash = normalizedPays.some((p) => p.method === PaymentType.CASH);
-  if (hasCash && round2(Number(amountPaid)) + 0.01 < totalBaht) {
+  // Cash sufficiency: amountPaid (cash received) must cover the CASH PORTION
+  // (cashDue = sum of CASH line amounts), not the full bill — the split-sum gate
+  // above already proves the full bill is covered. This admits valid mixed
+  // cash+non-cash splits where cash received only needs to cover its own line(s).
+  const cashDue = round2(
+    normalizedPays
+      .filter((p) => p.method === PaymentType.CASH)
+      .reduce((s, p) => s + p.amount, 0)
+  );
+  if (cashDue > 0 && round2(Number(amountPaid)) + 0.01 < cashDue) {
     return NextResponse.json(
       { error: "รับเงินสดน้อยกว่ายอดที่ต้องจ่าย", code: "INSUFFICIENT_CASH" },
       { status: 422 }
@@ -190,6 +221,7 @@ export async function POST(req: Request) {
 
   // Primary/dominant method for reporting/back-compat: cash if any cash line,
   // else the first line's method.
+  const hasCash = cashDue > 0;
   const primaryMethod: PaymentType = hasCash
     ? PaymentType.CASH
     : normalizedPays[0].method;

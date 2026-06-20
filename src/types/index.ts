@@ -58,15 +58,16 @@ export type PayMethod =
 
 /**
  * One split-payment line in the payment modal.
- * `amount` is the raw baht text as typed (mirrored so the field can be cleared);
- * `locked` marks a line whose method must not be retargeted by tile selection
- * (state-pay-method-locked-line).
+ * `id` is a stable identity assigned at creation so the rendered list keys and
+ * remove-by-id are index-independent (survives reorders/removals).
+ * `amount` is the raw baht text as typed (mirrored so the field can be cleared).
  */
 export type PayLine = {
+  /** Stable identity assigned at creation (used for React keys + removal). */
+  id: string;
   method: PayMethod;
   /** Baht as typed (string mirror). */
   amount: string;
-  locked?: boolean;
 };
 
 /** A persisted PaymentLine as returned by the orders API. */

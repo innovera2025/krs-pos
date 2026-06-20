@@ -41,6 +41,14 @@ function effectiveStock(p: Product): number {
     : DEFAULT_STOCK;
 }
 
+// Monotonic counter for stable PayLine ids. A simple counter (rather than
+// crypto.randomUUID) keeps ids deterministic, dependency-free, and SSR-safe.
+let payLineSeq = 0;
+function nextPayLineId(): string {
+  payLineSeq += 1;
+  return `pl-${payLineSeq}`;
+}
+
 /** Chip order for the category panel (slug -> position). */
 const CHIP_ORDER: CategorySlug[] = ["all", "drink", "food", "dessert", "goods", "other"];
 
@@ -251,16 +259,26 @@ export default function POSPage() {
 
   // ---- payment modal (Phase 3) ----
 
-  // Open payment prefilled with a single cash line = total (action-open-payment).
+  // Open payment. If an in-progress split was preserved (closed via X), reuse it;
+  // otherwise seed a single cash line = total (action-open-payment). This keeps
+  // the documented "X preserves payLines" behavior from being defeated by a reset
+  // on re-open. cashReceived/reference are likewise only cleared when seeding a
+  // fresh split, so a preserved split keeps its full state on re-open. (The
+  // success-confirm path is the one that fully resets all payment state.)
   function openPayment() {
     if (cart.length === 0) {
       showToast("ตะกร้าว่าง · Cart is empty");
       return;
     }
-    const totalBaht = (totals.totalSatang / 100).toFixed(2);
-    setPayLines([{ method: "cash", amount: totalBaht }]);
-    setCashReceived("");
-    setReference("");
+    if (payLines.length === 0) {
+      // Fresh split: seed a single cash line = total and clear any stale
+      // cash-received / reference.
+      const totalBaht = (totals.totalSatang / 100).toFixed(2);
+      setPayLines([{ id: nextPayLineId(), method: "cash", amount: totalBaht }]);
+      setCashReceived("");
+      setReference("");
+    }
+    // else: a preserved split exists (closed via X) — leave payLines/cash/ref intact.
     setPayError("");
     setPayOpen(true);
   }
@@ -270,19 +288,18 @@ export default function POSPage() {
     setPayOpen(false);
   }
 
-  // Select a method: single line → retarget it; multi-line → the first line whose
-  // method isn't locked (state-pay-method-locked-line), else the last line.
+  // Select a method: applies to the LAST payment line — the one just added via
+  // "Split payment" / currently being configured. In single-line mode that is
+  // simply the one line. This is coherent with the add-line UX (the newest line
+  // is the active target) and replaces the previously dead `locked` mechanism.
   function setPayMethod(method: PayMethod) {
     setPayLines((prev) => {
-      if (prev.length === 0) return [{ method, amount: "0.00" }];
-      const next = [...prev];
-      if (next.length === 1) {
-        next[0] = { ...next[0], method };
-      } else {
-        const i = next.findIndex((l) => !l.locked);
-        const target = i >= 0 ? i : next.length - 1;
-        next[target] = { ...next[target], method };
+      if (prev.length === 0) {
+        return [{ id: nextPayLineId(), method, amount: "0.00" }];
       }
+      const next = [...prev];
+      const target = next.length - 1;
+      next[target] = { ...next[target], method };
       return next;
     });
     setPayError("");
@@ -304,16 +321,20 @@ export default function POSPage() {
       );
       return [
         ...prev,
-        { method: "transfer", amount: (remaining / 100).toFixed(2) },
+        {
+          id: nextPayLineId(),
+          method: "transfer",
+          amount: (remaining / 100).toFixed(2),
+        },
       ];
     });
     setPayError("");
   }
 
-  // Remove a split line (guarded to keep at least one).
-  function removePayLine(index: number) {
+  // Remove a split line by stable id (guarded to keep at least one).
+  function removePayLine(id: string) {
     setPayLines((prev) =>
-      prev.length > 1 ? prev.filter((_, i) => i !== index) : prev
+      prev.length > 1 ? prev.filter((l) => l.id !== id) : prev
     );
     setPayError("");
   }
@@ -345,20 +366,34 @@ export default function POSPage() {
       );
       return;
     }
-    // If a cash line exists, cash received must cover its amount.
-    const cashLine = payLines.find((l) => l.method === "cash");
+    // Cash due = sum of ALL cash lines (a split may carry more than one cash
+    // line); cash received must cover that cash portion (not the full bill — the
+    // split-sum check above already proves the bill is fully covered).
+    const cashLines = payLines.filter((l) => l.method === "cash");
+    const hasCash = cashLines.length > 0;
+    const cashDueSatang = cashLines.reduce(
+      (acc, l) => acc + bahtToSatang(l.amount),
+      0
+    );
     const receivedSatang = bahtToSatang(cashReceived);
-    if (cashLine && receivedSatang + 1 < bahtToSatang(cashLine.amount)) {
+    if (hasCash && receivedSatang + 1 < cashDueSatang) {
       setPayError("รับเงินสดน้อยกว่ายอดเงินสดที่ต้องจ่าย");
       return;
     }
 
-    // Change = received − cash due (only when a cash line exists), floored at 0.
-    const changeSatang = cashLine
-      ? Math.max(receivedSatang - bahtToSatang(cashLine.amount), 0)
+    // Change = max(cash received − cash due, 0).
+    const changeSatang = hasCash
+      ? Math.max(receivedSatang - cashDueSatang, 0)
       : 0;
-    // amountPaid: cash received if there's a cash line, else the split total.
-    const amountPaidSatang = cashLine ? receivedSatang : paidSatang;
+    // amountPaid = total tendered, so amountPaid − change === total for splits:
+    // (sum of non-cash line amounts) + (cash received). Pure-cash reduces to the
+    // cash received; pure-non-cash reduces to the split total.
+    const nonCashSatang = payLines
+      .filter((l) => l.method !== "cash")
+      .reduce((acc, l) => acc + bahtToSatang(l.amount), 0);
+    const amountPaidSatang = hasCash
+      ? nonCashSatang + receivedSatang
+      : paidSatang;
 
     setSubmitting(true);
     setPayError("");

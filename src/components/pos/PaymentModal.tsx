@@ -29,7 +29,7 @@ type PaymentModalProps = {
   onSetMethod: (key: PayMethod) => void;
   onSetAmount: (index: number, value: string) => void;
   onAddLine: () => void;
-  onRemoveLine: (index: number) => void;
+  onRemoveLine: (id: string) => void;
   onCashReceived: (value: string) => void;
   onSetReference: (value: string) => void;
   onConfirm: () => void;
@@ -67,11 +67,13 @@ export function PaymentModal({
   // Which methods are currently in use across the split lines (drives tile state).
   const activeMethods = new Set(payLines.map((l) => l.method));
 
-  // Cash panel: the cash due is the first cash line's amount; change is the
-  // received minus that, floored at 0 (state-cash-change-display).
-  const cashLine = payLines.find((l) => l.method === "cash");
-  const showCash = cashLine !== undefined;
-  const cashDueSatang = cashLine ? bahtToSatang(cashLine.amount) : 0;
+  // Cash panel: the cash due is the SUM of ALL cash lines' amounts (a split may
+  // carry more than one cash line); change is received minus that, floored at 0
+  // (state-cash-change-display).
+  const showCash = payLines.some((l) => l.method === "cash");
+  const cashDueSatang = sumPaySatang(
+    payLines.filter((l) => l.method === "cash").map((l) => l.amount)
+  );
   const receivedSatang = bahtToSatang(cashReceived);
   const changeSatang = Math.max(receivedSatang - cashDueSatang, 0);
 
@@ -132,7 +134,7 @@ export function PaymentModal({
         {/* Right: methods + split + cash + reference + confirm */}
         <div className="flex min-w-0 flex-1 flex-col p-[22px]">
           <div className="mb-3.5 flex items-center justify-between">
-            <div className="text-[16px] font-bold">วิธีชำระเงิน · Payment</div>
+            <h2 className="m-0 text-[16px] font-bold">วิธีชำระเงิน · Payment</h2>
             <button
               type="button"
               onClick={onClose}
@@ -145,7 +147,11 @@ export function PaymentModal({
           </div>
 
           {/* 6 method tiles */}
-          <div className="mb-4 grid grid-cols-3 gap-2">
+          <div
+            className="mb-4 grid grid-cols-3 gap-2"
+            role="group"
+            aria-label="วิธีชำระเงิน"
+          >
             {PAY_METHODS.map((m) => {
               const on = activeMethods.has(m.key);
               const Icon = m.icon;
@@ -178,13 +184,13 @@ export function PaymentModal({
             })}
           </div>
 
-          {/* Split lines */}
+          {/* Split lines — keyed by stable id (index-independent) */}
           <div className="mb-1.5 flex flex-col gap-2">
             {payLines.map((line, i) => {
               const Icon = methodIcon(line.method);
               return (
                 <div
-                  key={i}
+                  key={line.id}
                   className="flex items-center gap-2.5 rounded-[10px] border px-[11px] py-[9px]"
                   style={{ background: "#f8fafc", borderColor: "#e2e8f0" }}
                 >
@@ -206,7 +212,7 @@ export function PaymentModal({
                   {payLines.length > 1 && (
                     <button
                       type="button"
-                      onClick={() => onRemoveLine(i)}
+                      onClick={() => onRemoveLine(line.id)}
                       aria-label={`ลบรายการชำระ ${methodLabel(line.method)}`}
                       className="grid place-items-center p-1"
                       style={{ color: "#cbd5e1" }}
@@ -290,6 +296,8 @@ export function PaymentModal({
           {/* Validation banner */}
           {payError && (
             <div
+              role="alert"
+              aria-atomic="true"
               className="mb-3 flex items-start gap-2 rounded-[10px] border px-[13px] py-2.5 text-[12.5px] font-medium"
               style={{ background: "#fef2f2", borderColor: "#fecaca", color: "#dc2626" }}
             >

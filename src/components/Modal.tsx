@@ -24,6 +24,10 @@ export function Modal({ open, onClose, label, children }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
 
+  // Effect A — depends on [open] ONLY so it never re-runs (and never yanks focus
+  // back to the first focusable) when a parent passes a fresh onClose closure on
+  // re-render (focus-steal fix). Handles: focus capture/move into the panel,
+  // body-scroll-lock, previously-focused restore, and the Tab focus-trap.
   useEffect(() => {
     if (!open) return;
 
@@ -41,35 +45,42 @@ export function Modal({ open, onClose, label, children }: ModalProps) {
     // Move focus into the dialog.
     (focusables()[0] ?? panelRef.current)?.focus();
 
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
+    const onTabKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const items = focusables();
+      if (items.length === 0) {
+        e.preventDefault();
         return;
       }
-      if (e.key === "Tab") {
-        const items = focusables();
-        if (items.length === 0) {
-          e.preventDefault();
-          return;
-        }
-        const first = items[0];
-        const last = items[items.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
       }
     };
 
-    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onTabKey);
     return () => {
-      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keydown", onTabKey);
       document.body.style.overflow = prevOverflow;
       previouslyFocused.current?.focus?.();
     };
+  }, [open]);
+
+  // Effect B — the Escape listener lives separately with deps [open, onClose] so
+  // a fresh onClose closure only re-adds/removes this lightweight listener; it
+  // never re-runs the focus/scroll-lock effect above.
+  useEffect(() => {
+    if (!open) return;
+    const onEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onEscape);
+    return () => document.removeEventListener("keydown", onEscape);
   }, [open, onClose]);
 
   if (!open) return null;

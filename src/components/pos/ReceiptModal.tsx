@@ -192,7 +192,7 @@ export function ReceiptModal({
               <Check size={24} strokeWidth={2.4} color="#16a34a" />
             </div>
             <div>
-              <div className="text-[18px] font-bold">ชำระเงินสำเร็จ</div>
+              <h2 className="m-0 text-[18px] font-bold">ชำระเงินสำเร็จ</h2>
               <div className="text-[12.5px]" style={{ color: "#94a3b8" }}>
                 Payment complete
               </div>
