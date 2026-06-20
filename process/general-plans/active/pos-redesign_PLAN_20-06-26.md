@@ -1,6 +1,6 @@
 # KRS POS Redesign — Development Plan
 
-- Status: 🔨 IN PROGRESS — **Phases 1–4 done** (P4 = catalog/stock + users/roles + RBAC stub + 2nd tracked migration + branchId; build + live-smoke + 13-agent review verified; P1–3 committed, P4 pending commit); `/login` UI stub; Phases 5–7 planned.
+- Status: 🔨 IN PROGRESS — **Phases 1–5 done** (P5 = sales history + shift/Z-report + refund/void + 3rd tracked migration + A2 shiftId; build + live-smoke + 14-agent review verified; P1–4 committed, P5 pending commit); `/login` UI stub; Phases 6–7 planned.
 - Created: 2026-06-20 · last finalized: 2026-06-20
 - Plan type: COMPLEX (multi-phase program — **7 phases**: P1–P6 build + P7 cross-cutting hardening)
 - Owner program: POS redesign (relates to the `production-readiness` security/correctness program)
@@ -19,8 +19,9 @@
 - ✅ **Phase 2 (`/pos` checkout core) — committed; build + pricing (32/32) + live DB smoke verified.** Taste 3-col register, integer-satang VAT-inclusive totals + proportional discount, per-line/bill discount (฿/%), 17-item seed.
 - ✅ **Phase 3 (payment + receipt/print + hold) — committed; build + tracked-migration + live pay→order smoke verified.** Payment modal (6 methods/split/cash+change/ref), 80mm receipt (print/QR/new-sale-only), hold bill; schema `PaymentType` +EWALLET/OTHER + `PaymentLine` model + posNo `POS-YYYYMMDD-####`.
 - ✅ **Phase 4 (catalog/stock + Users & Roles + RBAC stub) — done (pending commit); build + type-check + 2nd tracked migration + live smoke (users CRUD, receive-stock, product edit, validation, page render, P0/P2/P3 regression) verified; 13-agent adversarial review → 7/7 confirmed findings fixed.** Products & Inventory + Users & Roles screens; APIs users GET/POST/PATCH · products PATCH · stock-movements POST; RoleProvider/NavRail/AdminOnly RBAC **client stub**; schema `User.isActive` + `branchId` on User/Order/Product + `StockMovement`+enum. See `pos-redesign-phase-4_REPORT_20-06-26.md`.
-- 🧭 **8 routes live:** `/login` (UI stub) · `/pos` (Taste checkout, DB-dependent) · `/products` `/users` (Taste admin screens) · `/sales` `/shift` `/data` `/docs` (placeholders) · `/` → `/pos` redirect.
-- ✅ **Resolved:** `domain-multi-branch-ready` (branchId) — implemented in Phase 4 on User/Order/Product (`BR-01` default).
+- ✅ **Phase 5 (sales history + shift/Z-report + refund/void/reprint) — done (pending commit); build + type-check + 3rd tracked migration + live smoke (A2 checkout regression, refund/void domain rules, Z-report money, lifecycle, pages, P1–P4 regression) verified; 14-agent adversarial review → 9/9 confirmed findings fixed.** /sales + /shift Taste screens; APIs orders GET(+payments/filters)/POST(+A2 shift-link) · orders/[id] PATCH refund/void · shift GET+POST(open/close+Z-report); schema `VOIDED` + `Shift`+ShiftStatus + SyncStatus + `shiftId`/`syncStatus`/`accountingDocNo`/`taxRequested` on Order. See `pos-redesign-phase-5_REPORT_20-06-26.md`.
+- 🧭 **8 routes live:** `/login` (UI stub) · `/pos` (Taste checkout) · `/products` `/users` (Taste admin) · `/sales` `/shift` (Taste sales/shift) · `/data` `/docs` (placeholders) · `/` → `/pos` redirect.
+- ✅ **Resolved:** `domain-multi-branch-ready` (branchId, Phase 4); shift/sales/refund/void/Z-report (Phase 5, A2 `shiftId` FK on Order).
 - ⏸️ **Deferred:** Real auth/RBAC **enforcement** → `production-readiness` program (the Phase-4 RBAC is a client demo stub; see Login addendum + §8).
 
 ---
@@ -82,8 +83,8 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 | **P2** | ✅ done (committed) | Checkout core redesigned — product grid, cart, discounts, VAT-inclusive totals | P1 | 19 | 8 redesign-existing, 11 build-new-ui |
 | **P3** | ✅ done (committed) | Payment + receipt/print + hold bill — complete the sell-to-receipt flow | P2 | 28 | 27 build-new-ui, 1 full-stack-new |
 | **P4** | ✅ done | Catalog/stock management + Users & Roles + RBAC (client stub) | P1, P3 | 20 | 12 build-new-ui, 8 full-stack-new |
-| **P5** | ▶ next | Shift open/close + Z-report + Sales History with refund/void/reprint | P3, P4 | 23 | 11 build-new-ui, 12 full-stack-new |
-| **P6** | ⏳ planned | KRS Data Link (sync/offline) + Customer/member + tax invoice + Design Spec docs | P2, P3, P4, P5 | 67 | 51 full-stack-new, 16 build-new-ui |
+| **P5** | ✅ done | Shift open/close + Z-report + Sales History with refund/void/reprint | P3, P4 | 23 | 11 build-new-ui, 12 full-stack-new |
+| **P6** | ▶ next | KRS Data Link (sync/offline) + Customer/member + tax invoice + Design Spec docs | P2, P3, P4, P5 | 67 | 51 full-stack-new, 16 build-new-ui |
 | **P7** | ⏳ planned | Integration hardening, responsive QA, regression, polish | P2, P3, P4, P5, P6 | — | cross-cutting / QA |
 
 ### Phase 1 — Design-system foundation + app shell, rail, theme, routing
@@ -210,7 +211,7 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 ### Phase 5 — Shift open/close + Z-report + Sales History with refund/void/reprint
 
-- **Status:** ⏳ planned
+- **Status:** ✅ done (build + type-check + 3rd tracked migration `20260620134846_phase5_shift_sales_status` + live smoke verified; 14-agent adversarial review → 9/9 confirmed findings fixed; pending commit). Decision A2 (shiftId FK on Order) applied. See `pos-redesign-phase-5_REPORT_20-06-26.md`.
 - **Depends on:** Phase 3, Phase 4
 - **Goal:** Add the shift lifecycle and the sales history surface that consume real orders. Shift: open-shift, sales-by-payment-method breakdown, refunds/discounts/output-VAT cards, cash counting with variance, close + daily summary (DS). Sales History: searchable/filterable table, sale-detail drawer, refund (credit note), void (pre-sync only), reprint, with no-destructive-delete + synced-bill-lock domain rules. Seed 6 bills to exercise action gating.
 - **Verification gate:** npm run type-check + npm run build pass. Manual: Sales History lists real orders, searches by posNo/customer, filter chips (all/paid/refunded/voided/failed/tax) work, row opens a detail drawer with contextual actions; Refund sets status REFUNDED via confirm and issues a credit note; Void (only when not yet synced) sets CANCELLED + totals 0; reprint reopens the 80mm receipt (using payment-lines fallback for seeded bills); drawer closes on backdrop/X and auto-closes after an action. Shift screen shows sales-by-payment-method breakdown, refunds/discounts/output-VAT, cash-count variance (green/amber/red), and Close generates a DS-dated daily summary success card. Seed includes 6 varied bills. Requires Shift model + close/refund/void endpoints.
@@ -218,29 +219,29 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 | Function (id) | What it is | Screen | In Taste | In app | Gap | Done? |
 |---|---|---|---|---|---|---|
-| `screen-sales-history` | Sales History (ประวัติการขาย) | sales | 🔴 no | 🟡 partial | build-new-ui | — |
-| `screen-shift-close` | Shift Close (ปิดรอบขาย) | shift | 🔴 no | 🔴 no | full-stack-new | — |
-| `overlay-sale-detail-drawer` | Sale Detail drawer | sales | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-sales-search` | Sales search (onSalesQuery) | sales | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-sales-filter-chips` | Sales filter chips | sales | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-open-sale-detail` | Open sale detail (openSaleDetail) | sales | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-refund-sale` | Refund sale + credit note (refundSale) | sales | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-void-sale` | Void sale (voidSale) | sales | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-print-from-history` | Reprint from history (printFromHistory) | sales | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-counted-cash` | Enter counted cash (onCounted) | shift | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-close-shift` | Close shift + daily summary (closeShift) | shift | 🔴 no | 🔴 no | full-stack-new | — |
-| `state-sale-status` | Sale status enum | sales | 🔴 no | 🟡 partial | build-new-ui | — |
-| `state-sales-empty` | Sales table empty state | sales | 🔴 no | 🔴 no | build-new-ui | — |
-| `state-shift-closed` | Shift closed state | shift | 🔴 no | 🔴 no | full-stack-new | — |
-| `state-variance` | Cash variance state | shift | 🔴 no | 🔴 no | full-stack-new | — |
-| `flow-shift-lifecycle` | Flow: open shift → sell → close shift / daily summary | shift | 🟡 partial | 🔴 no | full-stack-new | — |
-| `flow-sales-history-reprint-refund` | Flow: sales history → reprint / refund / void / tax invoice | sales | 🔴 no | 🔴 no | full-stack-new | — |
-| `domain-no-destructive-delete` | No destructive delete (void/refund only) | global | 🔴 no | 🟡 partial | full-stack-new | — |
-| `domain-synced-bills-locked` | Synced bills locked from direct edits | global | 🔴 no | 🔴 no | full-stack-new | — |
-| `display-payment-method-breakdown` | Sales-by-payment-method breakdown (shift) | shift | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-close-sale-detail` | Close sale detail drawer (closeSaleDetail + backdrop) | sales | 🔴 no | 🔴 no | build-new-ui | — |
-| `display-receipt-payment-fallback` | Receipt payment-lines fallback | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `display-seed-sales-dataset` | Seed sales dataset (6 bills with statuses/sync/acct numbers) | sales | 🔴 no | 🟡 partial | build-new-ui | — |
+| `screen-sales-history` | Sales History (ประวัติการขาย) | sales | 🔴 no | 🟡 partial | build-new-ui | ✅ |
+| `screen-shift-close` | Shift Close (ปิดรอบขาย) | shift | 🔴 no | 🔴 no | full-stack-new | ✅ |
+| `overlay-sale-detail-drawer` | Sale Detail drawer | sales | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-sales-search` | Sales search (onSalesQuery) | sales | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-sales-filter-chips` | Sales filter chips | sales | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-open-sale-detail` | Open sale detail (openSaleDetail) | sales | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-refund-sale` | Refund sale + credit note (refundSale) | sales | 🔴 no | 🔴 no | full-stack-new | ✅ |
+| `action-void-sale` | Void sale (voidSale) | sales | 🔴 no | 🔴 no | full-stack-new | ✅ |
+| `action-print-from-history` | Reprint from history (printFromHistory) | sales | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-counted-cash` | Enter counted cash (onCounted) | shift | 🔴 no | 🔴 no | full-stack-new | ✅ |
+| `action-close-shift` | Close shift + daily summary (closeShift) | shift | 🔴 no | 🔴 no | full-stack-new | ✅ |
+| `state-sale-status` | Sale status enum | sales | 🔴 no | 🟡 partial | build-new-ui | ✅ |
+| `state-sales-empty` | Sales table empty state | sales | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `state-shift-closed` | Shift closed state | shift | 🔴 no | 🔴 no | full-stack-new | ✅ |
+| `state-variance` | Cash variance state | shift | 🔴 no | 🔴 no | full-stack-new | ✅ |
+| `flow-shift-lifecycle` | Flow: open shift → sell → close shift / daily summary | shift | 🟡 partial | 🔴 no | full-stack-new | ✅ |
+| `flow-sales-history-reprint-refund` | Flow: sales history → reprint / refund / void / tax invoice | sales | 🔴 no | 🔴 no | full-stack-new | ✅ (tax invoice → P6) |
+| `domain-no-destructive-delete` | No destructive delete (void/refund only) | global | 🔴 no | 🟡 partial | full-stack-new | ✅ (no DELETE; 405) |
+| `domain-synced-bills-locked` | Synced bills locked from direct edits | global | 🔴 no | 🔴 no | full-stack-new | ✅ (void blocked if SYNCED) |
+| `display-payment-method-breakdown` | Sales-by-payment-method breakdown (shift) | shift | 🔴 no | 🔴 no | full-stack-new | ✅ (COMPLETED-only) |
+| `action-close-sale-detail` | Close sale detail drawer (closeSaleDetail + backdrop) | sales | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `display-receipt-payment-fallback` | Receipt payment-lines fallback | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `display-seed-sales-dataset` | Seed sales dataset (6 bills with statuses/sync/acct numbers) | sales | 🔴 no | 🟡 partial | build-new-ui | ✅ |
 
 ### Phase 6 — KRS Data Link (sync/offline) + Customer/member + tax invoice + Design Spec docs
 
