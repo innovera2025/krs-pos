@@ -16,6 +16,13 @@ model User {
   name      String
   role      Role     @default(CASHIER)
   password  String
+  // Activate/deactivate without a destructive delete (Phase 4 Users & Roles:
+  // state-user-active-inactive). A deactivated user is hidden/blocked, never removed.
+  isActive  Boolean  @default(true)
+  // Multi-branch-ready data model (domain-multi-branch-ready) — a user belongs to
+  // a branch. Single-branch deployments use the BR-01 default. Surfaced in the
+  // Users & Roles table and selected by the users API.
+  branchId  String   @default("BR-01")
   orders    Order[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -44,9 +51,13 @@ model Product {
   barcode     String?     @unique
   imageUrl    String?
   isActive    Boolean     @default(true)
+  // Multi-branch-ready data model (domain-multi-branch-ready) — deferred from
+  // Phase 1, added here. Single-branch deployments use the BR-01 default.
+  branchId    String      @default("BR-01")
   categoryId  String?
   category    Category?   @relation(fields: [categoryId], references: [id])
   orderItems  OrderItem[]
+  movements   StockMovement[]
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 }
@@ -62,6 +73,9 @@ model Order {
   paymentType  PaymentType @default(CASH)
   amountPaid   Decimal     @db.Decimal(10, 2) @default(0)
   change       Decimal     @db.Decimal(10, 2) @default(0)
+  // Multi-branch-ready data model (domain-multi-branch-ready) — deferred from
+  // Phase 1, added here. Single-branch deployments use the BR-01 default.
+  branchId     String      @default("BR-01")
   cashierId    String?
   cashier      User?       @relation(fields: [cashierId], references: [id])
   items        OrderItem[]
@@ -109,4 +123,25 @@ model OrderItem {
   unitPrice  Decimal  @db.Decimal(10, 2)
   lineTotal  Decimal  @db.Decimal(10, 2)
   createdAt  DateTime @default(now())
+}
+
+// Stock movement ledger (Phase 4: action-receive-stock / flow-product-stock).
+// RECEIVE = goods-received note (GRN, +stock); SALE/ADJUST are reserved for
+// future wiring (POS sale decrements / manual corrections). Each movement
+// records the signed/positive qty plus an optional reference (e.g. PO number).
+enum StockMovementType {
+  RECEIVE
+  SALE
+  ADJUST
+}
+
+model StockMovement {
+  id        String            @id @default(cuid())
+  productId String
+  product   Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  type      StockMovementType
+  qty       Int
+  reference String?
+  branchId  String            @default("BR-01")
+  createdAt DateTime          @default(now())
 }

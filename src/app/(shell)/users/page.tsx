@@ -1,28 +1,444 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import {
+  Plus,
+  AlertTriangle,
+  ShieldCheck,
+  UserRound,
+  Check,
+  X as XIcon,
+} from "lucide-react";
+import { useToast } from "@/components/ToastProvider";
+import { AdminOnly } from "@/components/AdminOnly";
+import { AddUserModal } from "@/components/users/AddUserModal";
+import {
+  ADMIN_PERMISSIONS,
+  SELLER_PERMISSIONS,
+  initials,
+  isAdminTier,
+  roleLabel,
+  uiRoleToEnum,
+  type UiRole,
+  type UserDTO,
+} from "@/components/users/userMeta";
+
+type LoadState = "loading" | "ready" | "error";
+type FilterChip = "all" | "seller" | "admin";
+
 export default function UsersPage() {
   return (
-    <div className="flex h-full items-center justify-center p-8">
-      <div
-        className="w-full max-w-md text-center"
-        style={{
-          background: "var(--surface)",
-          border: "1px solid var(--line)",
-          borderRadius: "var(--r-xl)",
-          boxShadow: "var(--shadow-sm)",
-          padding: "40px 32px",
-        }}
-      >
-        <h1 style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-.02em", margin: 0 }}>
-          จัดการผู้ใช้และสิทธิ์
-        </h1>
-        <p style={{ margin: "6px 0 0", color: "var(--muted)", fontSize: 13 }}>
-          Users &amp; Roles
-        </p>
-        <p style={{ margin: "20px 0 0", color: "var(--soft)", fontSize: 12.5, lineHeight: 1.6 }}>
-          จะพัฒนาในเฟสถัดไป
-          <br />
-          Coming in a later phase (Phase 4)
-        </p>
+    <AdminOnly>
+      <UsersScreen />
+    </AdminOnly>
+  );
+}
+
+function UsersScreen() {
+  const { showToast } = useToast();
+
+  const [users, setUsers] = useState<UserDTO[]>([]);
+  const [loadState, setLoadState] = useState<LoadState>("loading");
+  const [filter, setFilter] = useState<FilterChip>("all");
+
+  // Add-user modal.
+  const [addOpen, setAddOpen] = useState(false);
+  const [addSubmitting, setAddSubmitting] = useState(false);
+  const [addError, setAddError] = useState("");
+
+  // Per-row toggle in-flight ids (to disable the toggle while patching).
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+
+  async function loadUsers() {
+    setLoadState("loading");
+    try {
+      const res = await fetch("/api/users");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as UserDTO[];
+      setUsers(Array.isArray(data) ? data : []);
+      setLoadState("ready");
+    } catch {
+      setLoadState("error");
+    }
+  }
+
+  useEffect(() => {
+    loadUsers();
+  }, []);
+
+  // Filter chips: ทั้งหมด / ผู้ขาย (CASHIER) / Admin (ADMIN+MANAGER).
+  const filtered = useMemo(() => {
+    if (filter === "all") return users;
+    if (filter === "admin") return users.filter((u) => isAdminTier(u.role));
+    return users.filter((u) => !isAdminTier(u.role));
+  }, [users, filter]);
+
+  // ---- add user ----
+  function openAdd() {
+    setAddError("");
+    setAddOpen(true);
+  }
+
+  async function submitAdd(input: { name: string; email: string; role: UiRole }) {
+    setAddSubmitting(true);
+    setAddError("");
+    try {
+      const res = await fetch("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: input.name,
+          email: input.email,
+          role: uiRoleToEnum(input.role),
+        }),
+      });
+      if (!res.ok) {
+        let msg = "เพิ่มผู้ใช้ไม่สำเร็จ";
+        try {
+          const data = await res.json();
+          if (data?.error) msg = data.error;
+        } catch {
+          /* keep default */
+        }
+        setAddError(msg);
+        return;
+      }
+      const created = (await res.json()) as UserDTO;
+      // Prepend the created user (matches Simple POS add-user behavior).
+      setUsers((prev) => [created, ...prev]);
+      setAddOpen(false);
+      showToast("เพิ่มผู้ใช้แล้ว");
+    } catch {
+      setAddError("เพิ่มผู้ใช้ไม่สำเร็จ");
+    } finally {
+      setAddSubmitting(false);
+    }
+  }
+
+  // ---- activate / deactivate (no destructive delete) ----
+  async function toggleActive(user: UserDTO) {
+    if (togglingId) return;
+    setTogglingId(user.id);
+    try {
+      const res = await fetch(`/api/users/${user.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isActive: !user.isActive }),
+      });
+      if (!res.ok) {
+        showToast("อัปเดตสถานะไม่สำเร็จ");
+        return;
+      }
+      const updated = (await res.json()) as UserDTO;
+      setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
+      showToast(updated.isActive ? "เปิดใช้งานผู้ใช้แล้ว" : "ปิดใช้งานผู้ใช้แล้ว");
+    } catch {
+      showToast("อัปเดตสถานะไม่สำเร็จ");
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-4 overflow-auto p-[22px]">
+      {/* Header */}
+      <header className="flex flex-wrap items-center gap-3.5">
+        <div className="flex-1 min-w-[220px]">
+          <h1 className="m-0 text-[24px] font-bold leading-[1.08] tracking-tight">
+            จัดการผู้ใช้และสิทธิ์
+          </h1>
+          <p className="mt-1 text-[12.5px]" style={{ color: "var(--muted)" }}>
+            Users &amp; Roles · กำหนดบทบาท เปิด/ปิดการใช้งาน
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={openAdd}
+          className="flex h-11 items-center gap-2 rounded-[14px] px-4 text-[13.5px] font-bold text-white"
+          style={{ background: "var(--brand)", boxShadow: "var(--shadow-sm)" }}
+        >
+          <Plus size={17} strokeWidth={2.5} /> เพิ่มผู้ใช้
+        </button>
+      </header>
+
+      {/* Role-permission summary cards */}
+      <section className="grid gap-3.5" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))" }}>
+        <PermissionCard
+          title="ผู้ขาย · Seller"
+          icon={<UserRound size={18} strokeWidth={2} />}
+          accent="#2563eb"
+          accentSoft="#eef4ff"
+          allowed={SELLER_PERMISSIONS.allowed}
+          denied={SELLER_PERMISSIONS.denied}
+        />
+        <PermissionCard
+          title="Admin · ผู้ดูแล"
+          icon={<ShieldCheck size={18} strokeWidth={2} />}
+          accent="var(--brand-2)"
+          accentSoft="var(--mint)"
+          allowed={ADMIN_PERMISSIONS.allowed}
+          denied={ADMIN_PERMISSIONS.denied}
+        />
+      </section>
+
+      {/* Filter chips */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Chip active={filter === "all"} onClick={() => setFilter("all")}>
+          ทั้งหมด
+        </Chip>
+        <Chip active={filter === "seller"} onClick={() => setFilter("seller")}>
+          ผู้ขาย
+        </Chip>
+        <Chip active={filter === "admin"} onClick={() => setFilter("admin")}>
+          Admin
+        </Chip>
       </div>
+
+      {/* User table */}
+      <section
+        className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[18px] border bg-white"
+        style={{ borderColor: "var(--line)", boxShadow: "var(--shadow-sm)" }}
+      >
+        {loadState === "loading" ? (
+          <div
+            className="grid flex-1 place-items-center py-16 text-center text-[13px]"
+            style={{ color: "var(--soft)" }}
+          >
+            กำลังโหลดผู้ใช้…
+          </div>
+        ) : loadState === "error" ? (
+          <div
+            className="mx-auto flex max-w-[320px] flex-1 flex-col items-center justify-center gap-3 py-16 text-center"
+            style={{ color: "var(--muted)" }}
+          >
+            <span
+              className="grid h-[64px] w-[64px] place-items-center rounded-[22px]"
+              style={{ background: "var(--red-soft)", color: "#dc2626" }}
+            >
+              <AlertTriangle size={28} strokeWidth={2} />
+            </span>
+            <strong className="text-[14px]" style={{ color: "var(--ink)" }}>
+              โหลดผู้ใช้ไม่สำเร็จ
+            </strong>
+            <button
+              type="button"
+              onClick={loadUsers}
+              className="h-10 rounded-[12px] border px-4 text-[13px] font-semibold"
+              style={{ borderColor: "var(--line)" }}
+            >
+              ลองใหม่
+            </button>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div
+            className="grid flex-1 place-items-center py-16 text-center text-[13px]"
+            style={{ color: "var(--soft)" }}
+          >
+            ไม่พบผู้ใช้ในตัวกรองนี้
+          </div>
+        ) : (
+          <div className="min-h-0 flex-1 overflow-auto">
+            <table className="w-full border-collapse text-[13px]">
+              <thead>
+                <tr
+                  className="sticky top-0 z-10 text-left"
+                  style={{ background: "var(--surface-2)", color: "var(--muted)" }}
+                >
+                  <Th>ผู้ใช้</Th>
+                  <Th>อีเมล</Th>
+                  <Th>บทบาท</Th>
+                  <Th>สาขา</Th>
+                  <Th>สถานะ</Th>
+                  <Th className="text-right">จัดการ</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((u) => (
+                  <tr key={u.id} className="border-t" style={{ borderColor: "var(--line)" }}>
+                    <Td>
+                      <div className="flex items-center gap-2.5">
+                        <span
+                          aria-hidden="true"
+                          className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-full text-[12px] font-bold"
+                          style={{
+                            background: isAdminTier(u.role) ? "var(--mint)" : "#eef4ff",
+                            color: isAdminTier(u.role) ? "var(--brand-2)" : "#2563eb",
+                          }}
+                        >
+                          {initials(u.name)}
+                        </span>
+                        <span className="font-semibold" style={{ opacity: u.isActive ? 1 : 0.55 }}>
+                          {u.name}
+                        </span>
+                      </div>
+                    </Td>
+                    <Td>
+                      <span className="mono text-[12px]" style={{ color: "var(--muted)" }}>
+                        {u.email}
+                      </span>
+                    </Td>
+                    <Td>
+                      <span
+                        className="inline-flex items-center rounded-full px-2.5 py-1 text-[11.5px] font-semibold"
+                        style={{
+                          background: isAdminTier(u.role) ? "var(--mint)" : "#eef4ff",
+                          color: isAdminTier(u.role) ? "var(--brand-2)" : "#2563eb",
+                        }}
+                      >
+                        {roleLabel(u.role)}
+                      </span>
+                    </Td>
+                    <Td>
+                      <span className="mono text-[12px]" style={{ color: "var(--muted)" }}>
+                        {u.branchId}
+                      </span>
+                    </Td>
+                    <Td>
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11.5px] font-semibold"
+                        style={{
+                          background: u.isActive ? "var(--mint)" : "#f2f4f7",
+                          color: u.isActive ? "var(--brand-2)" : "var(--soft)",
+                        }}
+                      >
+                        {u.isActive ? "ใช้งานอยู่" : "ปิดใช้งาน"}
+                      </span>
+                    </Td>
+                    <Td className="text-right">
+                      <button
+                        type="button"
+                        onClick={() => toggleActive(u)}
+                        disabled={togglingId === u.id}
+                        aria-label={`${u.isActive ? "ปิดใช้งาน" : "เปิดใช้งาน"} ${u.name}`}
+                        className="h-9 rounded-[11px] border px-3 text-[12.5px] font-semibold disabled:opacity-50"
+                        style={{
+                          borderColor: "var(--line)",
+                          color: u.isActive ? "#b42318" : "var(--brand-2)",
+                        }}
+                      >
+                        {togglingId === u.id
+                          ? "กำลังบันทึก…"
+                          : u.isActive
+                          ? "ปิดใช้งาน"
+                          : "เปิดใช้งาน"}
+                      </button>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <AddUserModal
+        open={addOpen}
+        submitting={addSubmitting}
+        error={addError}
+        onClose={() => setAddOpen(false)}
+        onSubmit={submitAdd}
+      />
     </div>
   );
+}
+
+function PermissionCard({
+  title,
+  icon,
+  accent,
+  accentSoft,
+  allowed,
+  denied,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  accent: string;
+  accentSoft: string;
+  allowed: string[];
+  denied: string[];
+}) {
+  return (
+    <div
+      className="flex flex-col gap-3 rounded-[18px] border bg-white p-4"
+      style={{ borderColor: "var(--line)", boxShadow: "var(--shadow-sm)" }}
+    >
+      <div className="flex items-center gap-2.5">
+        <span
+          className="grid h-9 w-9 place-items-center rounded-[12px]"
+          style={{ background: accentSoft, color: accent }}
+        >
+          {icon}
+        </span>
+        <strong className="text-[14.5px]">{title}</strong>
+      </div>
+      <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
+        {allowed.map((cap) => (
+          <li key={cap} className="flex items-center gap-2 text-[12.5px]">
+            <Check size={14} strokeWidth={2.5} color="var(--brand-2)" />
+            <span>{cap}</span>
+          </li>
+        ))}
+        {denied.map((cap) => (
+          <li
+            key={cap}
+            className="flex items-center gap-2 text-[12.5px]"
+            style={{ color: "var(--soft)" }}
+          >
+            <XIcon size={14} strokeWidth={2.5} color="#cbd5e1" />
+            <span className="line-through">{cap}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function Chip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className="h-9 rounded-full border px-4 text-[12.5px] font-semibold transition"
+      style={{
+        borderColor: active ? "var(--brand)" : "var(--line)",
+        background: active ? "var(--brand)" : "#fff",
+        color: active ? "#fff" : "var(--ink)",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Th({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <th className={`px-4 py-2.5 text-[11.5px] font-semibold uppercase tracking-wide ${className}`}>
+      {children}
+    </th>
+  );
+}
+
+function Td({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return <td className={`px-4 py-3 align-middle ${className}`}>{children}</td>;
 }

@@ -59,17 +59,42 @@ async function main() {
     });
   }
 
-  // Default admin user (password is plaintext for demo — replace with hashing in production)
-  await prisma.user.upsert({
-    where: { email: "admin@krs-pos.local" },
-    update: {},
-    create: {
+  // Users — keep the existing admin and add two sellers (CASHIER) so the Users &
+  // Roles screen (Phase 4) has rows to exercise the active/inactive toggle and
+  // the filter chips. Passwords are non-functional placeholders for the demo.
+  // TODO(production-readiness): hash + first-login set; never store a plaintext
+  // or placeholder credential in a real deployment.
+  const seedUsers = [
+    {
       email: "admin@krs-pos.local",
       name: "Admin",
-      role: "ADMIN",
+      role: "ADMIN" as const,
       password: "admin123",
+      isActive: true,
     },
-  });
+    {
+      email: "seller.aroon@krs-pos.local",
+      name: "อรุณ ขายดี",
+      role: "CASHIER" as const,
+      password: "!set-on-first-login-seed-aroon",
+      isActive: true,
+    },
+    {
+      email: "seller.malee@krs-pos.local",
+      name: "มาลี พักงาน",
+      role: "CASHIER" as const,
+      password: "!set-on-first-login-seed-malee",
+      isActive: false,
+    },
+  ];
+
+  for (const u of seedUsers) {
+    await prisma.user.upsert({
+      where: { email: u.email },
+      update: {},
+      create: u,
+    });
+  }
 
   console.log("Seed completed.");
 }
