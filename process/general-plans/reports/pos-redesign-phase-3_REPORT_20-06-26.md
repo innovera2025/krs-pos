@@ -43,6 +43,15 @@
 ## Production-readiness (deferred, not regressed)
 Decimal-safe server recompute · idempotency key (double-submit) · atomic conditional stock decrement · DB-sequence posNo (collision-safe). All marked TODO in the orders route.
 
+## Post-review hardening (adversarial review — fix `104665b`)
+A 10-agent adversarial review (5 dimensions × verify) found **20 confirmed issues** (1 critical, 5 high, 3 medium, 11 low; 0 dropped) — consolidated to **13 fixes across 8 files**. Highlights:
+- **HIGH:** the `INSUFFICIENT_CASH` gate compared cash received against the FULL bill total → rejected every valid **cash + non-cash split**; now compares against the cash portion (`cashDue` = sum of cash lines).
+- **CRITICAL:** the shared `Modal` focus effect re-ran on each fresh `onClose` closure, **stealing focus while typing** in payment inputs; split into an `[open]`-only focus/scroll-lock/trap effect + a separate `[open, onClose]` Escape listener.
+- **MEDIUM:** posNo date + daily counter now computed in **Asia/Bangkok** (was server-UTC → wrong business day for early-morning sales); dead `locked` split-line flag replaced with active-line targeting.
+- fractional item quantity → 400 BAD_ITEM (was opaque 500); `amountPaid` reconciles to total tendered on splits; `bahtToSatang` strips thousands separators.
+- a11y: `payError` `role="alert"`, method tiles `role="group"`, faux-QR `aria-hidden`, modal `<h2>` headings; split lines keyed by stable id; `openPayment` preserves an in-progress split (X-close).
+- **Re-verified:** type-check + build + **live re-smoke** — mixed split (cash+transfer) now **201** with 2 payment lines; fractional qty **400 BAD_ITEM**; `/pos` 200, 0 errors. Logic-only — schema/migration + shell/login untouched.
+
 ## Next
 - Mark Phase 3 ✅ done in plan/timeline (this report's commit).
 - **Phase 4** (Catalog/stock management + Users & Roles + RBAC; applies the deferred branchId migration) is next — begin with its own RESEARCH on approval.
