@@ -1,0 +1,33 @@
+/* ============================================================
+   pguard — Typography tokens
+   IBM Plex Sans Thai (UI) · IBM Plex Sans (Latin) · IBM Plex Mono (numerals/IDs)
+   Thai-tuned rhythm: looser line-height + tiny positive tracking so
+   stacked Thai vowels / tone marks never cramp.
+   ============================================================ */
+
+:root {
+  /* ---- Families ---- */
+  --font-thai:  'IBM Plex Sans Thai', 'IBM Plex Sans', system-ui, sans-serif;
+  --font-latin: 'IBM Plex Sans', 'IBM Plex Sans Thai', system-ui, sans-serif;
+  --font-mono:  'IBM Plex Mono', ui-monospace, monospace;
+
+  /* ---- Type scale (px) ---- */
+  --t-display: 44px;
+  --t-h1: 34px;
+  --t-h2: 27px;
+  --t-h3: 21px;
+  --t-lg: 18px;
+  --t-base: 16px;
+  --t-sm: 14px;
+  --t-xs: 12px;
+  --t-2xs: 11px;
+
+  /* ---- Line-height (Thai-tuned) ---- */
+  --lh-tight: 1.3;     /* @kind font */
+  --lh-snug: 1.45;     /* @kind font */
+  --lh-base: 1.62;     /* @kind font */
+  --lh-relaxed: 1.78;  /* @kind font */
+
+  /* ---- Tracking ---- */
+  --ls-thai: 0.01em;
+}

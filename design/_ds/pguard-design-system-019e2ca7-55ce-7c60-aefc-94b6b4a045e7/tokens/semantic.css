@@ -1,0 +1,87 @@
+/* ============================================================
+   pguard — Semantic surface & text aliases (theme-aware)
+   Light defaults on :root; dark overrides on [data-theme="dark"].
+   Components reference THESE aliases, never raw palette steps, so a
+   single attribute flip re-themes the whole system.
+   ============================================================ */
+
+:root {
+  /* ---- Surfaces (LIGHT) ---- */
+  --bg-app:      var(--n-50);
+  --bg-surface:  var(--n-0);
+  --bg-raised:   var(--n-0);
+  --bg-sunken:   var(--n-100);
+  --bg-inverse:  var(--green-900);
+
+  /* ---- Borders ---- */
+  --border:        var(--n-200);
+  --border-strong: var(--n-300);
+
+  /* ---- Text ---- */
+  --text-strong:   var(--n-900);
+  --text:          var(--n-800);
+  --text-muted:    var(--n-500);
+  --text-faint:    var(--n-400);
+  --text-on-brand: #FFFFFF;
+
+  /* ---- Brand roles ---- */
+  --brand:           var(--green-900);  /* anchor (logo, active nav, inverse panels) */
+  --brand-int:       var(--green-500);  /* interactive surfaces (buttons, links) */
+  --brand-int-hover: var(--green-600);
+  --accent:          var(--amber-500);
+  --accent-hover:    var(--amber-600);
+  --focus-ring:      rgba(31,169,113,.45);
+}
+
+/* ===================== DARK MODE ===================== */
+[data-theme="dark"] {
+  --bg-app:      #0A0F0D;
+  --bg-surface:  #121916;
+  --bg-raised:   #18211D;
+  --bg-sunken:   #0D1411;
+  --bg-inverse:  #E9F8F1;
+
+  --border:        #243029;
+  --border-strong: #324239;
+
+  --text-strong:   #F3F7F5;
+  --text:          #DCE5E0;
+  --text-muted:    #93A29B;
+  --text-faint:    #6B7A72;
+  --text-on-brand: #04140D;
+
+  --brand:           #0F2A21;
+  --brand-int:       #2FC089;
+  --brand-int-hover: #45CF9A;
+  --accent:          #FBB23E;
+  --accent-hover:    #FFC560;
+  --focus-ring:      rgba(47,192,137,.5);
+
+  --success-bg: rgba(22,163,74,.16);
+  --warning-bg: rgba(245,158,11,.15);
+  --danger-bg:  rgba(229,72,77,.16);
+  --info-bg:    rgba(42,111,219,.16);
+
+  --sh-xs: 0 1px 2px rgba(0,0,0,.4);
+  --sh-sm: 0 1px 3px rgba(0,0,0,.5), 0 1px 2px rgba(0,0,0,.4);
+  --sh-md: 0 4px 14px rgba(0,0,0,.5);
+  --sh-lg: 0 14px 32px rgba(0,0,0,.55);
+  --sh-xl: 0 26px 60px rgba(0,0,0,.6);
+}
+
+/* ---- Base reset + body type (Thai-tuned rhythm) ---- */
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--font-thai);
+  letter-spacing: var(--ls-thai);
+  line-height: var(--lh-base);
+  color: var(--text);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Thai text wraps more gracefully word-by-word where supported */
+.th { word-break: break-word; line-break: loose; }

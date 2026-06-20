@@ -1,0 +1,68 @@
+/* ============================================================
+   pguard — Color tokens
+   Brand: Deep Forest green (#0E3B2E anchor) + interactive #1FA971
+   Accent: Amber #F59E0B · Neutrals: green-tinted slate
+   Source of truth: hi-fi design tokens.css (extracted, do not drift)
+   ============================================================ */
+
+:root {
+  /* ---- Brand: Primary Green (Deep Forest) ---- */
+  --green-50:  #E9F8F1;
+  --green-100: #C9EEDD;
+  --green-200: #97E0C2;
+  --green-300: #5FCEA4;
+  --green-400: #30B987;
+  --green-500: #1FA971;  /* interactive base */
+  --green-600: #15885B;
+  --green-700: #126B49;
+  --green-800: #0E5238;
+  --green-900: #0E3B2E;  /* Deep Forest — brand anchor */
+  --green-950: #082619;
+
+  /* ---- Accent: Amber (warm CTA / tips / highlights) ---- */
+  --amber-50:  #FEF6E7;
+  --amber-100: #FDE9C2;
+  --amber-200: #FBD489;
+  --amber-300: #F9BC4D;
+  --amber-400: #F7A823;
+  --amber-500: #F59E0B;  /* accent base */
+  --amber-600: #D97D06;
+  --amber-700: #B45F09;
+  --amber-800: #92490E;
+  --amber-900: #78400F;
+
+  /* ---- Neutrals (green-tinted slate) ---- */
+  --n-0:   #FFFFFF;
+  --n-50:  #F6F8F7;
+  --n-100: #EDF1EF;
+  --n-200: #DEE5E2;
+  --n-300: #C6D0CC;
+  --n-400: #94A29D;
+  --n-500: #69776F;
+  --n-600: #4C5953;
+  --n-700: #36423D;
+  --n-800: #222B27;
+  --n-900: #141A17;
+  --n-950: #0A0E0C;
+
+  /* ---- Semantic ---- */
+  --success:    #16A34A;
+  --success-bg: #E7F6ED;
+  --warning:    #F59E0B;
+  --warning-bg: #FEF3E0;
+  --danger:     #E5484D;
+  --danger-bg:  #FCEAEA;
+  --info:       #2A6FDB;
+  --info-bg:    #E8F0FC;
+
+  /* ---- Guard live status (the platform's signature signal colors) ---- */
+  --status-active:  #1FA971;  /* available */
+  --status-working: #F59E0B;  /* on a job */
+  --status-offline: #EF5C5C;  /* offline */
+  --status-active-ring:  rgba(31,169,113,.22);
+  --status-working-ring: rgba(245,158,11,.22);
+  --status-offline-ring: rgba(239,92,92,.20);
+
+  /* ---- One-off carried from the design's component sheet ---- */
+  --on-amber: #2A1500; /* ink for text on the amber accent button */
+}

@@ -1,0 +1,11 @@
+/* ============================================================
+   pguard Design System — global entry point
+   Consumers link THIS one file. Keep it @import lines only.
+   Order matters: fonts first (@import url must precede rules),
+   then primitives, then semantic aliases + base.
+   ============================================================ */
+@import "tokens/fonts.css";
+@import "tokens/colors.css";
+@import "tokens/typography.css";
+@import "tokens/spacing.css";
+@import "tokens/semantic.css";

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KRS POS — Taste Redesign</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <style>
+    :root{
+      --ink:#101828; --muted:#667085; --soft:#98a2b3; --line:#e4e7ec; --line-strong:#cfd7e4;
+      --bg:#eef3f7; --surface:#ffffff; --surface-2:#f8fafc; --sunken:#f2f6f8;
+      --forest:#0e3b2e; --forest-2:#14513f; --brand:#1fa971; --brand-2:#11865a; --mint:#dff8ec;
+      --amber:#f59e0b; --amber-soft:#fff4d8; --red:#ef4444; --red-soft:#fff1f1; --blue:#2563eb; --blue-soft:#eef4ff;
+      --shadow:0 18px 48px rgba(21, 38, 64, .10); --shadow-sm:0 7px 20px rgba(21,38,64,.07);
+      --r-sm:10px; --r-md:14px; --r-lg:20px; --r-xl:26px;
+    }
+    *{box-sizing:border-box} html,body{height:100%;margin:0} body{font-family:'IBM Plex Sans Thai',system-ui,sans-serif;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;overflow:hidden}.mono{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums}.app{height:100vh;display:grid;grid-template-columns:76px minmax(680px,1fr) 408px;background:radial-gradient(circle at 35% -15%,rgba(31,169,113,.18),transparent 35%),var(--bg)}
+    .rail{background:linear-gradient(180deg,#0c3026,#071a16);padding:14px 10px;display:flex;flex-direction:column;align-items:center;gap:12px;color:#d5fff0}.mark{width:48px;height:48px;border-radius:16px;background:linear-gradient(135deg,#23c884,#0b8060);display:grid;place-items:center;box-shadow:0 16px 30px rgba(31,169,113,.25)}.rail-btn{width:52px;height:52px;border-radius:16px;display:grid;place-items:center;color:#82a89c;position:relative;cursor:pointer;transition:.16s}.rail-btn.active{background:rgba(255,255,255,.12);color:white;box-shadow:inset 3px 0 0 #2ade96}.rail-btn:hover{background:rgba(255,255,255,.08);color:white}.rail .spacer{flex:1}.avatar{width:48px;height:48px;border-radius:18px;background:linear-gradient(135deg,#7c3aed,#3b82f6);display:grid;place-items:center;color:#fff;font-weight:700}.badge-dot{position:absolute;top:10px;right:10px;width:9px;height:9px;border-radius:99px;background:#ef4444;border:2px solid #0a211a}
+    .workspace{min-width:0;display:flex;flex-direction:column;padding:18px 18px 18px 20px;gap:14px}.top{height:68px;display:flex;align-items:center;gap:14px}.title{flex:1}.title h1{font-size:24px;line-height:1.08;margin:0;font-weight:700;letter-spacing:-.02em}.title p{margin:4px 0 0;color:var(--muted);font-size:12.5px}.status-strip{display:flex;align-items:center;gap:8px}.pill{height:42px;border-radius:14px;border:1px solid var(--line);background:rgba(255,255,255,.76);display:flex;align-items:center;gap:8px;padding:0 12px;box-shadow:var(--shadow-sm);font-size:12px;color:#475467}.pill strong{display:block;font-size:12.5px;color:var(--ink);line-height:1}.pill small{display:block;color:var(--muted);font-size:10px;line-height:1.2}.live{border-color:#b7efd2;background:#effdf6;color:#137a50}.live .dot{width:8px;height:8px;border-radius:99px;background:#19b26b;box-shadow:0 0 0 4px rgba(31,169,113,.13)}
+    .command{display:grid;grid-template-columns:minmax(320px,1fr) 156px 142px;gap:10px}.search{height:58px;border:1.5px solid var(--line);background:white;border-radius:18px;display:flex;align-items:center;gap:11px;padding:0 16px;box-shadow:var(--shadow-sm)}.search input{border:0;outline:0;flex:1;font:500 15px 'IBM Plex Sans Thai';color:var(--ink)}.search .hint{font-size:11px;color:#94a3b8}.action-card{height:58px;border:1px solid var(--line);background:white;border-radius:18px;padding:10px 13px;display:flex;align-items:center;gap:10px;box-shadow:var(--shadow-sm);cursor:pointer}.action-card .icon{width:36px;height:36px;border-radius:12px;display:grid;place-items:center}.action-card strong{font-size:13px}.action-card span{display:block;font-size:10.5px;color:var(--muted)}.stock .icon{background:#e8fff4;color:var(--brand-2)}.sync .icon{background:#eef4ff;color:#2563eb}.main-grid{min-height:0;flex:1;display:grid;grid-template-columns:168px minmax(0,1fr);gap:14px}.category-panel{background:rgba(255,255,255,.74);border:1px solid var(--line);border-radius:22px;padding:12px;box-shadow:var(--shadow-sm);display:flex;flex-direction:column;gap:8px}.cat{border:1px solid transparent;border-radius:16px;padding:12px;display:flex;align-items:center;gap:10px;cursor:pointer;color:#475467}.cat:hover{background:white;border-color:var(--line)}.cat.active{background:var(--forest);color:white;box-shadow:0 12px 24px rgba(14,59,46,.20)}.cat .mini{width:34px;height:34px;border-radius:12px;background:rgba(255,255,255,.14);display:grid;place-items:center}.cat:not(.active) .mini{background:#f2f4f7;color:#667085}.cat strong{font-size:13px;line-height:1}.cat span{display:block;font-size:10.5px;opacity:.72;margin-top:2px}.category-panel .divider{height:1px;background:var(--line);margin:4px 2px}.kpi-mini{margin-top:auto;padding:12px;border-radius:17px;background:linear-gradient(155deg,#103d30,#0a211b);color:white}.kpi-mini span{font-size:10.5px;color:#93c5b1}.kpi-mini strong{font-size:24px;display:block;margin-top:4px}.products-wrap{min-width:0;overflow:auto;padding-right:4px}.products-head{height:36px;display:flex;align-items:center;justify-content:space-between;margin:0 2px 10px}.products-head strong{font-size:13px}.products-head span{font-size:12px;color:var(--muted)}.products{display:grid;grid-template-columns:repeat(3,minmax(184px,1fr));gap:12px}.product{min-height:154px;background:white;border:1px solid var(--line);border-radius:22px;padding:12px;box-shadow:var(--shadow-sm);display:flex;flex-direction:column;gap:10px;cursor:pointer;transition:.14s}.product:hover{transform:translateY(-2px);border-color:#b8e8d1;box-shadow:0 18px 36px rgba(21,38,64,.11)}.product.low{border-color:#fed7aa}.thumb{height:58px;border-radius:17px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}.thumb:before{content:"";position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,.55),transparent)}.sku{position:absolute;right:8px;top:7px;border-radius:99px;background:rgba(255,255,255,.75);padding:2px 7px;font-size:10px;color:#667085}.product .name{font-size:14px;font-weight:700;line-height:1.2}.product .en{font-size:11px;color:var(--muted);margin-top:-6px}.product .bottom{display:flex;align-items:end;justify-content:space-between;margin-top:auto}.price{font-size:18px;font-weight:700;letter-spacing:-.03em}.stock-num{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px}.add{width:38px;height:38px;border-radius:14px;display:grid;place-items:center;background:#eafbf2;color:var(--brand-2);border:1px solid #cdf3dd}.low .add{background:#fff7ed;color:#c2410c;border-color:#fed7aa}.drink{background:linear-gradient(135deg,#cff7ef,#d7f3ff)}.food{background:linear-gradient(135deg,#fff0c9,#ffe2cc)}.dessert{background:linear-gradient(135deg,#fde7f0,#eee6ff)}.goods{background:linear-gradient(135deg,#edf2f7,#dce7f2)}
+    .cart{background:white;border-left:1px solid var(--line);display:flex;flex-direction:column;min-width:0;box-shadow:-16px 0 36px rgba(21,38,64,.06)}.cart-top{padding:18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px}.customer{height:64px;flex:1;border:1px dashed var(--line-strong);border-radius:18px;display:flex;align-items:center;gap:12px;padding:0 14px;background:#fbfdff}.customer .face{width:38px;height:38px;border-radius:14px;background:#eef4ff;color:#2563eb;display:grid;place-items:center}.customer strong{font-size:13px}.customer span{display:block;font-size:11px;color:var(--muted)}.cart-list{flex:1;min-height:0;overflow:auto;padding:15px 18px;display:flex;flex-direction:column;gap:10px}.empty{height:100%;display:grid;place-items:center;text-align:center;color:#98a2b3}.empty div{max-width:220px}.empty .big-icon{width:70px;height:70px;border-radius:24px;background:#f2f4f7;display:grid;place-items:center;margin:0 auto 14px;color:#98a2b3}.line{border:1px solid var(--line);border-radius:18px;padding:12px;background:#fff;box-shadow:var(--shadow-sm)}.line-head{display:flex;gap:10px;align-items:flex-start}.line-icon{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;flex-shrink:0}.line-title{flex:1;min-width:0}.line-title strong{font-size:13.5px;line-height:1.1}.line-title span{display:block;font-size:10.5px;color:var(--muted);margin-top:2px}.line-total{font-size:14px;font-weight:700}.qty{display:flex;align-items:center;gap:8px;margin-top:11px}.qty button{width:30px;height:30px;border:1px solid var(--line);background:#f8fafc;border-radius:10px;cursor:pointer}.qty .num{min-width:24px;text-align:center;font-weight:700}.discount{margin-left:auto;font-size:11px;color:#2563eb;background:#eef4ff;border-radius:99px;padding:5px 8px}.summary{padding:16px 18px 18px;border-top:1px solid var(--line);background:linear-gradient(180deg,#fff,#f8fafc)}.discount-row{display:grid;grid-template-columns:1fr 76px 44px;gap:8px;margin-bottom:13px}.discount-row label{font-size:12px;color:#667085;align-self:center}.discount-row input{height:38px;border:1px solid var(--line);border-radius:12px;text-align:right;padding:0 10px;font-family:'IBM Plex Mono';font-weight:600}.discount-row button{height:38px;border:1px solid #dbeafe;border-radius:12px;background:#eef4ff;color:#2563eb;font-weight:700}.totals{display:flex;flex-direction:column;gap:7px;border-top:1px dashed var(--line-strong);padding-top:12px}.total-line{display:flex;justify-content:space-between;color:#667085;font-size:12.5px}.grand{display:flex;justify-content:space-between;align-items:flex-end;margin-top:8px}.grand span{font-size:13px;font-weight:700}.grand strong{font-size:32px;line-height:1;font-weight:700;letter-spacing:-.04em}.cart-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:15px}.btn{height:46px;border-radius:15px;border:1px solid var(--line);background:white;font:700 13px 'IBM Plex Sans Thai';cursor:pointer}.btn.danger{border-color:#fecaca;color:#dc2626;background:#fffafa}.pay{height:60px;margin-top:10px;width:100%;border:0;border-radius:18px;background:linear-gradient(180deg,#22b877,#11865a);color:white;font:700 16px 'IBM Plex Sans Thai';box-shadow:0 15px 30px rgba(31,169,113,.24);display:flex;align-items:center;justify-content:center;gap:10px;cursor:pointer}.pay:disabled{background:#cbd5e1;box-shadow:none;cursor:not-allowed}.modal{position:fixed;inset:0;background:rgba(8,20,15,.48);backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:9}.modal.open{display:flex}.dialog{width:460px;background:white;border-radius:26px;box-shadow:0 30px 80px rgba(0,0,0,.24);padding:22px}.dialog h2{margin:0;font-size:22px}.pay-methods{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:18px 0}.method{height:84px;border:1px solid var(--line);border-radius:18px;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;font-weight:700;cursor:pointer}.method.active{border-color:#15a86d;background:#ecfdf5;color:#11865a}.received{height:52px;border:1.5px solid var(--line);border-radius:16px;padding:0 14px;font:700 22px 'IBM Plex Mono';text-align:right;width:100%;margin-top:10px}.dialog-actions{display:grid;grid-template-columns:1fr 1.4fr;gap:10px;margin-top:16px}.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);opacity:0;background:#0f172a;color:white;border-radius:16px;padding:12px 18px;font-weight:600;box-shadow:0 18px 40px rgba(0,0,0,.26);transition:.2s;z-index:20}.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}@media(max-width:1120px){.app{grid-template-columns:68px 1fr}.cart{position:fixed;right:0;top:0;bottom:0;width:408px;z-index:5}.products{grid-template-columns:repeat(2,minmax(184px,1fr))}.command{grid-template-columns:1fr 140px}.sync{display:none}}@media(max-width:760px){body{overflow:auto}.app{min-height:100vh;height:auto;grid-template-columns:1fr}.rail{display:none}.workspace{padding:14px}.top,.command,.main-grid{display:block}.status-strip{margin-top:10px}.search,.action-card{margin-top:10px}.category-panel{flex-direction:row;overflow:auto;margin:12px 0}.cat{min-width:120px}.kpi-mini{display:none}.products{grid-template-columns:1fr}.cart{position:static;width:auto;min-height:520px}.app{overflow:auto}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail" aria-label="Primary navigation">
+      <div class="mark"><i data-lucide="store"></i></div>
+      <div class="rail-btn active" title="ขายหน้าร้าน"><i data-lucide="panel-left"></i></div>
+      <div class="rail-btn" title="ประวัติการขาย"><i data-lucide="receipt-text"></i></div>
+      <div class="rail-btn" title="ปิดรอบขาย"><i data-lucide="clock-3"></i></div>
+      <div class="rail-btn" title="สินค้า"><i data-lucide="package"></i><span class="badge-dot"></span></div>
+      <div class="rail-btn" title="เชื่อมข้อมูล"><i data-lucide="database-zap"></i></div>
+      <div class="spacer"></div>
+      <div class="rail-btn" title="สลับภาษา"><span class="mono">TH</span></div>
+      <div class="avatar">ธก</div>
+    </aside>
+
+    <main class="workspace">
+      <header class="top">
+        <div class="title">
+          <h1>ขายหน้าร้าน</h1>
+          <p>POS Checkout · ออกแบบใหม่เพื่อความเร็วตอนขายจริง, อ่านยอดชัด, กดน้อยลง</p>
+        </div>
+        <div class="status-strip">
+          <div class="pill"><i data-lucide="building-2" size="17"></i><div><strong>สาขาสีลม</strong><small>Silom · BR-01</small></div></div>
+          <div class="pill live"><span class="dot"></span><div><strong>รอบ SH-2207</strong><small>เปิด 08:30 · Online</small></div></div>
+          <div class="pill mono">16 มิ.ย. 14:25</div>
+        </div>
+      </header>
+
+      <section class="command">
+        <label class="search">
+          <i data-lucide="scan-barcode" color="#667085"></i>
+          <input id="search" placeholder="สแกนบาร์โค้ด หรือค้นหาสินค้า เช่น ลาเต้ / BV-002" autocomplete="off" />
+          <span class="hint mono">⌘K</span>
+        </label>
+        <div class="action-card stock" id="stockToggle"><div class="icon"><i data-lucide="refresh-cw"></i></div><div><strong>เรียลไทม์</strong><span>สต็อก · Stock</span></div></div>
+        <div class="action-card sync"><div class="icon"><i data-lucide="cloud-upload"></i></div><div><strong>5 คิว</strong><span>รอส่ง KRS</span></div></div>
+      </section>
+
+      <section class="main-grid">
+        <aside class="category-panel" id="categories"></aside>
+        <section class="products-wrap">
+          <div class="products-head"><strong id="productTitle">สินค้าทั้งหมด</strong><span id="productCount">17 รายการ</span></div>
+          <div class="products" id="products"></div>
+        </section>
+      </section>
+    </main>
+
+    <aside class="cart">
+      <div class="cart-top">
+        <div class="customer"><div class="face"><i data-lucide="user-round"></i></div><div><strong>ลูกค้าทั่วไป · Walk-in</strong><span>แตะเพื่อเลือกสมาชิก / ใบกำกับภาษี</span></div></div>
+      </div>
+      <div class="cart-list" id="cartList"></div>
+      <div class="summary">
+        <div class="discount-row"><label>ส่วนลดท้ายบิล</label><input id="discount" value="0" inputmode="decimal"><button>฿</button></div>
+        <div class="totals">
+          <div class="total-line"><span>ยอดก่อนภาษี · Subtotal</span><span class="mono" id="subtotal">฿0.00</span></div>
+          <div class="total-line"><span>VAT 7% (รวมในราคา)</span><span class="mono" id="vat">฿0.00</span></div>
+          <div class="grand"><span>ยอดสุทธิ · Total</span><strong class="mono" id="total">฿0.00</strong></div>
+        </div>
+        <div class="cart-actions"><button class="btn" id="holdBtn">พักบิล</button><button class="btn danger" id="clearBtn">ยกเลิกบิล</button></div>
+        <button class="pay" id="payBtn" disabled><i data-lucide="credit-card"></i><span>ชำระเงิน</span><span class="mono" id="payAmount">฿0.00</span></button>
+      </div>
+    </aside>
+  </div>
+
+  <div class="modal" id="paymentModal">
+    <div class="dialog">
+      <h2>ชำระเงิน</h2>
+      <p style="margin:4px 0 0;color:#667085;font-size:13px">เลือกวิธีรับเงินและยืนยันบิล</p>
+      <div class="pay-methods" id="payMethods"></div>
+      <label style="font-size:12px;color:#667085;font-weight:600">รับเงินสด / ยอดอ้างอิง</label>
+      <input class="received" id="received" inputmode="decimal" />
+      <div class="dialog-actions"><button class="btn" id="closeModal">กลับ</button><button class="pay" id="confirmPay" style="margin:0;height:48px">ยืนยันขาย</button></div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const catalog = [
+      {id:'p1',cat:'drink',name:'อเมริกาโน่ (ร้อน)',en:'Americano Hot',price:55,sku:'BV-001',stock:120},
+      {id:'p2',cat:'drink',name:'ลาเต้ (ร้อน)',en:'Latte Hot',price:65,sku:'BV-002',stock:88},
+      {id:'p3',cat:'drink',name:'คาปูชิโน่',en:'Cappuccino',price:65,sku:'BV-003',stock:64},
+      {id:'p4',cat:'drink',name:'เอสเพรสโซ่',en:'Espresso',price:45,sku:'BV-004',stock:50},
+      {id:'p5',cat:'drink',name:'ชาไทยเย็น',en:'Thai Tea',price:45,sku:'BV-005',stock:42},
+      {id:'p6',cat:'drink',name:'มัทฉะลาเต้',en:'Matcha Latte',price:70,sku:'BV-006',stock:36},
+      {id:'p7',cat:'drink',name:'น้ำส้มคั้นสด',en:'Orange Juice',price:50,sku:'BV-007',stock:28},
+      {id:'p8',cat:'food',name:'ครัวซองต์แฮมชีส',en:'Ham & Cheese Croissant',price:75,sku:'FD-001',stock:14},
+      {id:'p9',cat:'food',name:'แซนด์วิชไก่',en:'Chicken Sandwich',price:85,sku:'FD-002',stock:6},
+      {id:'p10',cat:'food',name:'ข้าวหมูกระเทียม',en:'Pork Garlic Rice',price:60,sku:'FD-003',stock:40},
+      {id:'p11',cat:'food',name:'ผัดไทยกุ้งสด',en:'Pad Thai',price:70,sku:'FD-004',stock:33},
+      {id:'p12',cat:'dessert',name:'บราวนี่',en:'Brownie',price:65,sku:'DS-001',stock:32},
+      {id:'p13',cat:'dessert',name:'ชีสเค้ก',en:'Cheesecake',price:85,sku:'DS-002',stock:18},
+      {id:'p14',cat:'dessert',name:'ครัวซองต์เนย',en:'Butter Croissant',price:55,sku:'DS-003',stock:25},
+      {id:'p15',cat:'goods',name:'เมล็ดกาแฟคั่ว 250g',en:'Coffee Beans 250g',price:350,sku:'GD-001',stock:9},
+      {id:'p16',cat:'goods',name:'แก้วเซรามิก',en:'Ceramic Mug',price:180,sku:'GD-002',stock:21},
+      {id:'p17',cat:'goods',name:'ถุงผ้า KRS',en:'Tote Bag',price:250,sku:'GD-003',stock:3}
+    ];
+    const cats = [
+      {id:'all',label:'ทั้งหมด',en:'All items',icon:'layout-grid'},
+      {id:'drink',label:'เครื่องดื่ม',en:'Beverage',icon:'coffee'},
+      {id:'food',label:'อาหาร',en:'Food',icon:'utensils'},
+      {id:'dessert',label:'ขนมหวาน',en:'Dessert',icon:'cake-slice'},
+      {id:'goods',label:'ของใช้',en:'Retail',icon:'shopping-bag'}
+    ];
+    const catLabel = Object.fromEntries(cats.map(c=>[c.id,c.label]));
+    let activeCat='all', query='', cart=[], payMethod='cash';
+    const money=n=>'฿'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const $=id=>document.getElementById(id);
+    function icon(name,size=18){ return `<i data-lucide="${name}" width="${size}" height="${size}"></i>`; }
+    function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(window._toast); window._toast=setTimeout(()=>t.classList.remove('show'),2100); }
+    function renderCats(){ $('categories').innerHTML = cats.map(c=>`<div class="cat ${activeCat===c.id?'active':''}" data-cat="${c.id}"><div class="mini">${icon(c.icon)}</div><div><strong>${c.label}</strong><span>${c.en}</span></div></div>`).join('') + `<div class="divider"></div><div class="kpi-mini"><span>ยอดขายรอบนี้</span><strong class="mono">฿18.4K</strong><span>บิลล่าสุด POS-0042 · synced</span></div>`; document.querySelectorAll('.cat').forEach(el=>el.onclick=()=>{activeCat=el.dataset.cat;render();}); }
+    function filtered(){ const q=query.trim().toLowerCase(); return catalog.filter(p=>(activeCat==='all'||p.cat===activeCat)&&(!q||p.name.toLowerCase().includes(q)||p.en.toLowerCase().includes(q)||p.sku.toLowerCase().includes(q))); }
+    function renderProducts(){ const list=filtered(); $('productTitle').textContent = activeCat==='all'?'สินค้าทั้งหมด':catLabel[activeCat]; $('productCount').textContent=`${list.length} รายการ`; $('products').innerHTML=list.map(p=>`<article class="product ${p.stock<=9?'low':''}" data-id="${p.id}"><div class="thumb ${p.cat}">${icon(p.cat==='drink'?'coffee':p.cat==='food'?'utensils':p.cat==='dessert'?'cake-slice':'shopping-bag',25)}<span class="sku mono">${p.sku}</span></div><div class="name">${p.name}</div><div class="en">${p.en}</div><div class="bottom"><div><div class="stock-num">${icon('boxes',13)} ${p.stock} คงเหลือ</div><div class="price mono">${money(p.price)}</div></div><div class="add">${icon('plus',19)}</div></div></article>`).join('') || `<div style="grid-column:1/-1;text-align:center;padding:60px;color:#98a2b3">ไม่พบสินค้า · No matching products</div>`; document.querySelectorAll('.product').forEach(el=>el.onclick=()=>add(el.dataset.id)); }
+    function add(id){ const p=catalog.find(x=>x.id===id); const item=cart.find(x=>x.id===id); if(item)item.qty++; else cart.push({id,qty:1}); renderCart(); toast(`เพิ่ม ${p.name} แล้ว`); }
+    function totals(){ const gross=cart.reduce((s,i)=>s+catalog.find(p=>p.id===i.id).price*i.qty,0); const disc=Math.max(parseFloat($('discount').value)||0,0); const total=Math.max(gross-disc,0); return {gross,disc,total,vat:total*7/107}; }
+    function renderCart(){ const list=$('cartList'); if(!cart.length){ list.innerHTML=`<div class="empty"><div><div class="big-icon">${icon('shopping-cart',30)}</div><strong>ตะกร้าว่าง</strong><p style="margin:6px 0 0;font-size:12px;line-height:1.55">สแกนบาร์โค้ดหรือแตะสินค้าเพื่อเริ่มขาย</p></div></div>`; } else { list.innerHTML=cart.map(i=>{ const p=catalog.find(x=>x.id===i.id); return `<div class="line"><div class="line-head"><div class="line-icon ${p.cat}">${icon(p.cat==='drink'?'coffee':p.cat==='food'?'utensils':p.cat==='dessert'?'cake-slice':'shopping-bag')}</div><div class="line-title"><strong>${p.name}</strong><span class="mono">${p.sku} · ${money(p.price)}</span></div><div class="line-total mono">${money(p.price*i.qty)}</div></div><div class="qty"><button data-dec="${i.id}">−</button><div class="num mono">${i.qty}</div><button data-inc="${i.id}">+</button><span class="discount">ส่วนลดรายการ</span></div></div>` }).join(''); document.querySelectorAll('[data-dec]').forEach(b=>b.onclick=(e)=>{e.stopPropagation(); const item=cart.find(x=>x.id===b.dataset.dec); item.qty--; if(item.qty<=0) cart=cart.filter(x=>x.id!==b.dataset.dec); renderCart();}); document.querySelectorAll('[data-inc]').forEach(b=>b.onclick=(e)=>{e.stopPropagation(); cart.find(x=>x.id===b.dataset.inc).qty++; renderCart();}); }
+      const t=totals(); $('subtotal').textContent=money(t.gross); $('vat').textContent=money(t.vat); $('total').textContent=money(t.total); $('payAmount').textContent=money(t.total); $('payBtn').disabled=!cart.length; }
+    function renderPayMethods(){ const methods=[['cash','banknote','เงินสด'],['qr','qr-code','QR'],['card','credit-card','บัตร']]; $('payMethods').innerHTML=methods.map(m=>`<div class="method ${payMethod===m[0]?'active':''}" data-method="${m[0]}">${icon(m[1],23)}<span>${m[2]}</span></div>`).join(''); document.querySelectorAll('.method').forEach(m=>m.onclick=()=>{payMethod=m.dataset.method;renderPayMethods();}); }
+    function render(){ renderCats(); renderProducts(); renderCart(); lucide.createIcons({attrs:{strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round'}}); }
+    $('search').addEventListener('input',e=>{query=e.target.value;renderProducts();lucide.createIcons();});
+    $('discount').addEventListener('input',renderCart);
+    $('clearBtn').onclick=()=>{ if(cart.length){cart=[];renderCart();toast('ยกเลิกบิลแล้ว');} };
+    $('holdBtn').onclick=()=>{ if(!cart.length) return toast('ยังไม่มีสินค้าในตะกร้า'); cart=[]; renderCart(); toast('พักบิลไว้แล้ว · Hold bill'); };
+    $('payBtn').onclick=()=>{ renderPayMethods(); $('received').value=totals().total.toFixed(2); $('paymentModal').classList.add('open'); lucide.createIcons(); };
+    $('closeModal').onclick=()=>$('paymentModal').classList.remove('open');
+    $('confirmPay').onclick=()=>{ const t=totals().total; if((parseFloat($('received').value)||0)+.01<t) return toast('รับเงินน้อยกว่ายอดสุทธิ'); cart=[]; $('discount').value=0; renderCart(); $('paymentModal').classList.remove('open'); toast('ขายสำเร็จ · POS-20260616-0042 ส่งเข้า KRS queue แล้ว'); };
+    document.addEventListener('keydown',e=>{ if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('search').focus();} });
+    render();
+  </script>
+</body>
+</html>

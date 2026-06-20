@@ -1,0 +1,28 @@
+/* ============================================================
+   pguard — Spacing, radius, elevation tokens
+   4pt base spacing · tightened radii for a precise, professional feel ·
+   restrained elevation (structure comes from hairline borders, not glow)
+   ============================================================ */
+
+:root {
+  /* ---- Spacing (4pt base) ---- */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
+  --sp-9: 48px; --sp-10: 64px; --sp-11: 80px; --sp-12: 96px;
+
+  /* ---- Radius ---- */
+  --r-xs: 4px;  --r-sm: 6px;  --r-md: 8px; --r-lg: 11px;
+  --r-xl: 14px; --r-2xl: 18px; --r-full: 999px;
+
+  /* ---- Elevation ---- */
+  --sh-xs: 0 1px 1px rgba(8,38,25,.04);
+  --sh-sm: 0 1px 2px rgba(8,38,25,.06);
+  --sh-md: 0 2px 6px rgba(8,38,25,.07), 0 1px 2px rgba(8,38,25,.04);
+  --sh-lg: 0 8px 20px rgba(8,38,25,.10), 0 2px 5px rgba(8,38,25,.05);
+  --sh-xl: 0 18px 44px rgba(8,38,25,.15), 0 5px 12px rgba(8,38,25,.07);
+  --sh-brand:  0 6px 16px rgba(31,169,113,.22);
+  --sh-accent: 0 6px 16px rgba(245,158,11,.22);
+
+  /* ---- Touch ---- */
+  --tap: 44px; /* min touch target */
+}
