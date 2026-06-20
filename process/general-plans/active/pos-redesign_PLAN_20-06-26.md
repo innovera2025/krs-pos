@@ -1,6 +1,6 @@
 # KRS POS Redesign — Development Plan
 
-- Status: 🔨 IN PROGRESS — **Phases 1–5 done + Phase 6a done** (P6 split into 6a Customer/tax · 6b KRS Data Link · 6c Design Spec docs; **6a = Customer model + tax invoice + 4th tracked migration**, build + live-smoke + 10-agent review verified, P1–5 committed, 6a pending commit); `/login` UI stub; P6b/6c + P7 remaining.
+- Status: 🔨 IN PROGRESS — **Phases 1–5 done + Phase 6a+6b done** (P6 split 6a Customer/tax · 6b KRS Data Link · 6c Design Spec docs; **6b = /data 4 tabs + sync queue + LATENT cards + sync-jobs API + nav failed-badge + 8-job seed (no migration — SyncJob from 6a)**, build + live-smoke + 9-agent review (5/5 LOW fixed) verified, P1–6a committed, 6b pending commit); `/login` UI stub; **6c (Design Spec docs, 12 fn) + P7 remaining**. KRS transport simulated.
 - Created: 2026-06-20 · last finalized: 2026-06-20
 - Plan type: COMPLEX (multi-phase program — **7 phases**: P1–P6 build + P7 cross-cutting hardening)
 - Owner program: POS redesign (relates to the `production-readiness` security/correctness program)
@@ -84,7 +84,7 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 | **P3** | ✅ done (committed) | Payment + receipt/print + hold bill — complete the sell-to-receipt flow | P2 | 28 | 27 build-new-ui, 1 full-stack-new |
 | **P4** | ✅ done | Catalog/stock management + Users & Roles + RBAC (client stub) | P1, P3 | 20 | 12 build-new-ui, 8 full-stack-new |
 | **P5** | ✅ done | Shift open/close + Z-report + Sales History with refund/void/reprint | P3, P4 | 23 | 11 build-new-ui, 12 full-stack-new |
-| **P6** | ◐ 6a done · 6b next | KRS Data Link (sync/offline) + Customer/member + tax invoice + Design Spec docs (split 6a/6b/6c) | P2, P3, P4, P5 | 67 (6a:10 ✅) | 51 full-stack-new, 16 build-new-ui |
+| **P6** | ◐ 6a+6b done · 6c next | KRS Data Link (sync/offline) + Customer/member + tax invoice + Design Spec docs (split 6a/6b/6c) | P2, P3, P4, P5 | 67 (6a:10 + 6b:45 ✅ · 6c:12 left) | 51 full-stack-new, 16 build-new-ui |
 | **P7** | ⏳ planned | Integration hardening, responsive QA, regression, polish | P2, P3, P4, P5, P6 | — | cross-cutting / QA |
 
 ### Phase 1 — Design-system foundation + app shell, rail, theme, routing
@@ -245,7 +245,7 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 ### Phase 6 — KRS Data Link (sync/offline) + Customer/member + tax invoice + Design Spec docs
 
-- **Status:** ◐ **split into 3 sub-phases** (see `pos-redesign-phase-6_RESEARCH_20-06-26.md`): **6a Customer + tax invoice — ✅ DONE** (10 fn; Customer + SyncJob models + 4th tracked migration `20260620144152_phase6a_customer_syncjob`; customer picker in /pos, tax toggle + `domain-tax-invoice-requires-tax-customer` validation, request-tax → PENDING TAX_INVOICE SyncJob; build + live-smoke + 10-agent review (5/5 fixed) verified; pending commit) · **6b KRS Data Link UI — ▶ NEXT** (~38 fn; 4 tabs, sync queue, LATENT cards, nav badge; SyncJob model already exists) · **6c Design Spec docs — ⏳ planned** (13 fn, static). KRS transport is **simulated** (real integration = production-readiness).
+- **Status:** ◐ **split into 3 sub-phases** (see `pos-redesign-phase-6_RESEARCH_20-06-26.md`): **6a Customer + tax invoice — ✅ DONE** (10 fn; Customer + SyncJob models + 4th tracked migration `20260620144152_phase6a_customer_syncjob`; customer picker in /pos, tax toggle + `domain-tax-invoice-requires-tax-customer` validation, request-tax → PENDING TAX_INVOICE SyncJob; build + live-smoke + 10-agent review (5/5 fixed) verified; pending commit) · **6b KRS Data Link UI — ✅ DONE** (45 fn; /data 4 tabs [Connection/Mapping incl. LATENT account-mapping+syncMode+stockMethod cards/Data Flow/Live Data] + sync-detail drawer (retry/skip) + `sync-jobs` API (list/failed-count/retry/skip/pull/insert-all) + NavRail failed-badge + 8-job seed; **no migration — SyncJob from 6a**; build + live-smoke + 9-agent review (5/5 LOW fixed) verified; pending commit) · **6c Design Spec docs — ▶ NEXT** (12 fn, static). KRS transport is **simulated** (real integration = production-readiness).
 - **Depends on:** Phase 2, Phase 3, Phase 4, Phase 5
 - **Goal:** Deliver the admin KRS integration surface and the customer-dependent features, then port the remaining latent/doc functions so nothing is dropped. Build the offline-resilient SyncJob queue (IndexedDB, backoff, idempotency, state machine) feeding the 4 data tabs (Connection, Mapping incl. the LATENT account/sync-mode/stock-method tables+cards, Data Flow, Live Data) and the sync detail drawer + sidebar failed badge. Add Customer model -> customer picker, tax-info state, request-tax-invoice flow, and wire live/offline status + receipt sync badge to real connection. Finish with the static Design Spec docs hub.
 - **Verification gate:** npm run type-check + npm run build pass. Manual: KRS Data Link (admin-only) renders all 4 tabs; Connection tab tests connection (status connected/testing/disconnected) + insert-test-row (green in Live Data) + editable fields + SSL toggle updating the conn-string; Mapping tab renders outbound + inbound tables AND the previously-latent account-mapping tables + sync-mode cards + stock-method cards (all clickable/wired), with incomplete mapping (vat_code) blocking sync via FIELD_MAP_MISMATCH; Data Flow tab shows clickable sync-count cards filtering the jobs table, pull/insert-all-pending, and a sync detail drawer with retry/skip; sidebar data badge equals the failed-job count and nulls when none; sales still complete while 'offline' (queued) proving sell-first. Customer picker selects member/walk-in with tax badge; requesting a tax invoice is blocked for walk-in and queues a tax_invoice job otherwise; receipt sync badge + live/offline pill reflect real connection state. Design Spec docs hub renders all 10 panels. Seed adds 8 sync jobs (failed badge = 2). Requires Customer model + SyncJob model + sync API.
@@ -253,59 +253,59 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 | Function (id) | What it is | Screen | In Taste | In app | Gap | Done? |
 |---|---|---|---|---|---|---|
-| `screen-krs-data-link` | KRS Data Link (การเชื่อมข้อมูล) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `screen-data-connection-tab` | Connection tab (เชื่อมต่อ) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `screen-data-mapping-tab` | Field Mapping tab (จับคู่ฟิลด์) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `screen-data-flow-tab` | Data Flow tab (การไหลของข้อมูล) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `screen-data-livedata-tab` | Live Data tab (ตรวจข้อมูล) | data | 🔴 no | 🔴 no | full-stack-new | — |
+| `screen-krs-data-link` | KRS Data Link (การเชื่อมข้อมูล) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `screen-data-connection-tab` | Connection tab (เชื่อมต่อ) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `screen-data-mapping-tab` | Field Mapping tab (จับคู่ฟิลด์) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `screen-data-flow-tab` | Data Flow tab (การไหลของข้อมูล) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `screen-data-livedata-tab` | Live Data tab (ตรวจข้อมูล) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
 | `screen-design-spec-hub` | Design Spec hub (เอกสารดีไซน์) | docs | 🔴 no | 🔴 no | build-new-ui | — |
 | `overlay-customer-picker` | Customer Picker modal (เลือกลูกค้า) | pos | 🟡 partial | 🔴 no | full-stack-new | ✅ (6a) |
-| `overlay-sync-detail-drawer` | Sync Detail drawer | data | 🔴 no | 🔴 no | full-stack-new | — |
+| `overlay-sync-detail-drawer` | Sync Detail drawer | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
 | `action-open-customer-picker` | Open customer picker (openCustPicker) | pos | 🟡 partial | 🔴 no | full-stack-new | ✅ (6a) |
 | `action-customer-search` | Customer search (onCustQuery) | pos | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
 | `action-pick-customer` | Pick customer (pickCustomer) | pos | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
 | `action-pick-walkin` | Pick walk-in (pickWalkIn) | pos | 🟡 partial | 🔴 no | build-new-ui | ✅ (6a) |
 | `action-tax-toggle` | Request tax invoice toggle (toggleTax) | pos | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
 | `action-request-tax-invoice` | Request tax invoice from history (requestTax) | sales | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
-| `action-db-test-connection` | Test KRS connection (testConnection) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-db-insert-test-row` | Insert test row (insertTestRow) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-db-edit-fields` | Edit connection fields (setDb) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-db-toggle-ssl` | Toggle SSL/TLS (toggleDbSsl) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-db-set-table` | Select Live Data table (setDbTable) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-pull-from-krs` | Pull data from KRS (pullFromKRS) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-insert-all-pending` | Insert all pending to KRS (insertAllPending) | data | 🟡 partial | 🔴 no | full-stack-new | — |
-| `action-sync-card-filter` | Sync status card filter (setSyncFilter) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-open-sync-detail` | Open sync detail (openSyncDetail) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-retry-sync` | Retry sync job (retrySync) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-skip-sync` | Skip sync job with reason (skipSync) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-toggle-stock-sync` | Toggle realtime stock sync (toggleStockSync) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-set-stock-method` | Set stock accounting method (setStockMethod) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-set-sync-mode` | Set sync mode (setSyncMode) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `action-set-data-tab` | Switch KRS data tab (setDataTab) | data | 🔴 no | 🔴 no | build-new-ui | — |
+| `action-db-test-connection` | Test KRS connection (testConnection) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-db-insert-test-row` | Insert test row (insertTestRow) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-db-edit-fields` | Edit connection fields (setDb) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-db-toggle-ssl` | Toggle SSL/TLS (toggleDbSsl) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-db-set-table` | Select Live Data table (setDbTable) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-pull-from-krs` | Pull data from KRS (pullFromKRS) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-insert-all-pending` | Insert all pending to KRS (insertAllPending) | data | 🟡 partial | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-sync-card-filter` | Sync status card filter (setSyncFilter) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-open-sync-detail` | Open sync detail (openSyncDetail) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-retry-sync` | Retry sync job (retrySync) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-skip-sync` | Skip sync job with reason (skipSync) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-toggle-stock-sync` | Toggle realtime stock sync (toggleStockSync) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-set-stock-method` | Set stock accounting method (setStockMethod) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-set-sync-mode` | Set sync mode (setSyncMode) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `action-set-data-tab` | Switch KRS data tab (setDataTab) | data | 🔴 no | 🔴 no | build-new-ui | ✅ (6b) |
 | `action-docs-tab` | Switch design-spec tab (setDocsTab) | docs | 🔴 no | 🔴 no | build-new-ui | — |
-| `state-live-stock-status` | Live/offline stock status (liveOn) | pos | 🟡 partial | 🔴 no | build-new-ui | — |
-| `state-sync-status` | Sync status enum (SyncStatusBadge) | data | 🟡 partial | 🔴 no | full-stack-new | — |
-| `state-sync-queue` | Sync queue / pending jobs | data | 🟡 partial | 🔴 no | full-stack-new | — |
-| `state-sync-empty` | Sync table empty state | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `state-db-connection` | DB connection status (connected/testing/disconnected) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `state-mapping-incomplete` | Field-mapping incomplete state | data | 🔴 no | 🔴 no | full-stack-new | — |
+| `state-live-stock-status` | Live/offline stock status (liveOn) | pos | 🟡 partial | 🔴 no | build-new-ui | ✅ (6b) |
+| `state-sync-status` | Sync status enum (SyncStatusBadge) | data | 🟡 partial | 🔴 no | full-stack-new | ✅ (6b) |
+| `state-sync-queue` | Sync queue / pending jobs | data | 🟡 partial | 🔴 no | full-stack-new | ✅ (6b) |
+| `state-sync-empty` | Sync table empty state | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `state-db-connection` | DB connection status (connected/testing/disconnected) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `state-mapping-incomplete` | Field-mapping incomplete state | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
 | `state-customer-has-tax` | Customer tax-info state | pos | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
-| `flow-sync-to-krs` | Flow: sync to KRS (map field → insert / pull / fix failed) | data | 🟡 partial | 🔴 no | full-stack-new | — |
-| `domain-sell-first-accounting-async` | Sell-first, accounting-async (POS keeps selling) | global | 🟡 partial | 🔴 no | full-stack-new | — |
+| `flow-sync-to-krs` | Flow: sync to KRS (map field → insert / pull / fix failed) | data | 🟡 partial | 🔴 no | full-stack-new | ✅ (6b) |
+| `domain-sell-first-accounting-async` | Sell-first, accounting-async (POS keeps selling) | global | 🟡 partial | 🔴 no | full-stack-new | ✅ (6b) |
 | `domain-tax-invoice-requires-tax-customer` | Tax invoice requires customer with tax ID | pos | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
-| `domain-mapping-blocks-sync` | Incomplete mapping blocks sync | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `domain-realtime-stock-sync` | Realtime stock sync to KRS | data | 🟡 partial | 🔴 no | full-stack-new | — |
-| `domain-accounting-providers` | External accounting providers / KRS integration | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `display-outbound-field-map` | Outbound field-map table (POS→KRS) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `display-inbound-field-map` | Inbound field-map table (KRS→POS) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `display-account-mappings` | Account mapping tables (product/payment/tax/inventory) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `display-sync-mode-options` | Sync-mode option cards | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `display-stock-method-options` | Stock-method option cards | data | 🔴 no | 🔴 no | full-stack-new | — |
+| `domain-mapping-blocks-sync` | Incomplete mapping blocks sync | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `domain-realtime-stock-sync` | Realtime stock sync to KRS | data | 🟡 partial | 🔴 no | full-stack-new | ✅ (6b) |
+| `domain-accounting-providers` | External accounting providers / KRS integration | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `display-outbound-field-map` | Outbound field-map table (POS→KRS) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `display-inbound-field-map` | Inbound field-map table (KRS→POS) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `display-account-mappings` | Account mapping tables (product/payment/tax/inventory) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `display-sync-mode-options` | Sync-mode option cards | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `display-stock-method-options` | Stock-method option cards | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
 | `action-close-customer-picker` | Close customer picker (closeCustPicker + backdrop) | pos | 🔴 no | 🔴 no | full-stack-new | ✅ (6a) |
-| `action-close-sync-detail` | Close sync detail drawer (closeSyncDetail + backdrop) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `display-account-mapping-tables-LATENT` | Account mapping tables are computed but NOT rendered (latent) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `display-sync-mode-cards-LATENT` | Sync-mode option cards computed but NOT rendered (latent) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `display-stock-method-cards-LATENT` | Stock-method option cards computed but NOT rendered (latent) | data | 🔴 no | 🔴 no | full-stack-new | — |
+| `action-close-sync-detail` | Close sync detail drawer (closeSyncDetail + backdrop) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `display-account-mapping-tables-LATENT` | Account mapping tables are computed but NOT rendered (latent) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `display-sync-mode-cards-LATENT` | Sync-mode option cards computed but NOT rendered (latent) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `display-stock-method-cards-LATENT` | Stock-method option cards computed but NOT rendered (latent) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
 | `display-docs-overview-panel` | Design Spec — Overview panel | docs | 🔴 no | 🔴 no | build-new-ui | — |
 | `display-docs-ia-matrix` | Design Spec — IA / Sitemap permission matrix | docs | 🔴 no | 🔴 no | build-new-ui | — |
 | `display-docs-flows-panel` | Design Spec — Key user flows panel | docs | 🔴 no | 🔴 no | build-new-ui | — |
@@ -316,10 +316,10 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 | `display-docs-rules-panel` | Design Spec — Accounting UX rules panel | docs | 🔴 no | 🔴 no | build-new-ui | — |
 | `display-docs-visual-directions` | Design Spec — 2 Visual directions panel | docs | 🔴 no | 🔴 no | build-new-ui | — |
 | `display-docs-impl-notes` | Design Spec — Implementation notes panel | docs | 🔴 no | 🔴 no | build-new-ui | — |
-| `state-live-status-fields-extra` | Live-status extra fields (liveSub) + tri-state styling tokens | global | 🟡 partial | 🔴 no | build-new-ui | — |
-| `display-db-preview-row-builders` | Live Data per-table synthetic row builders | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `display-seed-sync-jobs` | Seed sync-jobs dataset (8 jobs, types, errors, responses) | data | 🔴 no | 🔴 no | full-stack-new | — |
-| `display-sidebar-failed-badge-source` | Sidebar 'data' nav red badge = failed-job count | global | 🟡 partial | 🔴 no | full-stack-new | — |
+| `state-live-status-fields-extra` | Live-status extra fields (liveSub) + tri-state styling tokens | global | 🟡 partial | 🔴 no | build-new-ui | ✅ (6b) |
+| `display-db-preview-row-builders` | Live Data per-table synthetic row builders | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `display-seed-sync-jobs` | Seed sync-jobs dataset (8 jobs, types, errors, responses) | data | 🔴 no | 🔴 no | full-stack-new | ✅ (6b) |
+| `display-sidebar-failed-badge-source` | Sidebar 'data' nav red badge = failed-job count | global | 🟡 partial | 🔴 no | full-stack-new | ✅ (6b) |
 
 ### Phase 7 — Integration hardening, responsive QA, regression, polish
 
