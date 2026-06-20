@@ -32,3 +32,6 @@ yarn-error.log*
 
 # claude code — personal/local overrides (shared config is .claude/settings.json)
 .claude/settings.local.json
+
+# design-tool metadata (e.g. WebP thumbnail exports under design/)
+.thumbnail
