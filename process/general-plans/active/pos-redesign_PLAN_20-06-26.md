@@ -1,6 +1,6 @@
 # KRS POS Redesign — Development Plan
 
-- Status: 🔨 IN PROGRESS — **Phase 1 committed**; **Phase 2 done & committed** (build-verified + pricing-tested + **live `/pos` DB smoke verified**); `/login` UI stub; Phases 3–7 planned.
+- Status: 🔨 IN PROGRESS — **Phases 1–3 committed** (P3 = payment/receipt/hold + first tracked migration; build + live-smoke verified); `/login` UI stub; Phases 4–7 planned.
 - Created: 2026-06-20 · last finalized: 2026-06-20
 - Plan type: COMPLEX (multi-phase program — **7 phases**: P1–P6 build + P7 cross-cutting hardening)
 - Owner program: POS redesign (relates to the `production-readiness` security/correctness program)
@@ -16,7 +16,8 @@
 ## Current status snapshot
 
 - ✅ **Phase 1 (shell/rail/theme/routing) — COMMITTED** (feat/design/docs commits) incl. `/login` UI stub + favicon + review-loop bug-fix pass (Modal a11y/Escape/focus-trap, money() guards, contrast, reduced-motion, toast live-region, nav landmark).
-- ✅ **Phase 2 (`/pos` checkout core redesign) — build-verified + pricing-tested (32/32 invariants).** Taste 3-col register, integer-satang VAT-inclusive totals + proportional discount, per-line/bill discount (฿/%), states, in-cart badge, low/out-of-stock, 17-item seed. ✅ **live DB smoke verified** (ephemeral Postgres: 17 products, `/api/products` 200, `/pos` 200, 0 errors). Committed `5871f46`.
+- ✅ **Phase 2 (`/pos` checkout core) — committed; build + pricing (32/32) + live DB smoke verified.** Taste 3-col register, integer-satang VAT-inclusive totals + proportional discount, per-line/bill discount (฿/%), 17-item seed.
+- ✅ **Phase 3 (payment + receipt/print + hold) — committed; build + tracked-migration + live pay→order smoke verified.** Payment modal (6 methods/split/cash+change/ref), 80mm receipt (print/QR/new-sale-only), hold bill; schema `PaymentType` +EWALLET/OTHER + `PaymentLine` model + posNo `POS-YYYYMMDD-####`.
 - 🧭 **8 routes live:** `/login` (UI stub) · `/pos` (old/partial checkout, DB-dependent) · `/products` `/users` `/sales` `/shift` `/data` `/docs` (placeholders) · `/` → `/pos` redirect.
 - ⏸️ **Deferred:** `domain-multi-branch-ready` (branchId) → Phase 4 (needs a DB). Real auth/RBAC → `production-readiness` program (see Login addendum + §8).
 
@@ -77,8 +78,8 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 |---|---|---|---|---|---|
 | **P1** | ✅ done (committed) | Design-system foundation + app shell, rail, theme, routing | none | 8 | 4 redesign-existing, 3 build-new-ui, 1 backend-needed |
 | **P2** | ✅ done (committed) | Checkout core redesigned — product grid, cart, discounts, VAT-inclusive totals | P1 | 19 | 8 redesign-existing, 11 build-new-ui |
-| **P3** | ▶ next | Payment + receipt/print + hold bill — complete the sell-to-receipt flow | P2 | 28 | 27 build-new-ui, 1 full-stack-new |
-| **P4** | ⏳ planned | Catalog/stock management + Users & Roles + RBAC enforcement | P1, P3 | 20 | 12 build-new-ui, 8 full-stack-new |
+| **P3** | ✅ done (committed) | Payment + receipt/print + hold bill — complete the sell-to-receipt flow | P2 | 28 | 27 build-new-ui, 1 full-stack-new |
+| **P4** | ▶ next | Catalog/stock management + Users & Roles + RBAC enforcement | P1, P3 | 20 | 12 build-new-ui, 8 full-stack-new |
 | **P5** | ⏳ planned | Shift open/close + Z-report + Sales History with refund/void/reprint | P3, P4 | 23 | 11 build-new-ui, 12 full-stack-new |
 | **P6** | ⏳ planned | KRS Data Link (sync/offline) + Customer/member + tax invoice + Design Spec docs | P2, P3, P4, P5 | 67 | 51 full-stack-new, 16 build-new-ui |
 | **P7** | ⏳ planned | Integration hardening, responsive QA, regression, polish | P2, P3, P4, P5, P6 | — | cross-cutting / QA |
@@ -107,7 +108,7 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 - **Status:** ✅ done (committed)
 - **Depends on:** Phase 1
-- **Note:** implemented & build-verified + **pricing-tested (32/32 invariants)**; seed expanded to 17/4; **live `/pos` smoke ✅ verified** (ephemeral Postgres: 17 products, API 200, /pos 200, 0 errors). See `pos-redesign-phase-2_REPORT_20-06-26.md`.
+- **Note:** committed; build + **pricing-tested (32/32)** + live DB smoke ✅. Seed 17/4. See `pos-redesign-phase-2_REPORT_20-06-26.md`.
 - **Goal:** Rebuild the POS Checkout as the Taste 3-column register on top of the current app: category panel + searchable/barcode product grid (17-item catalog, low/out-of-stock styling, in-cart badge), full cart with per-line + bill discounts and a faithful VAT-inclusive computeTotals (proportional discount allocation + clamping). End state: a fully interactive cart that computes correct totals but stops at the pay button.
 - **Verification gate:** npm run type-check + npm run build pass. Manual: search filters by name/EN/SKU; category chips filter the grid; adding a product shows in-cart badge; +/-/trash adjust and remove lines; per-line and bill discounts (฿ and %) recompute totals; VAT shows as 'VAT 7% (รวมในราคา)' extracted inclusive with proportional bill-discount allocation (preVat = total − vat); low-stock (<=10) cards render amber, out-of-stock blocked; seed expanded to 17 products / 4 categories; empty-cart and no-results states render in Taste style.
 - **Functions in this phase (19):**
@@ -136,46 +137,47 @@ Seven phases (P1–P6 build + P7 cross-cutting hardening). Each is one pass of t
 
 ### Phase 3 — Payment + receipt/print + hold bill — complete the sell-to-receipt flow
 
-- **Status:** ▶ next
+- **Status:** ✅ done (committed)
 - **Depends on:** Phase 2
+- **Note:** committed; FULL-stack — `PaymentType` +EWALLET/OTHER + `PaymentLine` model + first tracked migration; orders API (paymentLines, posNo `POS-YYYYMMDD-####`, typed validations); payment modal + 80mm receipt + hold. Live smoke ✅ (POST 201, posNo, PaymentLine persisted). Decimal/idempotency/atomic-stock = production-readiness. See `pos-redesign-phase-3_REPORT_20-06-26.md`.
 - **Goal:** Wire the full payment lifecycle: payment modal with all 6 methods, split payment, cash panel with quick-cash + change-due, reference no, validation banner, real posNo sequence, stock decrement, then the 80mm receipt modal (print + email/share + faux QR + sync badge) whose only exit is New Sale. Hold/cancel behavior ported faithfully.
 - **Verification gate:** npm run type-check + npm run build pass. Manual: pay button (disabled on empty cart) opens modal prefilled with a cash line = total; selecting among 6 methods works; split lines add/remove and must sum to total within 0.01 (else payError); cash panel shows quick-cash buttons + change-due; confirm generates POS-YYYYMMDD-#### (distinct from accountingDocNo, shown '— รอออกเอกสาร —'), decrements stock, opens the 80mm receipt; receipt prints via window.print() (@page 80mm), shows qty×price line detail + QR to rcpt.krspos.co/{shortId} + pending sync badge; receipt closes ONLY via New Sale; payment modal closes only via X (no backdrop); hold clears with toast, cancel no-ops on empty.
 - **Functions in this phase (28):**
 
 | Function (id) | What it is | Screen | In Taste | In app | Gap | Done? |
 |---|---|---|---|---|---|---|
-| `overlay-payment-modal` | Payment modal (วิธีชำระเงิน) | pos | 🟡 partial | 🔴 no | build-new-ui | — |
-| `overlay-receipt` | Receipt modal (ใบเสร็จ 80mm) | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-hold-bill` | Hold / park bill (holdBill) | pos | 🟡 partial | 🔴 no | build-new-ui | — |
-| `action-open-payment` | Open payment (openPayment) | pos | 🟢 yes | 🔴 no | build-new-ui | — |
-| `action-set-pay-method` | Select payment method (setPayMethod) | pos | 🟡 partial | 🔴 no | build-new-ui | — |
-| `action-set-pay-amount` | Set split-line amount (setPayAmount) | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-add-pay-line` | Add split-payment line (addPayLine) | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-remove-pay-line` | Remove split-payment line (removePayLine) | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-cash-received` | Cash received + quick-cash (onCashReceived/setCash) | pos | 🟡 partial | 🔴 no | build-new-ui | — |
-| `action-pay-reference` | Payment reference no (onPayRef) | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-confirm-payment` | Confirm payment (confirmPayment) | pos | 🟡 partial | 🟡 partial | build-new-ui | — |
-| `action-print-receipt` | Print receipt 80mm (printReceipt) | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-email-receipt` | Email/share receipt link (toastEmail) | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-new-sale` | Start new sale (newSale) | pos | 🟡 partial | 🟡 partial | build-new-ui | — |
-| `state-payment-validation-error` | Payment validation error | pos | 🟡 partial | 🟡 partial | build-new-ui | — |
-| `state-cash-change-display` | Cash change display | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `flow-sell-to-receipt` | Flow: sell → cart → discount → pay → change → receipt/print | pos | 🟡 partial | 🟡 partial | build-new-ui | — |
-| `domain-receipt-80mm` | 80mm thermal receipt format | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `domain-separate-pos-acct-numbers` | Separate POS no vs accounting doc no | global | 🟡 partial | 🔴 no | full-stack-new | — |
-| `display-receipt-sync-badge` | Receipt sync-status badge | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `display-faux-qr` | Receipt QR code (digital receipt link) | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `action-close-payment-modal` | Close payment modal (closePayment / X) | pos | 🟡 partial | 🔴 no | build-new-ui | — |
-| `action-close-receipt-newsale-only` | Receipt modal dismissal is New-Sale-only (no X, no backdrop) | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `display-receipt-line-detail` | Receipt line-item detail format (qty × unit price) | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `state-pay-method-locked-line` | Locked split-payment line logic | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `domain-posno-seq-formula` | New POS number sequence formula (sales.length + 42) | pos | 🟡 partial | 🟡 partial | build-new-ui | — |
-| `domain-receipt-shortid` | Receipt shortId = last 6 of posNo | pos | 🔴 no | 🔴 no | build-new-ui | — |
-| `state-cancel-vs-hold-difference` | Hold vs Cancel behavioral difference | pos | 🟡 partial | 🔴 no | build-new-ui | — |
+| `overlay-payment-modal` | Payment modal (วิธีชำระเงิน) | pos | 🟡 partial | 🔴 no | build-new-ui | ✅ |
+| `overlay-receipt` | Receipt modal (ใบเสร็จ 80mm) | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-hold-bill` | Hold / park bill (holdBill) | pos | 🟡 partial | 🔴 no | build-new-ui | ✅ |
+| `action-open-payment` | Open payment (openPayment) | pos | 🟢 yes | 🔴 no | build-new-ui | ✅ |
+| `action-set-pay-method` | Select payment method (setPayMethod) | pos | 🟡 partial | 🔴 no | build-new-ui | ✅ |
+| `action-set-pay-amount` | Set split-line amount (setPayAmount) | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-add-pay-line` | Add split-payment line (addPayLine) | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-remove-pay-line` | Remove split-payment line (removePayLine) | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-cash-received` | Cash received + quick-cash (onCashReceived/setCash) | pos | 🟡 partial | 🔴 no | build-new-ui | ✅ |
+| `action-pay-reference` | Payment reference no (onPayRef) | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-confirm-payment` | Confirm payment (confirmPayment) | pos | 🟡 partial | 🟡 partial | build-new-ui | ✅ |
+| `action-print-receipt` | Print receipt 80mm (printReceipt) | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-email-receipt` | Email/share receipt link (toastEmail) | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-new-sale` | Start new sale (newSale) | pos | 🟡 partial | 🟡 partial | build-new-ui | ✅ |
+| `state-payment-validation-error` | Payment validation error | pos | 🟡 partial | 🟡 partial | build-new-ui | ✅ |
+| `state-cash-change-display` | Cash change display | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `flow-sell-to-receipt` | Flow: sell → cart → discount → pay → change → receipt/print | pos | 🟡 partial | 🟡 partial | build-new-ui | ✅ |
+| `domain-receipt-80mm` | 80mm thermal receipt format | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `domain-separate-pos-acct-numbers` | Separate POS no vs accounting doc no | global | 🟡 partial | 🔴 no | full-stack-new | ✅ |
+| `display-receipt-sync-badge` | Receipt sync-status badge | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `display-faux-qr` | Receipt QR code (digital receipt link) | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `action-close-payment-modal` | Close payment modal (closePayment / X) | pos | 🟡 partial | 🔴 no | build-new-ui | ✅ |
+| `action-close-receipt-newsale-only` | Receipt modal dismissal is New-Sale-only (no X, no backdrop) | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `display-receipt-line-detail` | Receipt line-item detail format (qty × unit price) | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `state-pay-method-locked-line` | Locked split-payment line logic | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `domain-posno-seq-formula` | New POS number sequence formula (sales.length + 42) | pos | 🟡 partial | 🟡 partial | build-new-ui | ✅ |
+| `domain-receipt-shortid` | Receipt shortId = last 6 of posNo | pos | 🔴 no | 🔴 no | build-new-ui | ✅ |
+| `state-cancel-vs-hold-difference` | Hold vs Cancel behavioral difference | pos | 🟡 partial | 🔴 no | build-new-ui | ✅ |
 
 ### Phase 4 — Catalog/stock management + Users & Roles + RBAC enforcement
 
-- **Status:** ⏳ planned
+- **Status:** ▶ next
 - **Depends on:** Phase 1, Phase 3
 - **Goal:** Build the two admin-only management screens and turn the dormant Role enum into real enforcement. Products screen (search, monogram rows, add/edit ProductForm, receive-stock GRN + movement). Users screen (role summary cards, filter chips, add-user modal + validation, activate/deactivate). RBAC: navAccess filters the rail, route guards + redirect, real session, and the demo role-switch.
 - **Verification gate:** npm run type-check + npm run build pass. Manual: as Admin the rail shows all 7 items; switching to Seller hides data/products/users/docs and redirects off any admin view to POS; Products screen lists rows with category-tinted Thai-char monograms, low-stock badge, search by name/EN/SKU, add-product form creates via POST /api/products, receive-stock generates a GRN and bumps the lowest-stock item; Users screen shows Seller/Admin permission summary cards, filter chips, add-user modal validates name + email format and prepends the user, and the row toggle flips active/inactive (no hard delete). Requires PUT/PATCH product endpoints, POST/PATCH user endpoints, and User.isActive added to schema.
