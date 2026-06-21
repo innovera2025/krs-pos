@@ -37,6 +37,21 @@ services:
       NODE_ENV: production
     ports:
       - "3000:3000"
+    # Liveness + DB-readiness probe. Hits GET /api/health (public), which runs a
+    # `SELECT 1` and returns 503 when Postgres is unreachable — so the container is
+    # marked unhealthy on a booted-but-broken app, not just a crashed process.
+    # BusyBox `wget` (present in node:20-alpine) exits non-zero on a non-2xx status.
+    # start_period gives Next.js time to boot before failures count.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q -O /dev/null http://localhost:3000/api/health || exit 1",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   pgdata:

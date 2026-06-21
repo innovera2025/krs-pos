@@ -18,6 +18,11 @@ import { logAudit, ipFromHeaders } from "@/lib/auditLog";
 // drop trailing zeros ("65.00" -> "65"), corrupting the Sales-History row after a
 // refund/void. Apply serializeOrder() at EVERY PATCH return site.
 import { serializeOrder } from "@/lib/orderSerialize";
+// WRAP-style Zod (D1): validate the action SHAPE. To preserve the exact client
+// contract, an invalid action still returns the existing 400 BAD_ACTION (not the
+// generic VALIDATION code) — see the parse below. All RBAC + state-machine logic is
+// unchanged.
+import { OrderPatchBodySchema } from "@/lib/schemas/order";
 
 // domain-no-destructive-delete: orders are NEVER deleted — only status
 // transitions. There is intentionally NO DELETE handler on this route.
@@ -84,8 +89,11 @@ export async function PATCH(
     );
   }
 
-  const action = body.action;
-  if (action !== "refund" && action !== "void" && action !== "request-tax") {
+  // WRAP-style Zod validates the action enum SHAPE. On failure we keep the EXISTING
+  // 400 BAD_ACTION response (same code/status/message the client already handles) —
+  // the Zod parse just centralizes the allowed-action set in one schema.
+  const parsed = OrderPatchBodySchema.safeParse(body);
+  if (!parsed.success) {
     return NextResponse.json(
       {
         error: "action must be 'refund', 'void', or 'request-tax'",
@@ -94,6 +102,7 @@ export async function PATCH(
       { status: 400 }
     );
   }
+  const action = parsed.data.action;
 
   // AUTH (auth Phase 2): refund/void are admin-only money/ledger reversals. A
   // cashier may reach "request-tax" but not refund or void — block with 403.

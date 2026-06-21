@@ -20,8 +20,19 @@ export async function GET() {
   const gate = await requireUser();
   if ("response" in gate) return gate.response;
 
-  const count = await prisma.syncJob.count({
-    where: { status: SyncJobStatus.FAILED },
-  });
-  return NextResponse.json({ count });
+  // Error handling (theme #4): the NavRail fetches this on EVERY page mount for all
+  // signed-in users, so an unguarded DB error here would surface as a raw 500 across
+  // the whole app. Wrap it; the rail tolerates a non-ok response.
+  try {
+    const count = await prisma.syncJob.count({
+      where: { status: SyncJobStatus.FAILED },
+    });
+    return NextResponse.json({ count });
+  } catch (err) {
+    console.error("GET /api/sync-jobs/failed-count failed:", err);
+    return NextResponse.json(
+      { error: "Could not load failed count", code: "INTERNAL" },
+      { status: 500 }
+    );
+  }
 }

@@ -25,6 +25,12 @@ const USER_PUBLIC_SELECT = {
 
 /** Minimum password length accepted on an admin reset (auth Phase 3). */
 const MIN_PASSWORD_LEN = 8;
+/**
+ * Maximum password length (production-readiness Phase 1, theme #3). bcrypt truncates
+ * at 72 BYTES — a longer reset password would authenticate using only its first 72
+ * chars (silent mis-feature) and waste CPU at BCRYPT_COST=12. Reject at the boundary.
+ */
+const MAX_PASSWORD_LEN = 72;
 /** bcrypt cost factor — matches the seed/auth cost (12). */
 const BCRYPT_COST = 12;
 
@@ -113,6 +119,16 @@ export async function PATCH(
     if (body.password.length < MIN_PASSWORD_LEN) {
       return NextResponse.json(
         { error: "รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร", code: "BAD_PASSWORD" },
+        { status: 400 }
+      );
+    }
+    // Max-length cap (theme #3): bcrypt truncates at 72 bytes — reject longer.
+    if (body.password.length > MAX_PASSWORD_LEN) {
+      return NextResponse.json(
+        {
+          error: "รหัสผ่านยาวเกินไป (สูงสุด 72 ตัวอักษร)",
+          code: "BAD_PASSWORD",
+        },
         { status: 400 }
       );
     }

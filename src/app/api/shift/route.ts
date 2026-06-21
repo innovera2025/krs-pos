@@ -4,6 +4,12 @@ import { prisma } from "@/lib/prisma";
 import { bangkokYyyymmdd, bangkokDayWindow } from "@/lib/datetime";
 import { methodLabel } from "@/components/pos/paymentMeta";
 import { requireUser } from "@/lib/auth";
+// WRAP-style Zod (D1): validate the action SHAPE only. Money bounds are validated
+// MANUALLY below (Number(raw) coercion, mirroring the existing close-path pattern,
+// so a numeric string like "50" is still accepted). The invalid-action case keeps
+// the existing 400 BAD_ACTION; the route keeps round2(), the SHIFT_ALREADY_OPEN /
+// NO_OPEN_SHIFT gates, and the close-path no-count handling.
+import { ShiftActionSchema } from "@/lib/schemas/shift";
 
 // Shift lifecycle + Z-report (Phase 5: flow-shift-lifecycle, screen-shift-close).
 //
@@ -236,13 +242,22 @@ export async function POST(req: Request) {
     );
   }
 
-  const action = body.action;
-  if (action !== "open" && action !== "close") {
+  // WRAP-style Zod validates the action SHAPE. On failure we keep the EXISTING 400
+  // BAD_ACTION response (same code/status/message the client already handles). The
+  // discriminated union also strips fields not belonging to the action; the money
+  // bounds are validated manually below to mirror the close-path coercion behavior
+  // (Number(raw)) exactly — accepting numeric strings as the close path already does.
+  const actionParse = ShiftActionSchema.safeParse(body);
+  if (!actionParse.success) {
     return NextResponse.json(
       { error: "action must be 'open' or 'close'", code: "BAD_ACTION" },
       { status: 400 }
     );
   }
+  const action = actionParse.data.action;
+
+  // Decimal(10,2) max — shared cap for both money inputs.
+  const MONEY_MAX = 99_999_999.99;
 
   try {
     const now = new Date();
@@ -259,13 +274,18 @@ export async function POST(req: Request) {
         );
       }
 
-      const openingFloat = round2(Number(body.openingFloat ?? 0));
-      if (openingFloat < 0) {
+      // §2B fix: validate the RAW openingFloat BEFORE round2 (round2 returns 0 for
+      // non-finite input, so validating after rounding would let NaN/"abc" silently
+      // open at 0). Mirrors the close-path countedCash pattern. Also caps at the
+      // Decimal(10,2) max so an oversized float is a 400, not a 500 overflow.
+      const floatRaw = Number(body.openingFloat ?? 0);
+      if (!Number.isFinite(floatRaw) || floatRaw < 0 || floatRaw > MONEY_MAX) {
         return NextResponse.json(
-          { error: "เงินทอนเปิดรอบต้องไม่ติดลบ", code: "BAD_FLOAT" },
+          { error: "เงินทอนเปิดรอบไม่ถูกต้อง", code: "BAD_FLOAT" },
           { status: 400 }
         );
       }
+      const openingFloat = round2(floatRaw);
 
       const shiftNumber = await nextShiftNumber(now);
       const created = await prisma.shift.create({
@@ -301,9 +321,11 @@ export async function POST(req: Request) {
     const noCount =
       countedRaw === null || countedRaw === undefined || countedRaw === "";
     // Validate the RAW value first: round2 returns 0 for non-finite input, so
-    // validating after rounding would let NaN silently close the shift at 0.
+    // validating after rounding would let NaN silently close the shift at 0. The
+    // MONEY_MAX cap matches the Decimal(10,2) column so an oversized count is a 400,
+    // not a 500 overflow (consistent with the openingFloat fix above).
     const n = Number(countedRaw);
-    if (!noCount && (!Number.isFinite(n) || n < 0)) {
+    if (!noCount && (!Number.isFinite(n) || n < 0 || n > MONEY_MAX)) {
       return NextResponse.json(
         { error: "เงินสดนับจริงไม่ถูกต้อง", code: "BAD_COUNTED" },
         { status: 400 }

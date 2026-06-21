@@ -26,7 +26,10 @@ export async function GET(req: Request) {
 
   try {
     const { searchParams } = new URL(req.url);
-    const q = (searchParams.get("q") ?? "").trim();
+    // Length cap (theme #3): silently truncate the search term to 200 chars so an
+    // arbitrarily long ILIKE pattern is never sent to Postgres. Silent truncation
+    // (not a 400) is the friendlier convention for a free-text search field.
+    const q = (searchParams.get("q") ?? "").trim().slice(0, 200);
 
     const where: Prisma.CustomerWhereInput = q
       ? {

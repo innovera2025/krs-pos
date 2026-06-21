@@ -28,6 +28,12 @@ import {
   toSatang,
   satangToString,
 } from "@/lib/orderSerialize";
+// WRAP-ONLY Zod (owner decision D1): the orders POST adds SHAPE/TYPE validation at
+// the JSON-parse boundary. ALL money/domain logic below (server recompute,
+// PAYMENT_MISMATCH, MAX_PAYMENT_LINES, idempotency, error codes) is unchanged and
+// runs AFTER this parse. See src/lib/schemas/order.ts for the wrap contract.
+import { OrderPostBodySchema } from "@/lib/schemas/order";
+import { parseBody } from "@/lib/schemas/_shared";
 
 /** Valid OrderStatus values for the optional `?status=` filter (Phase 5 history). */
 function isOrderStatus(v: string): v is OrderStatus {
@@ -76,13 +82,24 @@ export async function GET(req: Request) {
   if (statusParam && isOrderStatus(statusParam)) where.status = statusParam;
   if (syncParam && isSyncStatus(syncParam)) where.syncStatus = syncParam;
 
-  const orders = await prisma.order.findMany({
-    where,
-    include: ORDER_INCLUDE,
-    orderBy: { createdAt: "desc" },
-    take: 200,
-  });
-  return NextResponse.json(orders.map(serializeOrder));
+  // Error handling (production-readiness Phase 1, theme #4): wrap the findMany +
+  // serialize map so a DB failure returns a typed { error, code } 500 (with a
+  // server-side console.error) instead of a raw Next.js 500 that blanks /sales.
+  try {
+    const orders = await prisma.order.findMany({
+      where,
+      include: ORDER_INCLUDE,
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+    return NextResponse.json(orders.map(serializeOrder));
+  } catch (err) {
+    console.error("GET /api/orders failed:", err);
+    return NextResponse.json(
+      { error: "Could not load orders", code: "INTERNAL" },
+      { status: 500 }
+    );
+  }
 }
 
 type IncomingItem = {
@@ -239,15 +256,25 @@ export async function POST(req: Request) {
   // The cashier is the authenticated user — authoritative, never the client body.
   const cashierId = session.user.id;
 
-  let body: Partial<OrderRequestBody>;
+  let raw: unknown;
   try {
-    body = (await req.json()) as Partial<OrderRequestBody>;
+    raw = await req.json();
   } catch {
     return NextResponse.json(
       { error: "Invalid JSON body", code: "BAD_REQUEST" },
       { status: 400 }
     );
   }
+
+  // WRAP-ONLY shape/type validation (D1). On a structurally wrong body this returns
+  // 400 { error, code: "VALIDATION", issues }. Unknown keys (subtotal/discount/tax/
+  // total/amountPaid/change/cashierId) are stripped by Zod, so the anti-tamper
+  // "server ignores client money" contract is preserved. EVERY existing domain guard
+  // below (NO_ITEMS, BAD_ITEM, BAD_DISCOUNT 2dp, TOO_MANY_PAYMENTS, BAD_METHOD,
+  // PAYMENT_MISMATCH, idempotency, etc.) is unchanged and runs after this parse.
+  const parsed = parseBody(OrderPostBodySchema, raw);
+  if ("response" in parsed) return parsed.response;
+  const body = parsed.data as Partial<OrderRequestBody>;
 
   const {
     items,
@@ -294,12 +321,23 @@ export async function POST(req: Request) {
   // race where two same-key requests arrive concurrently and both pass this
   // pre-check (one wins the unique index; the loser replays).
   if (normalizedIdemKey) {
-    const existing = await prisma.order.findUnique({
-      where: { idempotencyKey: normalizedIdemKey },
-      include: ORDER_INCLUDE,
-    });
-    if (existing) {
-      return NextResponse.json(serializeOrder(existing), { status: 200 });
+    // Wrapped so a DB failure on this pre-check returns the route's sanitized
+    // INTERNAL 500 (matching the main checkout catch) instead of a raw framework
+    // 500 with no { error, code } body. Success behavior is unchanged.
+    try {
+      const existing = await prisma.order.findUnique({
+        where: { idempotencyKey: normalizedIdemKey },
+        include: ORDER_INCLUDE,
+      });
+      if (existing) {
+        return NextResponse.json(serializeOrder(existing), { status: 200 });
+      }
+    } catch (err) {
+      console.error("POST /api/orders idempotency pre-check failed:", err);
+      return NextResponse.json(
+        { error: "Could not create order", code: "INTERNAL" },
+        { status: 500 }
+      );
     }
   }
 
@@ -308,6 +346,19 @@ export async function POST(req: Request) {
     return NextResponse.json(
       { error: "No items in order", code: "NO_ITEMS" },
       { status: 400 }
+    );
+  }
+  // Upper bound on distinct line items (DoS hardening, mirrors MAX_PAYMENT_LINES /
+  // decision D4). Each line drives ~2 DB statements (stock updateMany + stockMovement
+  // create) INSIDE the single checkout $transaction; without a cap a crafted POST with
+  // thousands of items would hold a long transaction open. 50 is comfortably above any
+  // real cart. Kept MANUAL → 422 TOO_MANY_ITEMS (the schema .max(50) is a structural
+  // backstop only, not this client-facing code).
+  const MAX_ITEMS = 50;
+  if (items.length > MAX_ITEMS) {
+    return NextResponse.json(
+      { error: "Too many items", code: "TOO_MANY_ITEMS" },
+      { status: 422 }
     );
   }
   // INT4 cap matches the Postgres Int4 quantity column so an oversized qty returns
@@ -345,7 +396,11 @@ export async function POST(req: Request) {
   if (
     !Number.isFinite(discountValue) ||
     discountValue < 0 ||
-    (discountType === "percent" && discountValue > 100)
+    (discountType === "percent" && discountValue > 100) ||
+    // Cleanup: an "amount" discount must fit the Decimal(10,2) money column
+    // (max 99,999,999.99). Larger values would clamp harmlessly in the recompute
+    // but are unreasonable input — reject at the boundary for a clean contract.
+    (discountType === "amount" && discountValue > 99_999_999.99)
   ) {
     return NextResponse.json(
       { error: "Invalid discount value", code: "BAD_DISCOUNT" },
@@ -458,6 +513,14 @@ export async function POST(req: Request) {
     typeof customerId === "string" && customerId.trim().length > 0
       ? customerId.trim()
       : null;
+  // Cleanup: a customerId is a CUID (~25 chars); reject an absurdly long value at the
+  // boundary (400 BAD_CUSTOMER) before it reaches the findUnique below. 40 is generous.
+  if (normalizedCustomerId !== null && normalizedCustomerId.length > 40) {
+    return NextResponse.json(
+      { error: "ไม่พบลูกค้าที่เลือก", code: "BAD_CUSTOMER" },
+      { status: 400 }
+    );
+  }
   const wantsTax = taxRequested === true;
 
   try {

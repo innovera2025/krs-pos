@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { AuditAction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
+import { AuditActorIdSchema } from "@/lib/schemas/auditLog";
 
 // AUTH (auth Phase 3): the audit trail is admin-only (ADMIN/MANAGER). The
 // per-handler `requireAdmin` check is the real authorization boundary.
@@ -35,9 +36,20 @@ export async function GET(req: Request) {
     actionFilter = actionParam;
   }
 
+  // Validate the actorId filter at the boundary — a CUID is ≤ 40 chars; reject a
+  // longer value (→ 400 BAD_ACTOR_ID) rather than passing an unbounded string into
+  // the equality filter (theme #3). An absent/empty param means "no filter".
   const actorIdParam = searchParams.get("actorId");
-  const actorIdFilter =
-    actorIdParam && actorIdParam.length > 0 ? actorIdParam : undefined;
+  let actorIdFilter: string | undefined;
+  if (actorIdParam !== null && actorIdParam.length > 0) {
+    if (!AuditActorIdSchema.safeParse(actorIdParam).success) {
+      return NextResponse.json(
+        { error: "actorId ไม่ถูกต้อง", code: "BAD_ACTOR_ID" },
+        { status: 400 }
+      );
+    }
+    actorIdFilter = actorIdParam;
+  }
 
   try {
     const logs = await prisma.auditLog.findMany({

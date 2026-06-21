@@ -7,6 +7,15 @@ import { logAudit, ipFromHeaders } from "@/lib/auditLog";
 
 /** Minimum password length accepted at create/reset (auth Phase 3). */
 const MIN_PASSWORD_LEN = 8;
+/**
+ * Maximum password length (production-readiness Phase 1, theme #3). bcrypt silently
+ * truncates input at 72 BYTES — a password longer than this would authenticate using
+ * only its first 72 chars (a silent security mis-feature) and costs extra CPU at
+ * BCRYPT_COST=12. Reject (→ 400 BAD_PASSWORD) at the boundary instead.
+ */
+const MAX_PASSWORD_LEN = 72;
+/** RFC 5321 maximum email length (theme #3). */
+const MAX_EMAIL_LEN = 254;
 /** bcrypt cost factor — matches the seed/auth cost (12). */
 const BCRYPT_COST = 12;
 
@@ -100,7 +109,7 @@ export async function POST(req: Request) {
   }
 
   const email = typeof body.email === "string" ? body.email.trim() : "";
-  if (!EMAIL_RE.test(email)) {
+  if (!EMAIL_RE.test(email) || email.length > MAX_EMAIL_LEN) {
     return NextResponse.json(
       { error: "อีเมลไม่ถูกต้อง", code: "BAD_EMAIL" },
       { status: 422 }
@@ -123,6 +132,17 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         error: "รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร",
+        code: "BAD_PASSWORD",
+      },
+      { status: 400 }
+    );
+  }
+  // Max-length cap (theme #3): bcrypt truncates at 72 bytes — reject longer to avoid
+  // the silent "only the first 72 chars matter" mis-feature + excess hashing CPU.
+  if (password.length > MAX_PASSWORD_LEN) {
+    return NextResponse.json(
+      {
+        error: "รหัสผ่านยาวเกินไป (สูงสุด 72 ตัวอักษร)",
         code: "BAD_PASSWORD",
       },
       { status: 400 }

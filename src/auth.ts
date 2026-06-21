@@ -4,6 +4,11 @@ import { headers } from "next/headers";
 import bcrypt from "bcryptjs";
 import { AuditAction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+// Anchor the fail-fast env validation to the auth module too (Node-only). Auth.js
+// requires AUTH_SECRET to sign the JWT session; importing env here makes a missing/
+// short secret throw at boot rather than silently fail at first session access.
+// NEVER import this from src/auth.config.ts (edge) — only from this Node module.
+import "@/lib/env";
 import { authConfig } from "@/auth.config";
 import {
   isRateLimited,

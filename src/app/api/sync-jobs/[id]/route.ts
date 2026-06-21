@@ -2,6 +2,14 @@ import { NextResponse } from "next/server";
 import { Prisma, SyncJobStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
+// WRAP-style Zod (D1): validate the action SHAPE + the new `reason` ≤ 500 cap. The
+// invalid-action case keeps the existing 400 BAD_ACTION code; reason length is
+// checked only when it is a string (preserving the silent-ignore → "—" default for
+// a non-string reason). The route keeps its status gates and P2025 mapping.
+import {
+  SyncJobPatchActionSchema,
+  SyncJobReasonSchema,
+} from "@/lib/schemas/syncJob";
 
 // PATCH /api/sync-jobs/[id] — retry or skip a simulated KRS sync job (Phase 6b).
 // AUTH (auth Phase 2): admin-only — retry/skip are KRS Data Link admin actions.
@@ -50,10 +58,22 @@ export async function PATCH(
     );
   }
 
-  const action = body.action;
-  if (action !== "retry" && action !== "skip") {
+  // WRAP-style Zod validates the action SHAPE; on failure keep the EXISTING 400
+  // BAD_ACTION (same code/status/message the client already handles).
+  const actionParse = SyncJobPatchActionSchema.safeParse(body);
+  if (!actionParse.success) {
     return NextResponse.json(
       { error: "action must be 'retry' or 'skip'", code: "BAD_ACTION" },
+      { status: 400 }
+    );
+  }
+  const action = actionParse.data.action;
+
+  // New `reason` ≤ 500 cap (§2B) — checked only when a string is supplied so a
+  // non-string reason keeps its existing silent-ignore → "—" default behavior.
+  if (typeof body.reason === "string" && !SyncJobReasonSchema.safeParse(body.reason).success) {
+    return NextResponse.json(
+      { error: "เหตุผลยาวเกินไป", code: "BAD_REASON" },
       { status: 400 }
     );
   }

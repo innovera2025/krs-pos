@@ -6,6 +6,9 @@ import {
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
+// WRAP-style Zod (D1): validate the POST action SHAPE. An invalid action still
+// returns the existing 400 BAD_ACTION (preserved client contract).
+import { SyncJobPostBodySchema } from "@/lib/schemas/syncJob";
 
 // KRS sync jobs API (Phase 6b). The KRS transport is SIMULATED — there is no real
 // MySQL/SSL connection here. The list + the two POST actions (pull / insert-all)
@@ -40,12 +43,22 @@ export async function GET(req: Request) {
       ? { status: statusParam }
       : {};
 
-  const jobs = await prisma.syncJob.findMany({
-    where,
-    orderBy: { updatedAt: "desc" },
-    take: 200,
-  });
-  return NextResponse.json(jobs);
+  // Error handling (theme #4): wrap the findMany so a DB failure returns a typed
+  // 500 (with console.error) instead of a raw crash that fails the /data list.
+  try {
+    const jobs = await prisma.syncJob.findMany({
+      where,
+      orderBy: { updatedAt: "desc" },
+      take: 200,
+    });
+    return NextResponse.json(jobs);
+  } catch (err) {
+    console.error("GET /api/sync-jobs failed:", err);
+    return NextResponse.json(
+      { error: "Could not load sync jobs", code: "INTERNAL" },
+      { status: 500 }
+    );
+  }
 }
 
 type PostBody = { action?: unknown };
@@ -73,13 +86,16 @@ export async function POST(req: Request) {
     );
   }
 
-  const action = body.action;
-  if (action !== "pull" && action !== "insert-all") {
+  // WRAP-style Zod validates the action SHAPE; on failure we keep the EXISTING 400
+  // BAD_ACTION response (same code/status/message the client already handles).
+  const parsed = SyncJobPostBodySchema.safeParse(body);
+  if (!parsed.success) {
     return NextResponse.json(
       { error: "action must be 'pull' or 'insert-all'", code: "BAD_ACTION" },
       { status: 400 }
     );
   }
+  const action = parsed.data.action;
 
   try {
     if (action === "pull") {

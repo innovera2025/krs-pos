@@ -41,6 +41,18 @@ export async function PATCH(
     );
   }
 
+  // Structural shape gate. A body that is not a JSON object (array/string/number/
+  // null) is rejected here with the shared VALIDATION code; a well-formed object
+  // proceeds to the precise per-field checks below, which keep every existing
+  // client-facing code (BAD_NAME/BAD_PRICE/BAD_STOCK/...). Field-level bounds are
+  // owned entirely by those manual checks, so no existing code/status changes.
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return NextResponse.json(
+      { error: "ข้อมูลไม่ถูกต้อง", code: "VALIDATION" },
+      { status: 400 }
+    );
+  }
+
   // Build the update payload field-by-field with per-field type validation; only
   // provided fields are touched (partial update).
   const data: Prisma.ProductUpdateInput = {};
@@ -103,9 +115,20 @@ export async function PATCH(
     } else if (typeof body.categoryId === "string" && body.categoryId.length > 0) {
       // Verify the category exists up-front. Otherwise a connect to a missing id
       // throws P2025, which the catch below misreports as "Product not found".
-      const cat = await prisma.category.findUnique({
-        where: { id: body.categoryId },
-      });
+      // Wrapped so a DB failure on this pre-check returns the route's sanitized
+      // INTERNAL 500 (matching the update catch) instead of a raw framework 500.
+      let cat;
+      try {
+        cat = await prisma.category.findUnique({
+          where: { id: body.categoryId },
+        });
+      } catch (err) {
+        console.error("PATCH /api/products/[id] category pre-check failed:", err);
+        return NextResponse.json(
+          { error: "Could not update product", code: "INTERNAL" },
+          { status: 500 }
+        );
+      }
       if (!cat) {
         return NextResponse.json(
           { error: "ไม่พบหมวดหมู่", code: "CATEGORY_NOT_FOUND" },

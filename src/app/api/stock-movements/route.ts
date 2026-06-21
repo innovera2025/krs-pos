@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { Prisma, StockMovementType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
+// WRAP-style Zod (D1): validate the body SHAPE. This route is already hardened — the
+// existing manual guards (BAD_QTY integer/positive/Int4, BAD_REFERENCE ≤ 200, P2025)
+// are kept and run AFTER the parse. Zod just rejects a structurally wrong body early.
+import { StockMovementPostBodySchema } from "@/lib/schemas/stockMovement";
+import { parseBody } from "@/lib/schemas/_shared";
 
 // AUTH (auth Phase 2): admin-only — receiving stock (GRN) is an inventory action
 // reserved for an authenticated admin (ADMIN/MANAGER).
@@ -18,15 +23,22 @@ export async function POST(req: Request) {
   const gate = await requireAdmin();
   if ("response" in gate) return gate.response;
 
-  let body: ReceiveStockBody;
+  let raw: unknown;
   try {
-    body = (await req.json()) as ReceiveStockBody;
+    raw = await req.json();
   } catch {
     return NextResponse.json(
       { error: "Invalid JSON body", code: "BAD_REQUEST" },
       { status: 400 }
     );
   }
+
+  // WRAP shape validation (structurally wrong body → 400 VALIDATION). The manual
+  // domain guards below still own the precise codes (BAD_PRODUCT / BAD_QTY /
+  // BAD_REFERENCE) and the Int4/integer/positive checks the client already handles.
+  const parsed = parseBody(StockMovementPostBodySchema, raw);
+  if ("response" in parsed) return parsed.response;
+  const body: ReceiveStockBody = parsed.data;
 
   // --- input boundary validation ---
   const productId = typeof body.productId === "string" ? body.productId : "";
