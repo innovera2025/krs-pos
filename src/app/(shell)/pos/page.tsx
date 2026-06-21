@@ -92,6 +92,27 @@ export default function POSPage() {
 
   const searchRef = useRef<HTMLInputElement>(null);
 
+  // ---- checkout idempotency key (Sub-phase C) ----
+  // A client-generated UUID identifying ONE checkout ATTEMPT. It is minted lazily
+  // when a checkout is first submitted (confirmPayment) and REUSED across retries
+  // of that same submission (a transient 500, or the user fixing cash and
+  // re-confirming) so the server collapses duplicate POSTs to a single Order.
+  // It is cleared on a successful checkout AND whenever the bill is abandoned
+  // (cancel/hold/new-sale via clearBill) so the NEXT sale always mints a fresh
+  // key. A ref (not state) — it never affects rendering and must update
+  // synchronously within confirmPayment.
+  const idemKeyRef = useRef<string | null>(null);
+
+  /** Mint a fresh idempotency key, falling back if crypto.randomUUID is absent. */
+  function freshIdemKey(): string {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+    // Defensive fallback for environments without crypto.randomUUID — still a
+    // per-attempt unique token (time + randomness), well under the 64-char cap.
+    return `pos-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+
   // Fetch products (DB-dependent) with graceful loading/empty/error states.
   useEffect(() => {
     const ctrl = new AbortController();
@@ -240,6 +261,11 @@ export default function POSPage() {
     setDiscountType("amount");
     setCustomer(null);
     setTaxRequested(false);
+    // Drop the idempotency key — the bill is gone, so the NEXT checkout is a new
+    // sale and must mint a fresh key (a successful checkout calls clearBill, as do
+    // cancel/hold). Without this, the next sale would replay the just-completed
+    // order (200) and never actually record the new sale.
+    idemKeyRef.current = null;
   }
 
   // ---- customer picker (Phase 6a) ----
@@ -441,22 +467,24 @@ export default function POSPage() {
       return;
     }
 
-    // Change = max(cash received − cash due, 0).
-    const changeSatang = hasCash
-      ? Math.max(receivedSatang - cashDueSatang, 0)
-      : 0;
-    // amountPaid = total tendered, so amountPaid − change === total for splits:
-    // (sum of non-cash line amounts) + (cash received). Pure-cash reduces to the
-    // cash received; pure-non-cash reduces to the split total.
-    const nonCashSatang = payLines
-      .filter((l) => l.method !== "cash")
-      .reduce((acc, l) => acc + bahtToSatang(l.amount), 0);
-    const amountPaidSatang = hasCash
-      ? nonCashSatang + receivedSatang
-      : paidSatang;
+    // FIX D — amountPaid/change are SERVER-computed (Sub-phase A): the server
+    // derives them from the payment lines and never trusts client-sent values,
+    // so they are not part of the POST body. The former client-side amountPaid/
+    // change computations here were dead and have been removed. The cash-
+    // sufficiency check above (hasCash / cashDueSatang / receivedSatang) is the
+    // only remaining client-side cash math and is kept as a UX pre-check.
 
     setSubmitting(true);
     setPayError("");
+    // Mint the idempotency key once per submission and reuse it across retries:
+    // if a previous confirm attempt for this same bill already created one (e.g.
+    // it failed with a transient error and the cashier re-confirmed), reuse it so
+    // the server collapses the duplicate POST to a single Order. A new sale starts
+    // with idemKeyRef cleared (clearBill / success below) → a fresh key is minted.
+    if (!idemKeyRef.current) {
+      idemKeyRef.current = freshIdemKey();
+    }
+    const idempotencyKey = idemKeyRef.current;
     try {
       const trimmedRef = reference.trim();
       const res = await fetch("/api/orders", {
@@ -489,6 +517,9 @@ export default function POSPage() {
           })(),
           customerId: customer?.id ?? null,
           taxRequested,
+          // Per-attempt idempotency key (Sub-phase C) — same key across retries
+          // of THIS submission; the server replays the existing order on a dupe.
+          idempotencyKey,
         }),
       });
       if (!res.ok) {

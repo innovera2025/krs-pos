@@ -8,7 +8,9 @@ import {
   AuditAction,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { bangkokYyyymmdd, bangkokDayWindow } from "@/lib/datetime";
+// FIX B — only formatOrderNumber is used here now; the Bangkok day is derived
+// from the Postgres transaction clock inside nextOrderNumber (no JS day stamp).
+import { formatOrderNumber } from "@/lib/datetime";
 import { requireUser } from "@/lib/auth";
 import { logAudit, ipFromHeaders } from "@/lib/auditLog";
 import {
@@ -115,6 +117,13 @@ type OrderRequestBody = {
   // walk-in. taxRequested requires a customerId whose Customer has a taxId.
   customerId?: string | null;
   taxRequested?: boolean;
+  // Checkout idempotency (Sub-phase C). A client-generated UUID per checkout
+  // ATTEMPT — the SAME key is reused across retries of one submission, and a NEW
+  // key is generated for a new sale. The server collapses a double-submit to a
+  // single Order via the `Order.idempotencyKey @unique` index: a matching key
+  // replays the existing order (200) instead of creating a duplicate sale +
+  // double stock decrement. Optional for back-compat; the client always sends it.
+  idempotencyKey?: string;
 };
 
 // The six valid tender methods (mirrors the PaymentType enum).
@@ -131,29 +140,85 @@ function isPaymentType(v: string): v is PaymentType {
   return (VALID_METHODS as Set<string>).has(v);
 }
 
+/** Max length for a client-sent idempotency key (a UUID is 36 chars). */
+const MAX_IDEMPOTENCY_KEY_LEN = 64;
+
 /**
- * Generate the daily POS number: POS-YYYYMMDD-#### where #### = (count of orders
- * created today, in Asia/Bangkok) + 1, zero-padded to 4.
+ * Collision-safe daily POS number (Sub-phase C). Replaces the old count-based
+ * `nextPosNo`, which raced under READ COMMITTED (two concurrent checkouts could
+ * read the same count and mint a duplicate orderNumber → P2002 → 500).
  *
- * The calendar date AND the count window are computed in Asia/Bangkok (not the
- * process-local/UTC clock) so an early-morning Thai sale doesn't roll onto the
- * previous UTC day (shared helpers in lib/datetime.ts).
+ * The Asia/Bangkok day stamp (not UTC) is the DailyOrderCounter primary key, so
+ * an early-morning Thai sale counts toward the correct business day. The counter
+ * is bumped with a RAW `INSERT ... ON CONFLICT (day) DO UPDATE SET seq = seq + 1
+ * RETURNING seq` — atomic in a single statement (Prisma's non-raw `upsert` is
+ * find-then-write and races on the first insert of the day, so the raw upsert is
+ * required). Runs INSIDE the checkout transaction so a rolled-back order also
+ * rolls back the seq bump (no gap from a failed sale).
  *
- * TODO(production-readiness): this count-based sequence is not collision-safe
- * under concurrency — a DB sequence/counter is the hardening owned by the
- * production-readiness program. Do not regress to a timestamp id.
+ * FIX B — the Bangkok day is derived INSIDE the upsert from the Postgres
+ * transaction clock (`now() AT TIME ZONE 'Asia/Bangkok'`), NOT from a JS `now`
+ * captured before the transaction. `now()` is constant within a Postgres
+ * transaction and is the SAME clock that stamps `Order.createdAt`
+ * (`@default(now())`), so the counter key, the orderNumber day-prefix, and
+ * `createdAt` can no longer disagree across the ~50 ms Bangkok-midnight window
+ * that a JS-derived day could straddle. The pure `formatOrderNumber` helper is
+ * still used — fed the RETURNED `day`, not a JS-computed one.
  */
-async function nextPosNo(
-  tx: Prisma.TransactionClient,
-  now: Date
+async function nextOrderNumber(
+  tx: Prisma.TransactionClient
 ): Promise<string> {
-  const yyyymmdd = bangkokYyyymmdd(now);
-  const { startOfDay, startOfNextDay } = bangkokDayWindow(now);
-  const countToday = await tx.order.count({
-    where: { createdAt: { gte: startOfDay, lt: startOfNextDay } },
-  });
-  const seq = String(countToday + 1).padStart(4, "0");
-  return `POS-${yyyymmdd}-${seq}`;
+  // RETURNING day + seq — both derived from the single Postgres transaction
+  // clock. `to_char(now() AT TIME ZONE 'Asia/Bangkok', 'YYYYMMDD')` produces the
+  // Bangkok day stamp; seq is the new value after the atomic bump (1 on first
+  // insert of that day).
+  const rows = await tx.$queryRaw<{ day: string; seq: number }[]>`
+    INSERT INTO "DailyOrderCounter" ("day", "seq")
+    VALUES (to_char((now() AT TIME ZONE 'Asia/Bangkok'), 'YYYYMMDD'), 1)
+    ON CONFLICT ("day")
+    DO UPDATE SET "seq" = "DailyOrderCounter"."seq" + 1
+    RETURNING "day", "seq"
+  `;
+  const row = rows[0];
+  const day = row?.day;
+  const seq = row?.seq;
+  if (typeof day !== "string" || day.length === 0) {
+    // Defensive: the upsert always returns exactly one row with the day key, but
+    // never trust an empty/malformed result silently — it would corrupt the
+    // orderNumber.
+    throw new Error("DailyOrderCounter upsert returned no day");
+  }
+  if (typeof seq !== "number" || !Number.isFinite(seq) || seq < 1) {
+    // Defensive: the upsert always returns exactly one row, but never trust an
+    // empty/malformed result silently — it would corrupt the orderNumber. The
+    // counter starts at 1, so a seq < 1 (FIX C) is also an internal error: a
+    // seq of 0 would yield POS-YYYYMMDD-0000.
+    throw new Error("DailyOrderCounter upsert returned no sequence");
+  }
+  return formatOrderNumber(day, seq);
+}
+
+/**
+ * Whether a Prisma P2002 (unique constraint) error names the given field/column
+ * (Sub-phase C). `err.meta.target` shape varies by connector/version: the
+ * Postgres connector usually reports a `string[]` of column names
+ * (`["idempotencyKey"]`), but it can also be a single constraint-name string
+ * (`"Order_idempotencyKey_key"`) or undefined. A SUBSTRING test against every
+ * token covers all three shapes (column name, constraint name embedding the
+ * column, array). Used to branch a checkout P2002 by which unique index lost the
+ * race (`idempotencyKey` → replay 200 vs `orderNumber` → 409).
+ */
+function p2002Mentions(
+  err: Prisma.PrismaClientKnownRequestError,
+  field: string
+): boolean {
+  const target = err.meta?.target;
+  const tokens = Array.isArray(target)
+    ? target.map((t) => String(t))
+    : typeof target === "string"
+      ? [target]
+      : [];
+  return tokens.some((t) => t.includes(field));
 }
 
 // POST /api/orders — create an order (checkout)
@@ -196,7 +261,47 @@ export async function POST(req: Request) {
     // forced from the session above. Any client-sent cashierId is ignored.
     customerId,
     taxRequested = false,
+    idempotencyKey,
   } = body;
+
+  // --- idempotency key boundary (Sub-phase C) ---
+  // Optional for back-compat, but when present it must be a non-empty string of
+  // at most MAX_IDEMPOTENCY_KEY_LEN chars (a UUID is 36). A bad key is rejected
+  // at the boundary (400) rather than silently ignored, so a buggy client can't
+  // accidentally defeat idempotency and create duplicate sales. `null`/absent =
+  // back-compat path (no idempotency guarantee).
+  let normalizedIdemKey: string | null = null;
+  if (idempotencyKey !== undefined && idempotencyKey !== null) {
+    if (
+      typeof idempotencyKey !== "string" ||
+      idempotencyKey.trim().length === 0 ||
+      idempotencyKey.trim().length > MAX_IDEMPOTENCY_KEY_LEN
+    ) {
+      return NextResponse.json(
+        { error: "Invalid idempotency key", code: "BAD_IDEMPOTENCY_KEY" },
+        { status: 400 }
+      );
+    }
+    normalizedIdemKey = idempotencyKey.trim();
+  }
+
+  // --- idempotent replay pre-check (Sub-phase C) ---
+  // Before doing ANY work (recompute, stock decrement, audit), look up an order
+  // with this key. A match means this exact checkout attempt already succeeded
+  // (double-click / network retry / offline replay) → return the existing order
+  // with 200, creating NO new order, NO extra stock decrement, NO duplicate
+  // audit. The transactional create below + the P2002-by-key catch close the
+  // race where two same-key requests arrive concurrently and both pass this
+  // pre-check (one wins the unique index; the loser replays).
+  if (normalizedIdemKey) {
+    const existing = await prisma.order.findUnique({
+      where: { idempotencyKey: normalizedIdemKey },
+      include: ORDER_INCLUDE,
+    });
+    if (existing) {
+      return NextResponse.json(serializeOrder(existing), { status: 200 });
+    }
+  }
 
   // --- input boundary validation ---
   if (!Array.isArray(items) || items.length === 0) {
@@ -456,8 +561,6 @@ export async function POST(req: Request) {
       lineTotal: satangToString(l.lineTotalSatang),
     }));
 
-    const now = new Date();
-
     // Phase 5 (Decision A2): link the new order to the current OPEN shift if one
     // exists, else leave shiftId null. This MUST NOT block checkout when no shift
     // is open — a sale can happen before a shift is opened, and that order simply
@@ -470,11 +573,19 @@ export async function POST(req: Request) {
     const shiftId = openShift?.id ?? null;
 
     const order = await prisma.$transaction(async (tx) => {
-      const orderNumber = await nextPosNo(tx, now);
+      // Collision-safe orderNumber from the atomic daily counter (Sub-phase C),
+      // minted INSIDE the tx so a rolled-back order also rolls back the seq bump.
+      // FIX B — the day-prefix is derived from the Postgres transaction clock
+      // inside nextOrderNumber (not the JS `now`), so it can't disagree with the
+      // DB-stamped createdAt across the Bangkok-midnight window.
+      const orderNumber = await nextOrderNumber(tx);
 
       const created = await tx.order.create({
         data: {
           orderNumber,
+          // Idempotency key (Sub-phase C). The `@unique` index makes a concurrent
+          // same-key request lose with P2002 → caught below → replays the winner.
+          idempotencyKey: normalizedIdemKey,
           subtotal: subtotalBaht,
           tax: taxBaht,
           discount: discountBaht,
@@ -564,14 +675,54 @@ export async function POST(req: Request) {
         { status: 409 }
       );
     }
-    // Concurrent checkouts can collide on the daily orderNumber (count-based
-    // sequence under READ COMMITTED). The collision-free DB sequence is deferred
-    // (Sub-phase C); for now translate the unique-constraint violation into a clean
-    // 409 the client can retry, instead of a silent 500.
+    // P2002 unique-constraint violations on checkout (Sub-phase C). Inspect the
+    // violated index (`err.meta.target`) and branch by which constraint lost the
+    // race:
+    //
+    //   • idempotencyKey → a concurrent SAME-KEY request won the create race after
+    //     this one passed the replay pre-check. This is NOT an error: re-read the
+    //     winner by key and return it (200 replay), so a double-submit collapses
+    //     to a single sale even under true concurrency.
+    //
+    //   • orderNumber → the daily counter should now prevent this (the atomic
+    //     ON CONFLICT upsert mints a unique seq per request). Kept as a defensive
+    //     409 the client can retry, never a silent 500.
     if (
       err instanceof Prisma.PrismaClientKnownRequestError &&
       err.code === "P2002"
     ) {
+      // Capture the narrowed (non-null) key so TS knows the findUnique `where`
+      // gets a string, not string | null.
+      const conflictKey = normalizedIdemKey;
+      // FIX A — never let an idempotencyKey collision fall through to 409.
+      // `p2002Mentions` returns false when `err.meta.target` is undefined (which
+      // Prisma can emit under some engine/connector conditions). If we required a
+      // POSITIVE idempotencyKey match to even attempt the replay, a concurrent
+      // same-key loser whose collision really WAS on idempotencyKey would wrongly
+      // get 409 ORDER_NUMBER_CONFLICT. So: when this request carries a key and the
+      // target does NOT clearly indicate orderNumber, attempt the winner-read by
+      // key. The target "clearly indicates orderNumber" only when it mentions
+      // orderNumber AND not idempotencyKey — anything undefined/ambiguous is
+      // treated as a possible idempotencyKey collision and replayed if a winner
+      // exists. We only reach the 409 below for a clear orderNumber collision, or
+      // when the winner-read genuinely finds nothing.
+      const mentionsIdem = p2002Mentions(err, "idempotencyKey");
+      const mentionsOrderNo = p2002Mentions(err, "orderNumber");
+      const clearlyOrderNumber = mentionsOrderNo && !mentionsIdem;
+      if (conflictKey !== null && !clearlyOrderNumber) {
+        // The winning order is guaranteed committed (the unique violation proves
+        // it). Re-read and replay it. If the winner is NOT found, this was not an
+        // idempotencyKey collision (or the row vanished) → fall through to 409.
+        const winner = await prisma.order.findUnique({
+          where: { idempotencyKey: conflictKey },
+          include: ORDER_INCLUDE,
+        });
+        if (winner) {
+          return NextResponse.json(serializeOrder(winner), { status: 200 });
+        }
+      }
+      // orderNumber collision (or an unexpected unique target with no key winner)
+      // → defensive 409 the client can retry, never a silent 500.
       return NextResponse.json(
         { error: "เลขที่บิลซ้ำ กรุณาลองใหม่", code: "ORDER_NUMBER_CONFLICT" },
         { status: 409 }

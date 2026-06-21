@@ -35,6 +35,30 @@ export function bangkokYyyymmdd(now: Date): string {
 }
 
 /**
+ * `YYYYMMDD` Bangkok day stamp used as the DailyOrderCounter primary key and the
+ * `POS-<day>-<seq>` orderNumber prefix (Financial/Inventory correctness,
+ * Sub-phase C). The day MUST be derived in Asia/Bangkok (not UTC/process-local)
+ * so an early-morning Thai sale (e.g. 00:30 Bangkok = 17:30 UTC the previous day)
+ * counts toward the correct Thai business day.
+ *
+ * Identical output to `bangkokYyyymmdd`; named explicitly so the collision-safe
+ * counter path reads in domain terms ("the Bangkok day this order belongs to").
+ */
+export function bangkokDayStamp(now: Date): string {
+  return bangkokYyyymmdd(now);
+}
+
+/**
+ * Format the daily POS number from a Bangkok day stamp and an atomic sequence:
+ * `POS-YYYYMMDD-####` with the sequence zero-padded to 4 (Sub-phase C). Pure —
+ * unit-tested. Lives here (not in the orders route) because a Next.js route file
+ * may only export route handlers; this is a reusable, testable pure helper.
+ */
+export function formatOrderNumber(day: string, seq: number): string {
+  return `POS-${day}-${String(seq).padStart(4, "0")}`;
+}
+
+/**
  * The UTC instant window [start, nextDay) covering the Asia/Bangkok calendar day
  * of `now`. UTC = Bangkok − 7h.
  */

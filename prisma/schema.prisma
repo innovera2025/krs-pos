@@ -187,6 +187,14 @@ model Product {
 model Order {
   id           String      @id @default(cuid())
   orderNumber  String      @unique
+  // Checkout idempotency (Financial/Inventory correctness, Sub-phase C). A
+  // client-generated UUID per checkout ATTEMPT (reused across retries of the
+  // same submission, regenerated for a new sale). The `@unique` index makes a
+  // double-submit / network retry collapse to a single Order: the POST pre-checks
+  // by this key and returns the existing order (200 replay) instead of creating a
+  // duplicate sale + double stock decrement. Nullable for back-compat (older rows
+  // and any client that omits it); `@unique` allows multiple NULLs in Postgres.
+  idempotencyKey String?   @unique
   status       OrderStatus @default(COMPLETED)
   subtotal     Decimal     @db.Decimal(10, 2)
   tax          Decimal     @db.Decimal(10, 2) @default(0)
@@ -227,6 +235,19 @@ model Order {
   payments     PaymentLine[]
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
+}
+
+// Collision-safe daily POS number sequence (Financial/Inventory correctness,
+// Sub-phase C). One row per Asia/Bangkok calendar day; `seq` is bumped atomically
+// inside the checkout transaction via a raw `INSERT ... ON CONFLICT DO UPDATE
+// SET seq = seq + 1 RETURNING seq` upsert (race-free, unlike a find-then-write).
+// This replaces the old count-based `nextPosNo`, which could mint duplicate
+// orderNumbers under concurrent checkouts (READ COMMITTED). `orderNumber` is
+// derived as `POS-${day}-${seq padded to 4}`.
+model DailyOrderCounter {
+  // "YYYYMMDD" in Asia/Bangkok (matches bangkokDayStamp / bangkokYyyymmdd).
+  day String @id
+  seq Int    @default(0)
 }
 
 enum OrderStatus {
