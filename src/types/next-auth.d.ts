@@ -23,6 +23,12 @@ declare module "next-auth" {
   /** The object returned from `authorize()` — carries role onto the jwt callback. */
   interface User {
     role: Role;
+    /**
+     * Force-logout baseline (auth Phase 3). Carried from authorize() so the jwt
+     * callback can stamp it onto the token; an admin bumping the DB value
+     * invalidates every existing JWT for the user on its next request.
+     */
+    tokenVersion?: number;
   }
 }
 
@@ -34,5 +40,11 @@ declare module "@auth/core/jwt" {
     /** User.id (cuid). Mirrors `token.sub` but kept explicit for clarity. */
     id?: string;
     role?: Role;
+    /**
+     * Force-logout baseline (auth Phase 3). Stamped at sign-in; the jwt callback
+     * re-reads the DB value each request and invalidates the token when they
+     * diverge (an admin bumped tokenVersion).
+     */
+    tokenVersion?: number;
   }
 }

@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server";
-import { Prisma, Role } from "@prisma/client";
+import bcrypt from "bcryptjs";
+import { Prisma, Role, AuditAction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
+import { logAudit, ipFromHeaders } from "@/lib/auditLog";
+
+/** Minimum password length accepted at create/reset (auth Phase 3). */
+const MIN_PASSWORD_LEN = 8;
+/** bcrypt cost factor — matches the seed/auth cost (12). */
+const BCRYPT_COST = 12;
 
 // AUTH (production-readiness Phase 1): these routes require an authenticated
 // ADMIN (or MANAGER, treated as admin). The per-handler `requireAdmin` check is
@@ -18,6 +25,10 @@ const USER_PUBLIC_SELECT = {
   isActive: true,
   branchId: true,
   createdAt: true,
+  // Lockout state (auth Phase 3) so the Users UI can show a "Locked" badge and a
+  // contextual Unlock action. The password hash is NEVER selected here.
+  lockedUntil: true,
+  failedLoginAttempts: true,
 } as const;
 
 // GET /api/users — list users (password never selected/returned). Admin-only.
@@ -44,6 +55,7 @@ type CreateUserBody = {
   name?: unknown;
   email?: unknown;
   role?: unknown;
+  password?: unknown;
 };
 
 // Email shape check — same loose pattern as the Simple POS add-user form.
@@ -54,23 +66,10 @@ function isRole(v: unknown): v is Role {
   return typeof v === "string" && (Object.values(Role) as string[]).includes(v);
 }
 
-/**
- * Generate a non-functional placeholder password for a demo user.
- *
- * There is no auth/credential flow yet, but the schema requires a non-null
- * password. This value is intentionally NOT a usable credential and is never
- * returned to the client.
- *
- * TODO(production-readiness): hash a real password + force a set-on-first-login
- * flow. Never store a plaintext credential.
- */
-function placeholderPassword(): string {
-  const rand = Math.random().toString(36).slice(2) + Date.now().toString(36);
-  return `!set-on-first-login-${rand}`;
-}
-
-// POST /api/users — create a user (returns the created user WITHOUT password).
-// Admin-only.
+// POST /api/users — create a user with a real (hashed) password. Admin-only.
+// Set-password Option 1: the admin sets the user's initial password at create
+// time (auth Phase 3) — replaces the old non-functional placeholder password.
+// Returns the created user WITHOUT the password hash.
 export async function POST(req: Request) {
   const gate = await requireAdmin();
   if ("response" in gate) return gate.response;
@@ -116,6 +115,31 @@ export async function POST(req: Request) {
   }
   const role: Role = body.role;
 
+  // Set-password Option 1: the admin sets the user's initial password now. The
+  // raw password is validated, hashed (never stored or logged in the clear), and
+  // the hash is never selected back out.
+  const password = typeof body.password === "string" ? body.password : "";
+  if (password.length < MIN_PASSWORD_LEN) {
+    return NextResponse.json(
+      {
+        error: "รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร",
+        code: "BAD_PASSWORD",
+      },
+      { status: 400 }
+    );
+  }
+
+  let passwordHash: string;
+  try {
+    passwordHash = await bcrypt.hash(password, BCRYPT_COST);
+  } catch (err) {
+    console.error("POST /api/users password hash failed:", err);
+    return NextResponse.json(
+      { error: "Could not create user", code: "INTERNAL" },
+      { status: 500 }
+    );
+  }
+
   try {
     const user = await prisma.user.create({
       data: {
@@ -123,11 +147,23 @@ export async function POST(req: Request) {
         email,
         role,
         isActive: true,
-        // Placeholder — not a real credential (see placeholderPassword).
-        password: placeholderPassword(),
+        password: passwordHash,
       },
       select: USER_PUBLIC_SELECT,
     });
+
+    // Best-effort audit AFTER the create commits (never blocks the response,
+    // never logs the password).
+    await logAudit({
+      action: AuditAction.USER_CREATED,
+      actorId: gate.session.user.id,
+      actorEmail: gate.session.user.email ?? null,
+      ip: await ipFromHeaders(),
+      targetType: "User",
+      targetId: user.id,
+      detail: JSON.stringify({ email: user.email, role: user.role }),
+    });
+
     return NextResponse.json(user, { status: 201 });
   } catch (err) {
     // Unique-constraint (duplicate email) → typed 409.

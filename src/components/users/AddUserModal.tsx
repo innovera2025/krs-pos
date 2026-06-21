@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { UserPlus, X } from "lucide-react";
+import { UserPlus, X, Eye, EyeOff } from "lucide-react";
 import { Modal } from "@/components/Modal";
 import type { UiRole } from "@/components/users/userMeta";
 
@@ -10,16 +10,24 @@ type AddUserModalProps = {
   submitting: boolean;
   error: string;
   onClose: () => void;
-  onSubmit: (input: { name: string; email: string; role: UiRole }) => void;
+  onSubmit: (input: {
+    name: string;
+    email: string;
+    role: UiRole;
+    password: string;
+  }) => void;
 };
 
 // Same loose email shape as the server (and Simple POS add-user form).
 const EMAIL_RE = /.+@.+\..+/;
+/** Minimum password length — mirrors the server (auth Phase 3). */
+const MIN_PASSWORD_LEN = 8;
 
 /**
  * Add-user modal (overlay-add-user-modal). Validates name (non-empty) + email
- * (shape) client-side before posting; the server re-validates. New users always
- * start active with a placeholder password (set server-side).
+ * (shape) + password (min 8) client-side before posting; the server re-validates.
+ * Set-password Option 1 (auth Phase 3): the admin sets the user's initial
+ * password here, so the new user can sign in immediately. New users start active.
  */
 export function AddUserModal({
   open,
@@ -32,6 +40,8 @@ export function AddUserModal({
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<UiRole>("seller");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [touched, setTouched] = useState(false);
 
   useEffect(() => {
@@ -39,19 +49,22 @@ export function AddUserModal({
       setName("");
       setEmail("");
       setRole("seller");
+      setPassword("");
+      setShowPassword(false);
       setTouched(false);
     }
   }, [open]);
 
   const nameOk = name.trim().length > 0;
   const emailOk = EMAIL_RE.test(email.trim());
-  const canSubmit = nameOk && emailOk && !submitting;
+  const passwordOk = password.length >= MIN_PASSWORD_LEN;
+  const canSubmit = nameOk && emailOk && passwordOk && !submitting;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setTouched(true);
     if (!canSubmit) return;
-    onSubmit({ name: name.trim(), email: email.trim(), role });
+    onSubmit({ name: name.trim(), email: email.trim(), role, password });
   }
 
   return (
@@ -123,6 +136,46 @@ export function AddUserModal({
             {touched && !emailOk && (
               <span className="text-[11.5px]" style={{ color: "#b42318" }}>
                 อีเมลไม่ถูกต้อง
+              </span>
+            )}
+          </label>
+
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[12.5px] font-semibold">รหัสผ่าน · Password</span>
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="อย่างน้อย 8 ตัวอักษร"
+                autoComplete="new-password"
+                aria-invalid={touched && !passwordOk}
+                className="h-11 w-full rounded-[12px] border pl-3 pr-11 text-[14px]"
+                style={{
+                  borderColor: touched && !passwordOk ? "#fca5a5" : "var(--line)",
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                aria-label={
+                  showPassword
+                    ? "ซ่อนรหัสผ่าน · Hide password"
+                    : "แสดงรหัสผ่าน · Show password"
+                }
+                className="absolute right-0 top-0 grid h-11 w-11 place-items-center"
+                style={{ color: "var(--soft)" }}
+              >
+                {showPassword ? (
+                  <EyeOff size={18} strokeWidth={2} />
+                ) : (
+                  <Eye size={18} strokeWidth={2} />
+                )}
+              </button>
+            </div>
+            {touched && !passwordOk && (
+              <span className="text-[11.5px]" style={{ color: "#b42318" }}>
+                รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร
               </span>
             )}
           </label>

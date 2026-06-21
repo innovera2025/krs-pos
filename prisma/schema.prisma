@@ -85,6 +85,19 @@ model User {
   // Activate/deactivate without a destructive delete (Phase 4 Users & Roles:
   // state-user-active-inactive). A deactivated user is hidden/blocked, never removed.
   isActive  Boolean  @default(true)
+  // Account lockout (auth Phase 3). `failedLoginAttempts` counts consecutive bad
+  // sign-ins; at the threshold (10) `lockedUntil` is set to now+15min. A success
+  // resets both to 0/null. Auto-expires at `lockedUntil`; an admin can also clear
+  // them via the {action:"unlock"} PATCH variant. Persistent (survives restart),
+  // complementing the in-memory per-IP rate-limiter in src/lib/rateLimit.ts.
+  failedLoginAttempts Int       @default(0)
+  lockedUntil         DateTime?
+  // Force-logout-all (auth Phase 3). Stamped onto the JWT at sign-in; the jwt
+  // callback re-reads it every request and invalidates a token whose stamped
+  // version is stale. Admin "force logout" increments this → every existing JWT
+  // for the user is rejected on its next request. (JWT-compatible session
+  // revocation; per-device listing needs a Session table and is deferred.)
+  tokenVersion        Int       @default(0)
   // Multi-branch-ready data model (domain-multi-branch-ready) — a user belongs to
   // a branch. Single-branch deployments use the BR-01 default. Surfaced in the
   // Users & Roles table and selected by the users API.
@@ -100,6 +113,43 @@ enum Role {
   ADMIN
   MANAGER
   CASHIER
+}
+
+// Audit trail (auth Phase 3). Append-only security/event log: who did what, to
+// what, from where. Writes are BEST-EFFORT (src/lib/auditLog.ts) — a failed
+// audit write never fails the primary action and is NEVER done inside a
+// $transaction. `detail` holds a small JSON string for action-specific context
+// (e.g. {orderNumber,total} for a refund). No FK on actorId/targetId so a row
+// survives even if the referenced record is later changed.
+model AuditLog {
+  id         String      @id @default(cuid())
+  actorId    String?
+  actorEmail String?
+  action     AuditAction
+  targetType String?
+  targetId   String?
+  ip         String?
+  detail     String?
+  createdAt  DateTime    @default(now())
+
+  @@index([action, createdAt])
+  @@index([actorId, createdAt])
+}
+
+enum AuditAction {
+  LOGIN_SUCCESS
+  LOGIN_FAILURE
+  LOGIN_RATE_LIMITED
+  ACCOUNT_LOCKED
+  ACCOUNT_UNLOCKED
+  LOGOUT
+  PASSWORD_CHANGED
+  USER_CREATED
+  USER_DEACTIVATED
+  USER_ACTIVATED
+  ORDER_REFUNDED
+  ORDER_VOIDED
+  SESSION_REVOKED
 }
 
 model Category {

@@ -9,7 +9,18 @@ export type UserDTO = {
   isActive: boolean;
   branchId: string;
   createdAt: string;
+  // Lockout state (auth Phase 3). `lockedUntil` is an ISO string when the account
+  // is locked (null/absent otherwise); a value in the future means "Locked now".
+  lockedUntil?: string | null;
+  failedLoginAttempts?: number;
 };
+
+/** True when the user is currently locked out (lockedUntil is in the future). */
+export function isLocked(user: Pick<UserDTO, "lockedUntil">): boolean {
+  if (!user.lockedUntil) return false;
+  const until = new Date(user.lockedUntil).getTime();
+  return Number.isFinite(until) && until > Date.now();
+}
 
 /**
  * UI role mapping: Simple POS speaks seller/admin; the schema enum is

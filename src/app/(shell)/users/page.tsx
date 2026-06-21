@@ -8,20 +8,31 @@ import {
   UserRound,
   Check,
   X as XIcon,
+  Lock,
+  KeyRound,
+  LogOut,
+  Unlock,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
 import { AdminOnly } from "@/components/AdminOnly";
 import { AddUserModal } from "@/components/users/AddUserModal";
+import { Modal } from "@/components/Modal";
 import {
   ADMIN_PERMISSIONS,
   SELLER_PERMISSIONS,
   initials,
   isAdminTier,
+  isLocked,
   roleLabel,
   uiRoleToEnum,
   type UiRole,
   type UserDTO,
 } from "@/components/users/userMeta";
+
+/** Minimum password length — mirrors the server (auth Phase 3). */
+const MIN_PASSWORD_LEN = 8;
 
 type LoadState = "loading" | "ready" | "error";
 type FilterChip = "all" | "seller" | "admin";
@@ -48,6 +59,12 @@ function UsersScreen() {
 
   // Per-row toggle in-flight ids (to disable the toggle while patching).
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  // Per-row action in-flight id (force-logout / unlock) to disable while patching.
+  const [actingId, setActingId] = useState<string | null>(null);
+
+  // Reset-password modal (auth Phase 3).
+  const [resetTarget, setResetTarget] = useState<UserDTO | null>(null);
+  const [resetSubmitting, setResetSubmitting] = useState(false);
 
   async function loadUsers() {
     setLoadState("loading");
@@ -79,7 +96,12 @@ function UsersScreen() {
     setAddOpen(true);
   }
 
-  async function submitAdd(input: { name: string; email: string; role: UiRole }) {
+  async function submitAdd(input: {
+    name: string;
+    email: string;
+    role: UiRole;
+    password: string;
+  }) {
     setAddSubmitting(true);
     setAddError("");
     try {
@@ -90,6 +112,7 @@ function UsersScreen() {
           name: input.name,
           email: input.email,
           role: uiRoleToEnum(input.role),
+          password: input.password,
         }),
       });
       if (!res.ok) {
@@ -136,6 +159,79 @@ function UsersScreen() {
       showToast("อัปเดตสถานะไม่สำเร็จ");
     } finally {
       setTogglingId(null);
+    }
+  }
+
+  // ---- admin reset password (auth Phase 3: PATCH {password}) ----
+  async function submitResetPassword(password: string) {
+    if (!resetTarget) return;
+    setResetSubmitting(true);
+    try {
+      const res = await fetch(`/api/users/${resetTarget.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      if (!res.ok) {
+        showToast("รีเซ็ตรหัสผ่านไม่สำเร็จ");
+        return;
+      }
+      const updated = (await res.json()) as UserDTO;
+      setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
+      setResetTarget(null);
+      showToast("รีเซ็ตรหัสผ่านแล้ว");
+    } catch {
+      showToast("รีเซ็ตรหัสผ่านไม่สำเร็จ");
+    } finally {
+      setResetSubmitting(false);
+    }
+  }
+
+  // ---- admin force-logout (auth Phase 3: PATCH {action:"forceLogout"}) ----
+  async function forceLogout(user: UserDTO) {
+    if (actingId) return;
+    setActingId(user.id);
+    try {
+      const res = await fetch(`/api/users/${user.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "forceLogout" }),
+      });
+      if (!res.ok) {
+        showToast("บังคับออกจากระบบไม่สำเร็จ");
+        return;
+      }
+      const updated = (await res.json()) as UserDTO;
+      setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
+      showToast("บังคับออกจากระบบแล้ว");
+    } catch {
+      showToast("บังคับออกจากระบบไม่สำเร็จ");
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  // ---- admin unlock (auth Phase 3: PATCH {action:"unlock"}) ----
+  async function unlockUser(user: UserDTO) {
+    if (actingId) return;
+    setActingId(user.id);
+    try {
+      const res = await fetch(`/api/users/${user.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "unlock" }),
+      });
+      if (!res.ok) {
+        showToast("ปลดล็อกไม่สำเร็จ");
+        return;
+      }
+      const updated = (await res.json()) as UserDTO;
+      setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
+      showToast("ปลดล็อกบัญชีแล้ว");
+    } catch {
+      showToast("ปลดล็อกไม่สำเร็จ");
+    } finally {
+      setActingId(null);
     }
   }
 
@@ -294,34 +390,81 @@ function UsersScreen() {
                       </span>
                     </Td>
                     <Td>
-                      <span
-                        className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11.5px] font-semibold"
-                        style={{
-                          background: u.isActive ? "var(--mint)" : "#f2f4f7",
-                          color: u.isActive ? "var(--brand-2)" : "var(--soft)",
-                        }}
-                      >
-                        {u.isActive ? "ใช้งานอยู่" : "ปิดใช้งาน"}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11.5px] font-semibold"
+                          style={{
+                            background: u.isActive ? "var(--mint)" : "#f2f4f7",
+                            color: u.isActive ? "var(--brand-2)" : "var(--soft)",
+                          }}
+                        >
+                          {u.isActive ? "ใช้งานอยู่" : "ปิดใช้งาน"}
+                        </span>
+                        {isLocked(u) && (
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11.5px] font-semibold"
+                            style={{ background: "var(--red-soft)", color: "#b42318" }}
+                          >
+                            <Lock size={11} strokeWidth={2.5} aria-hidden="true" />
+                            ล็อกอยู่ · Locked
+                          </span>
+                        )}
+                      </div>
                     </Td>
                     <Td className="text-right">
-                      <button
-                        type="button"
-                        onClick={() => toggleActive(u)}
-                        disabled={togglingId === u.id}
-                        aria-label={`${u.isActive ? "ปิดใช้งาน" : "เปิดใช้งาน"} ${u.name}`}
-                        className="h-9 rounded-[11px] border px-3 text-[12.5px] font-semibold disabled:opacity-50"
-                        style={{
-                          borderColor: "var(--line)",
-                          color: u.isActive ? "#b42318" : "var(--brand-2)",
-                        }}
-                      >
-                        {togglingId === u.id
-                          ? "กำลังบันทึก…"
-                          : u.isActive
-                          ? "ปิดใช้งาน"
-                          : "เปิดใช้งาน"}
-                      </button>
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        {isLocked(u) && (
+                          <button
+                            type="button"
+                            onClick={() => unlockUser(u)}
+                            disabled={actingId === u.id}
+                            aria-label={`ปลดล็อก ${u.name}`}
+                            className="inline-flex h-9 items-center gap-1.5 rounded-[11px] border px-3 text-[12.5px] font-semibold disabled:opacity-50"
+                            style={{ borderColor: "var(--line)", color: "var(--brand-2)" }}
+                          >
+                            <Unlock size={14} strokeWidth={2} aria-hidden="true" />
+                            ปลดล็อก
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setResetTarget(u)}
+                          aria-label={`รีเซ็ตรหัสผ่าน ${u.name}`}
+                          className="inline-flex h-9 items-center gap-1.5 rounded-[11px] border px-3 text-[12.5px] font-semibold"
+                          style={{ borderColor: "var(--line)", color: "var(--ink)" }}
+                        >
+                          <KeyRound size={14} strokeWidth={2} aria-hidden="true" />
+                          รีเซ็ตรหัสผ่าน
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => forceLogout(u)}
+                          disabled={actingId === u.id}
+                          aria-label={`บังคับออกจากระบบ ${u.name}`}
+                          className="inline-flex h-9 items-center gap-1.5 rounded-[11px] border px-3 text-[12.5px] font-semibold disabled:opacity-50"
+                          style={{ borderColor: "var(--line)", color: "var(--ink)" }}
+                        >
+                          <LogOut size={14} strokeWidth={2} aria-hidden="true" />
+                          บังคับออกจากระบบ
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleActive(u)}
+                          disabled={togglingId === u.id}
+                          aria-label={`${u.isActive ? "ปิดใช้งาน" : "เปิดใช้งาน"} ${u.name}`}
+                          className="h-9 rounded-[11px] border px-3 text-[12.5px] font-semibold disabled:opacity-50"
+                          style={{
+                            borderColor: "var(--line)",
+                            color: u.isActive ? "#b42318" : "var(--brand-2)",
+                          }}
+                        >
+                          {togglingId === u.id
+                            ? "กำลังบันทึก…"
+                            : u.isActive
+                            ? "ปิดใช้งาน"
+                            : "เปิดใช้งาน"}
+                        </button>
+                      </div>
                     </Td>
                   </tr>
                 ))}
@@ -338,7 +481,159 @@ function UsersScreen() {
         onClose={() => setAddOpen(false)}
         onSubmit={submitAdd}
       />
+
+      <ResetPasswordModal
+        target={resetTarget}
+        submitting={resetSubmitting}
+        onClose={() => setResetTarget(null)}
+        onSubmit={submitResetPassword}
+      />
     </div>
+  );
+}
+
+/**
+ * Admin reset-password modal (auth Phase 3). Sets a new password for the target
+ * user via PATCH {password}; the server hashes it (bcrypt 12) and the old
+ * password stops working immediately. Validates min length client-side; the
+ * server re-validates.
+ */
+function ResetPasswordModal({
+  target,
+  submitting,
+  onClose,
+  onSubmit,
+}: {
+  target: UserDTO | null;
+  submitting: boolean;
+  onClose: () => void;
+  onSubmit: (password: string) => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [touched, setTouched] = useState(false);
+
+  const open = target !== null;
+
+  useEffect(() => {
+    if (open) {
+      setPassword("");
+      setShowPassword(false);
+      setTouched(false);
+    }
+  }, [open]);
+
+  const passwordOk = password.length >= MIN_PASSWORD_LEN;
+  const canSubmit = passwordOk && !submitting;
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setTouched(true);
+    if (!canSubmit) return;
+    onSubmit(password);
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} label="รีเซ็ตรหัสผ่าน">
+      <form
+        onSubmit={handleSubmit}
+        className="w-[min(440px,calc(100vw-32px))] rounded-[22px] bg-white"
+        style={{ boxShadow: "var(--shadow)" }}
+      >
+        <header
+          className="flex items-center gap-3 border-b px-5 py-4"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <span
+            className="grid h-10 w-10 place-items-center rounded-[14px]"
+            style={{ background: "var(--mint)", color: "var(--brand-2)" }}
+          >
+            <KeyRound size={20} strokeWidth={2} />
+          </span>
+          <div className="flex-1">
+            <strong className="block text-[15px]">รีเซ็ตรหัสผ่าน</strong>
+            <span className="block text-[11.5px]" style={{ color: "var(--muted)" }}>
+              Reset password{target ? ` · ${target.name}` : ""}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="ปิด"
+            className="grid h-9 w-9 place-items-center rounded-[12px] border"
+            style={{ borderColor: "var(--line)", color: "var(--muted)" }}
+          >
+            <XIcon size={18} strokeWidth={2} />
+          </button>
+        </header>
+
+        <div className="flex flex-col gap-3.5 px-5 py-4">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[12.5px] font-semibold">
+              รหัสผ่านใหม่ · New password
+            </span>
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="อย่างน้อย 8 ตัวอักษร"
+                autoComplete="new-password"
+                aria-invalid={touched && !passwordOk}
+                className="h-11 w-full rounded-[12px] border pl-3 pr-11 text-[14px]"
+                style={{
+                  borderColor: touched && !passwordOk ? "#fca5a5" : "var(--line)",
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                aria-label={
+                  showPassword
+                    ? "ซ่อนรหัสผ่าน · Hide password"
+                    : "แสดงรหัสผ่าน · Show password"
+                }
+                className="absolute right-0 top-0 grid h-11 w-11 place-items-center"
+                style={{ color: "var(--soft)" }}
+              >
+                {showPassword ? (
+                  <EyeOff size={18} strokeWidth={2} />
+                ) : (
+                  <Eye size={18} strokeWidth={2} />
+                )}
+              </button>
+            </div>
+            {touched && !passwordOk && (
+              <span className="text-[11.5px]" style={{ color: "#b42318" }}>
+                รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร
+              </span>
+            )}
+          </label>
+        </div>
+
+        <footer
+          className="flex justify-end gap-2.5 border-t px-5 py-4"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-11 rounded-[12px] border px-4 text-[13.5px] font-semibold"
+            style={{ borderColor: "var(--line)", color: "var(--ink)" }}
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className="h-11 rounded-[12px] px-5 text-[13.5px] font-bold text-white disabled:opacity-50"
+            style={{ background: "var(--brand)" }}
+          >
+            {submitting ? "กำลังบันทึก…" : "รีเซ็ตรหัสผ่าน"}
+          </button>
+        </footer>
+      </form>
+    </Modal>
   );
 }
 

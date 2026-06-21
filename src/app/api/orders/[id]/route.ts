@@ -6,10 +6,12 @@ import {
   SyncJobType,
   SyncDirection,
   SyncJobStatus,
+  AuditAction,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
 import { isAdminRole } from "@/lib/authRole";
+import { logAudit, ipFromHeaders } from "@/lib/auditLog";
 
 // domain-no-destructive-delete: orders are NEVER deleted — only status
 // transitions. There is intentionally NO DELETE handler on this route.
@@ -189,7 +191,7 @@ export async function PATCH(
   try {
     const existing = await prisma.order.findUnique({
       where: { id },
-      select: { id: true, status: true, syncStatus: true },
+      select: { id: true, status: true, syncStatus: true, total: true },
     });
     if (!existing) {
       return NextResponse.json(
@@ -243,6 +245,32 @@ export async function PATCH(
       data: updateData,
       include: ORDER_DETAIL_INCLUDE,
     });
+
+    // Money/ledger audit (auth Phase 3). BEST-EFFORT, AFTER the update commits —
+    // never inside a transaction, never blocks the response. A void zeroes the
+    // order total, so the void audit MUST record the PRE-void amount (captured in
+    // `existing.total` above) — otherwise every ORDER_VOIDED row reads total:"0"
+    // and the money-reversal trail can't show how much a void actually reversed.
+    // Refund does not zero the total, so it correctly logs `updated.total`.
+    await logAudit({
+      action:
+        action === "refund"
+          ? AuditAction.ORDER_REFUNDED
+          : AuditAction.ORDER_VOIDED,
+      actorId: session.user.id,
+      actorEmail: session.user.email ?? null,
+      ip: await ipFromHeaders(),
+      targetType: "Order",
+      targetId: updated.id,
+      detail: JSON.stringify({
+        orderNumber: updated.orderNumber,
+        total:
+          action === "refund"
+            ? updated.total.toString()
+            : existing.total.toString(),
+      }),
+    });
+
     return NextResponse.json(updated);
   } catch (err) {
     if (

@@ -103,13 +103,18 @@ function LoginForm() {
       });
 
       if (!res || res.error) {
-        // auth Phase 2: a rate-limit lockout throws CredentialsSignin("RATE_LIMITED")
-        // server-side; Auth.js surfaces it as `res.code === "RATE_LIMITED"`. Show a
-        // distinct "try again later" message in that case.
-        const isRateLimited =
-          typeof res?.code === "string" &&
-          res.code.toUpperCase().includes("RATE_LIMITED");
-        if (isRateLimited) {
+        // The server surfaces a distinct CredentialsSignin `code` for two
+        // throttling outcomes (Auth.js exposes it as `res.code`):
+        //  - RATE_LIMITED  (auth Phase 2): in-memory per-IP:email burst limit.
+        //  - ACCOUNT_LOCKED (auth Phase 3): persistent per-account lockout after
+        //    too many failed attempts; auto-expires (or an admin unlocks).
+        const code =
+          typeof res?.code === "string" ? res.code.toUpperCase() : "";
+        if (code.includes("ACCOUNT_LOCKED")) {
+          setFormError(
+            "บัญชีถูกล็อกชั่วคราว ลองใหม่ภายหลัง · Account temporarily locked, try again later"
+          );
+        } else if (code.includes("RATE_LIMITED")) {
           setFormError(
             "พยายามเข้าสู่ระบบมากเกินไป ลองใหม่ภายหลัง · Too many attempts, try again later"
           );
