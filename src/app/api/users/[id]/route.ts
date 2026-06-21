@@ -4,6 +4,9 @@ import { Prisma, AuditAction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
 import { logAudit, ipFromHeaders } from "@/lib/auditLog";
+// Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
+import { runWithRequestId } from "@/lib/requestContext";
+import { logger } from "@/lib/logger";
 
 // AUTH (production-readiness Phase 1 + auth Phase 3): every variant below
 // requires an authenticated ADMIN (or MANAGER, treated as admin). The
@@ -56,6 +59,9 @@ export async function PATCH(
   req: Request,
   { params }: { params: { id: string } }
 ) {
+  return runWithRequestId(req, async () => {
+  // Start time for the success request-log line (D3 — mutation route).
+  const startedAt = Date.now();
   const gate = await requireAdmin();
   if ("response" in gate) return gate.response;
   const { session } = gate;
@@ -85,6 +91,15 @@ export async function PATCH(
     targetId: id,
   };
 
+  // Success request-log line (D3 — mutation route). One line per successful PATCH
+  // variant; no PII (no email/name/password) — variant + status + duration only.
+  // requestId/method/path arrive via the logger mixin + these fields.
+  const logSuccess = (variant: string) =>
+    logger.info(
+      { method: "PATCH", path: "/api/users/[id]", status: 200, variant, durationMs: Date.now() - startedAt },
+      "user updated"
+    );
+
   // --- variant: activate / deactivate ---
   if (typeof body.isActive === "boolean") {
     try {
@@ -108,6 +123,7 @@ export async function PATCH(
           : AuditAction.USER_DEACTIVATED,
         ip: await ipFromHeaders(),
       });
+      logSuccess(body.isActive ? "activate" : "deactivate");
       return NextResponse.json(user);
     } catch (err) {
       return handlePatchError(err);
@@ -136,7 +152,7 @@ export async function PATCH(
     try {
       passwordHash = await bcrypt.hash(body.password, BCRYPT_COST);
     } catch (err) {
-      console.error("PATCH /api/users/[id] password hash failed:", err);
+      logger.error({ err }, "PATCH /api/users/[id] password hash failed");
       return NextResponse.json(
         { error: "Could not update user", code: "INTERNAL" },
         { status: 500 }
@@ -153,6 +169,7 @@ export async function PATCH(
         action: AuditAction.PASSWORD_CHANGED,
         ip: await ipFromHeaders(),
       });
+      logSuccess("password-reset");
       return NextResponse.json(user);
     } catch (err) {
       return handlePatchError(err);
@@ -172,6 +189,7 @@ export async function PATCH(
         action: AuditAction.SESSION_REVOKED,
         ip: await ipFromHeaders(),
       });
+      logSuccess("forceLogout");
       return NextResponse.json(user);
     } catch (err) {
       return handlePatchError(err);
@@ -191,6 +209,7 @@ export async function PATCH(
         action: AuditAction.ACCOUNT_UNLOCKED,
         ip: await ipFromHeaders(),
       });
+      logSuccess("unlock");
       return NextResponse.json(user);
     } catch (err) {
       return handlePatchError(err);
@@ -206,6 +225,7 @@ export async function PATCH(
     },
     { status: 400 }
   );
+  });
 }
 
 /** Map a Prisma error from any PATCH variant to a typed JSON response. */
@@ -220,7 +240,7 @@ function handlePatchError(err: unknown): NextResponse {
       { status: 404 }
     );
   }
-  console.error("PATCH /api/users/[id] failed:", err);
+  logger.error({ err }, "PATCH /api/users/[id] failed");
   return NextResponse.json(
     { error: "Could not update user", code: "INTERNAL" },
     { status: 500 }

@@ -4,30 +4,35 @@ import { prisma } from "@/lib/prisma";
 import { requireUser, requireAdmin } from "@/lib/auth";
 import { ProductPostBodySchema } from "@/lib/schemas/product";
 import { parseBody } from "@/lib/schemas/_shared";
+// Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
+import { runWithRequestId } from "@/lib/requestContext";
+import { logger } from "@/lib/logger";
 
 // GET /api/products  — list active products
 //
 // AUTH (auth Phase 2): requires an authenticated session (requireUser, NOT
 // requireAdmin). Cashiers need the product grid to ring up sales at /pos, so
 // over-gating this to admin would break the seller flow.
-export async function GET() {
-  const gate = await requireUser();
-  if ("response" in gate) return gate.response;
+export async function GET(req: Request) {
+  return runWithRequestId(req, async () => {
+    const gate = await requireUser();
+    if ("response" in gate) return gate.response;
 
-  try {
-    const products = await prisma.product.findMany({
-      where: { isActive: true },
-      include: { category: true },
-      orderBy: { name: "asc" },
-    });
-    return NextResponse.json(products);
-  } catch (err) {
-    console.error("GET /api/products failed:", err);
-    return NextResponse.json(
-      { error: "Could not load products", code: "INTERNAL" },
-      { status: 500 }
-    );
-  }
+    try {
+      const products = await prisma.product.findMany({
+        where: { isActive: true },
+        include: { category: true },
+        orderBy: { name: "asc" },
+      });
+      return NextResponse.json(products);
+    } catch (err) {
+      logger.error({ err }, "GET /api/products failed");
+      return NextResponse.json(
+        { error: "Could not load products", code: "INTERNAL" },
+        { status: 500 }
+      );
+    }
+  });
 }
 
 // POST /api/products — create a product
@@ -41,6 +46,7 @@ export async function GET() {
 // The categoryId existence pre-check (→ 400 CATEGORY_NOT_FOUND) mirrors PATCH, and
 // a duplicate sku/barcode (P2002) maps to a typed 409 instead of a raw 500.
 export async function POST(req: Request) {
+  return runWithRequestId(req, async () => {
   const gate = await requireAdmin();
   if ("response" in gate) return gate.response;
 
@@ -72,7 +78,7 @@ export async function POST(req: Request) {
         );
       }
     } catch (err) {
-      console.error("POST /api/products category pre-check failed:", err);
+      logger.error({ err }, "POST /api/products category pre-check failed");
       return NextResponse.json(
         { error: "Could not create product", code: "INTERNAL" },
         { status: 500 }
@@ -117,10 +123,11 @@ export async function POST(req: Request) {
         { status: 409 }
       );
     }
-    console.error("POST /api/products failed:", err);
+    logger.error({ err }, "POST /api/products failed");
     return NextResponse.json(
       { error: "Could not create product", code: "INTERNAL" },
       { status: 500 }
     );
   }
+  });
 }

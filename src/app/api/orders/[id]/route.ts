@@ -23,6 +23,9 @@ import { serializeOrder } from "@/lib/orderSerialize";
 // generic VALIDATION code) — see the parse below. All RBAC + state-machine logic is
 // unchanged.
 import { OrderPatchBodySchema } from "@/lib/schemas/order";
+// Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
+import { runWithRequestId } from "@/lib/requestContext";
+import { logger } from "@/lib/logger";
 
 // domain-no-destructive-delete: orders are NEVER deleted — only status
 // transitions. There is intentionally NO DELETE handler on this route.
@@ -65,6 +68,9 @@ export async function PATCH(
   req: Request,
   { params }: { params: { id: string } }
 ) {
+  return runWithRequestId(req, async () => {
+  // Start time for the success request-log line (D3 — mutation route).
+  const startedAt = Date.now();
   // Any active session may reach this route; refund/void are additionally
   // restricted to admins below (after the action is parsed).
   const gate = await requireUser();
@@ -184,6 +190,11 @@ export async function PATCH(
         });
         return order;
       });
+      // Success request-log line (D3 — mutation route). No PII / no amounts.
+      logger.info(
+        { method: "PATCH", path: "/api/orders/[id]", status: 200, durationMs: Date.now() - startedAt },
+        "order tax requested"
+      );
       return NextResponse.json(serializeOrder(updated));
     } catch (err) {
       if (
@@ -195,7 +206,7 @@ export async function PATCH(
           { status: 404 }
         );
       }
-      console.error("PATCH /api/orders/[id] request-tax failed:", err);
+      logger.error({ err }, "PATCH /api/orders/[id] request-tax failed");
       return NextResponse.json(
         { error: "Could not request tax invoice", code: "INTERNAL" },
         { status: 500 }
@@ -358,6 +369,12 @@ export async function PATCH(
       }),
     });
 
+    // Success request-log line (D3 — mutation route). No PII / no amounts; the
+    // action (refund/void) is a small non-PII enum useful for ops triage.
+    logger.info(
+      { method: "PATCH", path: "/api/orders/[id]", status: 200, action, durationMs: Date.now() - startedAt },
+      "order status changed"
+    );
     return NextResponse.json(serializeOrder(updated));
   } catch (err) {
     // VOID lost the race to a sync job that flipped the bill to SYNCED inside the
@@ -397,12 +414,13 @@ export async function PATCH(
         { status: 404 }
       );
     }
-    console.error("PATCH /api/orders/[id] failed:", err);
+    logger.error({ err }, "PATCH /api/orders/[id] failed");
     return NextResponse.json(
       { error: "Could not update order", code: "INTERNAL" },
       { status: 500 }
     );
   }
+  });
 }
 
 /**

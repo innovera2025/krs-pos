@@ -34,6 +34,9 @@ import {
 // runs AFTER this parse. See src/lib/schemas/order.ts for the wrap contract.
 import { OrderPostBodySchema } from "@/lib/schemas/order";
 import { parseBody } from "@/lib/schemas/_shared";
+// Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
+import { runWithRequestId } from "@/lib/requestContext";
+import { logger } from "@/lib/logger";
 
 /** Valid OrderStatus values for the optional `?status=` filter (Phase 5 history). */
 function isOrderStatus(v: string): v is OrderStatus {
@@ -71,35 +74,37 @@ const ORDER_INCLUDE = {
 //   ?sync=PENDING|DAILY|SYNCED|FAILED|SKIPPED
 // `payments` is included so the sales list + reprint (ReceiptModal) have tenders.
 export async function GET(req: Request) {
-  const gate = await requireUser();
-  if ("response" in gate) return gate.response;
+  return runWithRequestId(req, async () => {
+    const gate = await requireUser();
+    if ("response" in gate) return gate.response;
 
-  const { searchParams } = new URL(req.url);
-  const statusParam = searchParams.get("status");
-  const syncParam = searchParams.get("sync");
+    const { searchParams } = new URL(req.url);
+    const statusParam = searchParams.get("status");
+    const syncParam = searchParams.get("sync");
 
-  const where: Prisma.OrderWhereInput = {};
-  if (statusParam && isOrderStatus(statusParam)) where.status = statusParam;
-  if (syncParam && isSyncStatus(syncParam)) where.syncStatus = syncParam;
+    const where: Prisma.OrderWhereInput = {};
+    if (statusParam && isOrderStatus(statusParam)) where.status = statusParam;
+    if (syncParam && isSyncStatus(syncParam)) where.syncStatus = syncParam;
 
-  // Error handling (production-readiness Phase 1, theme #4): wrap the findMany +
-  // serialize map so a DB failure returns a typed { error, code } 500 (with a
-  // server-side console.error) instead of a raw Next.js 500 that blanks /sales.
-  try {
-    const orders = await prisma.order.findMany({
-      where,
-      include: ORDER_INCLUDE,
-      orderBy: { createdAt: "desc" },
-      take: 200,
-    });
-    return NextResponse.json(orders.map(serializeOrder));
-  } catch (err) {
-    console.error("GET /api/orders failed:", err);
-    return NextResponse.json(
-      { error: "Could not load orders", code: "INTERNAL" },
-      { status: 500 }
-    );
-  }
+    // Error handling (production-readiness Phase 1, theme #4): wrap the findMany +
+    // serialize map so a DB failure returns a typed { error, code } 500 (with a
+    // server-side log line) instead of a raw Next.js 500 that blanks /sales.
+    try {
+      const orders = await prisma.order.findMany({
+        where,
+        include: ORDER_INCLUDE,
+        orderBy: { createdAt: "desc" },
+        take: 200,
+      });
+      return NextResponse.json(orders.map(serializeOrder));
+    } catch (err) {
+      logger.error({ err }, "GET /api/orders failed");
+      return NextResponse.json(
+        { error: "Could not load orders", code: "INTERNAL" },
+        { status: 500 }
+      );
+    }
+  });
 }
 
 type IncomingItem = {
@@ -250,6 +255,10 @@ function p2002Mentions(
 // atomic conditional stock decrement. Those hardenings are owned by the
 // production-readiness program; Phase 3 must not regress them.
 export async function POST(req: Request) {
+  return runWithRequestId(req, async () => {
+  // Start time for the success request-log line (D3 — mutation routes only). No
+  // PII is logged: method/path/status/duration + requestId (via the mixin) only.
+  const startedAt = Date.now();
   const gate = await requireUser();
   if ("response" in gate) return gate.response;
   const { session } = gate;
@@ -333,7 +342,7 @@ export async function POST(req: Request) {
         return NextResponse.json(serializeOrder(existing), { status: 200 });
       }
     } catch (err) {
-      console.error("POST /api/orders idempotency pre-check failed:", err);
+      logger.error({ err }, "POST /api/orders idempotency pre-check failed");
       return NextResponse.json(
         { error: "Could not create order", code: "INTERNAL" },
         { status: 500 }
@@ -717,6 +726,12 @@ export async function POST(req: Request) {
       }),
     });
 
+    // Success request-log line (D3 — mutation route). No PII / no amounts / no
+    // body: status + durationMs only; method/path/requestId arrive via the mixin.
+    logger.info(
+      { method: "POST", path: "/api/orders", status: 201, durationMs: Date.now() - startedAt },
+      "order created"
+    );
     return NextResponse.json(serializeOrder(order), { status: 201 });
   } catch (err) {
     if (
@@ -792,12 +807,13 @@ export async function POST(req: Request) {
       );
     }
     // Sanitized 500 — never leak internals to the client.
-    console.error("POST /api/orders failed:", err);
+    logger.error({ err }, "POST /api/orders failed");
     return NextResponse.json(
       { error: "Could not create order", code: "INTERNAL" },
       { status: 500 }
     );
   }
+  });
 }
 
 class ProductNotFoundError extends Error {

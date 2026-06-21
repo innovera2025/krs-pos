@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+// Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
+// The wrap exists so the health-probe FAILURE log line carries the request id;
+// per D1/D3 there is NO success request-log line on this probe (errors only).
+import { runWithRequestId } from "@/lib/requestContext";
+import { logger } from "@/lib/logger";
 
 // Always evaluated at request time — a health probe must hit the live DB, never a
 // build-time prerender or a cached response.
@@ -18,18 +23,20 @@ export const dynamic = "force-dynamic";
 // down). Returns 200 { status: "ok", db: "ok" } when reachable, else 503
 // { status: "error", db: "unreachable" } so orchestration can tell a healthy app
 // from a booted-but-broken one.
-export async function GET() {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    return NextResponse.json(
-      { status: "ok", db: "ok", timestamp: new Date().toISOString() },
-      { status: 200 }
-    );
-  } catch (err) {
-    console.error("GET /api/health failed:", err);
-    return NextResponse.json(
-      { status: "error", db: "unreachable", timestamp: new Date().toISOString() },
-      { status: 503 }
-    );
-  }
+export async function GET(req: Request) {
+  return runWithRequestId(req, async () => {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      return NextResponse.json(
+        { status: "ok", db: "ok", timestamp: new Date().toISOString() },
+        { status: 200 }
+      );
+    } catch (err) {
+      logger.error({ err }, "GET /api/health failed");
+      return NextResponse.json(
+        { status: "error", db: "unreachable", timestamp: new Date().toISOString() },
+        { status: 503 }
+      );
+    }
+  });
 }

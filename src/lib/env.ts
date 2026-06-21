@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { logger } from "@/lib/logger";
 
 /**
  * Fail-fast environment validation (production-readiness Phase 1, theme #6).
@@ -89,7 +90,7 @@ function loadEnv(): z.infer<typeof EnvSchema> {
   // Production deploy hint (warn, never throw): behind a proxy Auth.js needs
   // AUTH_URL (or AUTH_TRUST_HOST) to build correct callback/redirect URLs.
   if (env.NODE_ENV === "production" && !env.AUTH_URL) {
-    console.warn(
+    logger.warn(
       "[env] NODE_ENV=production but AUTH_URL is not set. Behind a reverse proxy, " +
         "set AUTH_URL (or AUTH_TRUST_HOST) so Auth.js can infer the correct base URL."
     );

@@ -7,6 +7,9 @@ import { requireAdmin } from "@/lib/auth";
 // are kept and run AFTER the parse. Zod just rejects a structurally wrong body early.
 import { StockMovementPostBodySchema } from "@/lib/schemas/stockMovement";
 import { parseBody } from "@/lib/schemas/_shared";
+// Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
+import { runWithRequestId } from "@/lib/requestContext";
+import { logger } from "@/lib/logger";
 
 // AUTH (auth Phase 2): admin-only — receiving stock (GRN) is an inventory action
 // reserved for an authenticated admin (ADMIN/MANAGER).
@@ -20,6 +23,9 @@ type ReceiveStockBody = {
 // POST /api/stock-movements — receive stock (GRN). Increments Product.stock by
 // qty AND records a RECEIVE StockMovement, atomically in one $transaction.
 export async function POST(req: Request) {
+  return runWithRequestId(req, async () => {
+  // Start time for the success request-log line (D3 — mutation route).
+  const startedAt = Date.now();
   const gate = await requireAdmin();
   if ("response" in gate) return gate.response;
 
@@ -92,6 +98,11 @@ export async function POST(req: Request) {
       return { product, movement };
     });
 
+    // Success request-log line (D3 — mutation route). No PII; status + duration.
+    logger.info(
+      { method: "POST", path: "/api/stock-movements", status: 201, durationMs: Date.now() - startedAt },
+      "stock received"
+    );
     return NextResponse.json(result, { status: 201 });
   } catch (err) {
     // Unknown product (the update targets a missing row).
@@ -104,10 +115,11 @@ export async function POST(req: Request) {
         { status: 404 }
       );
     }
-    console.error("POST /api/stock-movements failed:", err);
+    logger.error({ err }, "POST /api/stock-movements failed");
     return NextResponse.json(
       { error: "Could not receive stock", code: "INTERNAL" },
       { status: 500 }
     );
   }
+  });
 }

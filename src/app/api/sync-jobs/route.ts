@@ -9,6 +9,9 @@ import { requireAdmin } from "@/lib/auth";
 // WRAP-style Zod (D1): validate the POST action SHAPE. An invalid action still
 // returns the existing 400 BAD_ACTION (preserved client contract).
 import { SyncJobPostBodySchema } from "@/lib/schemas/syncJob";
+// Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
+import { runWithRequestId } from "@/lib/requestContext";
+import { logger } from "@/lib/logger";
 
 // KRS sync jobs API (Phase 6b). The KRS transport is SIMULATED — there is no real
 // MySQL/SSL connection here. The list + the two POST actions (pull / insert-all)
@@ -32,33 +35,35 @@ function isSyncJobStatus(v: string): v is SyncJobStatus {
 // is ignored (a stray param never 500s the /data screen), matching the orders
 // route convention.
 export async function GET(req: Request) {
-  const gate = await requireAdmin();
-  if ("response" in gate) return gate.response;
+  return runWithRequestId(req, async () => {
+    const gate = await requireAdmin();
+    if ("response" in gate) return gate.response;
 
-  const { searchParams } = new URL(req.url);
-  const statusParam = searchParams.get("status");
+    const { searchParams } = new URL(req.url);
+    const statusParam = searchParams.get("status");
 
-  const where =
-    statusParam && isSyncJobStatus(statusParam)
-      ? { status: statusParam }
-      : {};
+    const where =
+      statusParam && isSyncJobStatus(statusParam)
+        ? { status: statusParam }
+        : {};
 
-  // Error handling (theme #4): wrap the findMany so a DB failure returns a typed
-  // 500 (with console.error) instead of a raw crash that fails the /data list.
-  try {
-    const jobs = await prisma.syncJob.findMany({
-      where,
-      orderBy: { updatedAt: "desc" },
-      take: 200,
-    });
-    return NextResponse.json(jobs);
-  } catch (err) {
-    console.error("GET /api/sync-jobs failed:", err);
-    return NextResponse.json(
-      { error: "Could not load sync jobs", code: "INTERNAL" },
-      { status: 500 }
-    );
-  }
+    // Error handling (theme #4): wrap the findMany so a DB failure returns a typed
+    // 500 (with a log line) instead of a raw crash that fails the /data list.
+    try {
+      const jobs = await prisma.syncJob.findMany({
+        where,
+        orderBy: { updatedAt: "desc" },
+        take: 200,
+      });
+      return NextResponse.json(jobs);
+    } catch (err) {
+      logger.error({ err }, "GET /api/sync-jobs failed");
+      return NextResponse.json(
+        { error: "Could not load sync jobs", code: "INTERNAL" },
+        { status: 500 }
+      );
+    }
+  });
 }
 
 type PostBody = { action?: unknown };
@@ -73,6 +78,7 @@ type PostBody = { action?: unknown };
 //     drained (a field-map mismatch must be fixed, not silently synced). When
 //     nothing is pending it returns { synced: 0 } (no error).
 export async function POST(req: Request) {
+  return runWithRequestId(req, async () => {
   const gate = await requireAdmin();
   if ("response" in gate) return gate.response;
 
@@ -124,10 +130,11 @@ export async function POST(req: Request) {
     });
     return NextResponse.json({ synced: result.count });
   } catch (err) {
-    console.error("POST /api/sync-jobs failed:", err);
+    logger.error({ err }, "POST /api/sync-jobs failed");
     return NextResponse.json(
       { error: "Could not run sync action", code: "INTERNAL" },
       { status: 500 }
     );
   }
+  });
 }

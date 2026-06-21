@@ -10,6 +10,9 @@ import { requireUser } from "@/lib/auth";
 // the existing 400 BAD_ACTION; the route keeps round2(), the SHIFT_ALREADY_OPEN /
 // NO_OPEN_SHIFT gates, and the close-path no-count handling.
 import { ShiftActionSchema } from "@/lib/schemas/shift";
+// Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
+import { runWithRequestId } from "@/lib/requestContext";
+import { logger } from "@/lib/logger";
 
 // Shift lifecycle + Z-report (Phase 5: flow-shift-lifecycle, screen-shift-close).
 //
@@ -165,35 +168,37 @@ async function buildZReport(shiftId: string, openingFloatSatang: number) {
 // GET /api/shift — the current OPEN shift (or the most recent shift) plus the
 // Z-report aggregates for that shift. Returns { shift, zReport } or
 // { shift: null, zReport: null } when no shift has ever been opened.
-export async function GET() {
-  const gate = await requireUser();
-  if ("response" in gate) return gate.response;
+export async function GET(req: Request) {
+  return runWithRequestId(req, async () => {
+    const gate = await requireUser();
+    if ("response" in gate) return gate.response;
 
-  try {
-    const shift =
-      (await prisma.shift.findFirst({
-        where: { status: "OPEN" },
-        orderBy: { openedAt: "desc" },
-        select: SHIFT_SELECT,
-      })) ??
-      (await prisma.shift.findFirst({
-        orderBy: { openedAt: "desc" },
-        select: SHIFT_SELECT,
-      }));
+    try {
+      const shift =
+        (await prisma.shift.findFirst({
+          where: { status: "OPEN" },
+          orderBy: { openedAt: "desc" },
+          select: SHIFT_SELECT,
+        })) ??
+        (await prisma.shift.findFirst({
+          orderBy: { openedAt: "desc" },
+          select: SHIFT_SELECT,
+        }));
 
-    if (!shift) {
-      return NextResponse.json({ shift: null, zReport: null });
+      if (!shift) {
+        return NextResponse.json({ shift: null, zReport: null });
+      }
+
+      const zReport = await buildZReport(shift.id, toSatang(shift.openingFloat));
+      return NextResponse.json({ shift: serializeShift(shift), zReport });
+    } catch (err) {
+      logger.error({ err }, "GET /api/shift failed");
+      return NextResponse.json(
+        { error: "Could not load shift", code: "INTERNAL" },
+        { status: 500 }
+      );
     }
-
-    const zReport = await buildZReport(shift.id, toSatang(shift.openingFloat));
-    return NextResponse.json({ shift: serializeShift(shift), zReport });
-  } catch (err) {
-    console.error("GET /api/shift failed:", err);
-    return NextResponse.json(
-      { error: "Could not load shift", code: "INTERNAL" },
-      { status: 500 }
-    );
-  }
+  });
 }
 
 type ShiftPostBody = {
@@ -229,6 +234,9 @@ async function nextShiftNumber(now: Date): Promise<string> {
 //     the open shift CLOSED with closedAt + countedCash, returns the daily
 //     summary number DS-YYYYMMDD.
 export async function POST(req: Request) {
+  return runWithRequestId(req, async () => {
+  // Start time for the success request-log line (D3 — mutation route).
+  const startedAt = Date.now();
   const gate = await requireUser();
   if ("response" in gate) return gate.response;
 
@@ -298,6 +306,11 @@ export async function POST(req: Request) {
         select: SHIFT_SELECT,
       });
       const zReport = await buildZReport(created.id, toSatang(created.openingFloat));
+      // Success request-log line (D3 — mutation route). No PII / no amounts.
+      logger.info(
+        { method: "POST", path: "/api/shift", status: 201, action, durationMs: Date.now() - startedAt },
+        "shift opened"
+      );
       return NextResponse.json(
         { shift: serializeShift(created), zReport },
         { status: 201 }
@@ -344,15 +357,21 @@ export async function POST(req: Request) {
     });
 
     const dailySummaryNo = `DS-${bangkokYyyymmdd(now)}`;
+    // Success request-log line (D3 — mutation route). No PII / no amounts.
+    logger.info(
+      { method: "POST", path: "/api/shift", status: 200, action, durationMs: Date.now() - startedAt },
+      "shift closed"
+    );
     return NextResponse.json({
       shift: serializeShift(closed),
       dailySummaryNo,
     });
   } catch (err) {
-    console.error("POST /api/shift failed:", err);
+    logger.error({ err }, "POST /api/shift failed");
     return NextResponse.json(
       { error: "Could not update shift", code: "INTERNAL" },
       { status: 500 }
     );
   }
+  });
 }

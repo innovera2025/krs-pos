@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
+// Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
+import { runWithRequestId } from "@/lib/requestContext";
+import { logger } from "@/lib/logger";
 
 // AUTH (auth Phase 2): admin-only — only an authenticated admin (ADMIN/MANAGER)
 // may edit a product.
@@ -20,6 +23,7 @@ export async function PATCH(
   req: Request,
   { params }: { params: { id: string } }
 ) {
+  return runWithRequestId(req, async () => {
   const gate = await requireAdmin();
   if ("response" in gate) return gate.response;
 
@@ -123,7 +127,7 @@ export async function PATCH(
           where: { id: body.categoryId },
         });
       } catch (err) {
-        console.error("PATCH /api/products/[id] category pre-check failed:", err);
+        logger.error({ err }, "PATCH /api/products/[id] category pre-check failed");
         return NextResponse.json(
           { error: "Could not update product", code: "INTERNAL" },
           { status: 500 }
@@ -205,10 +209,11 @@ export async function PATCH(
         );
       }
     }
-    console.error("PATCH /api/products/[id] failed:", err);
+    logger.error({ err }, "PATCH /api/products/[id] failed");
     return NextResponse.json(
       { error: "Could not update product", code: "INTERNAL" },
       { status: 500 }
     );
   }
+  });
 }

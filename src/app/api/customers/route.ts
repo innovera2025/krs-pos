@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
+// Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
+import { runWithRequestId } from "@/lib/requestContext";
+import { logger } from "@/lib/logger";
 
 // This route reads request searchParams, so it is inherently dynamic. Declaring it
 // explicitly silences the benign DYNAMIC_SERVER_USAGE build log (the route is
@@ -21,44 +24,46 @@ export const dynamic = "force-dynamic";
 // by cashiers, so any authenticated active session is the correct gate (NOT
 // admin); the response carries Customer PII so it must not be anonymous.
 export async function GET(req: Request) {
-  const gate = await requireUser();
-  if ("response" in gate) return gate.response;
+  return runWithRequestId(req, async () => {
+    const gate = await requireUser();
+    if ("response" in gate) return gate.response;
 
-  try {
-    const { searchParams } = new URL(req.url);
-    // Length cap (theme #3): silently truncate the search term to 200 chars so an
-    // arbitrarily long ILIKE pattern is never sent to Postgres. Silent truncation
-    // (not a 400) is the friendlier convention for a free-text search field.
-    const q = (searchParams.get("q") ?? "").trim().slice(0, 200);
+    try {
+      const { searchParams } = new URL(req.url);
+      // Length cap (theme #3): silently truncate the search term to 200 chars so an
+      // arbitrarily long ILIKE pattern is never sent to Postgres. Silent truncation
+      // (not a 400) is the friendlier convention for a free-text search field.
+      const q = (searchParams.get("q") ?? "").trim().slice(0, 200);
 
-    const where: Prisma.CustomerWhereInput = q
-      ? {
-          OR: [
-            { name: { contains: q, mode: "insensitive" } },
-            { taxId: { contains: q, mode: "insensitive" } },
-          ],
-        }
-      : {};
+      const where: Prisma.CustomerWhereInput = q
+        ? {
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              { taxId: { contains: q, mode: "insensitive" } },
+            ],
+          }
+        : {};
 
-    const customers = await prisma.customer.findMany({
-      where,
-      select: {
-        id: true,
-        name: true,
-        taxId: true,
-        phone: true,
-        address: true,
-        branchId: true,
-      },
-      orderBy: { name: "asc" },
-      take: 200,
-    });
-    return NextResponse.json(customers);
-  } catch (err) {
-    console.error("GET /api/customers failed:", err);
-    return NextResponse.json(
-      { error: "Could not load customers", code: "INTERNAL" },
-      { status: 500 }
-    );
-  }
+      const customers = await prisma.customer.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          taxId: true,
+          phone: true,
+          address: true,
+          branchId: true,
+        },
+        orderBy: { name: "asc" },
+        take: 200,
+      });
+      return NextResponse.json(customers);
+    } catch (err) {
+      logger.error({ err }, "GET /api/customers failed");
+      return NextResponse.json(
+        { error: "Could not load customers", code: "INTERNAL" },
+        { status: 500 }
+      );
+    }
+  });
 }

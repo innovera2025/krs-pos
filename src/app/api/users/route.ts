@@ -4,6 +4,9 @@ import { Prisma, Role, AuditAction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
 import { logAudit, ipFromHeaders } from "@/lib/auditLog";
+// Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
+import { runWithRequestId } from "@/lib/requestContext";
+import { logger } from "@/lib/logger";
 
 /** Minimum password length accepted at create/reset (auth Phase 3). */
 const MIN_PASSWORD_LEN = 8;
@@ -41,23 +44,25 @@ const USER_PUBLIC_SELECT = {
 } as const;
 
 // GET /api/users — list users (password never selected/returned). Admin-only.
-export async function GET() {
-  const gate = await requireAdmin();
-  if ("response" in gate) return gate.response;
+export async function GET(req: Request) {
+  return runWithRequestId(req, async () => {
+    const gate = await requireAdmin();
+    if ("response" in gate) return gate.response;
 
-  try {
-    const users = await prisma.user.findMany({
-      select: USER_PUBLIC_SELECT,
-      orderBy: { createdAt: "desc" },
-    });
-    return NextResponse.json(users);
-  } catch (err) {
-    console.error("GET /api/users failed:", err);
-    return NextResponse.json(
-      { error: "Could not list users", code: "INTERNAL" },
-      { status: 500 }
-    );
-  }
+    try {
+      const users = await prisma.user.findMany({
+        select: USER_PUBLIC_SELECT,
+        orderBy: { createdAt: "desc" },
+      });
+      return NextResponse.json(users);
+    } catch (err) {
+      logger.error({ err }, "GET /api/users failed");
+      return NextResponse.json(
+        { error: "Could not list users", code: "INTERNAL" },
+        { status: 500 }
+      );
+    }
+  });
 }
 
 type CreateUserBody = {
@@ -80,6 +85,7 @@ function isRole(v: unknown): v is Role {
 // time (auth Phase 3) — replaces the old non-functional placeholder password.
 // Returns the created user WITHOUT the password hash.
 export async function POST(req: Request) {
+  return runWithRequestId(req, async () => {
   const gate = await requireAdmin();
   if ("response" in gate) return gate.response;
 
@@ -153,7 +159,7 @@ export async function POST(req: Request) {
   try {
     passwordHash = await bcrypt.hash(password, BCRYPT_COST);
   } catch (err) {
-    console.error("POST /api/users password hash failed:", err);
+    logger.error({ err }, "POST /api/users password hash failed");
     return NextResponse.json(
       { error: "Could not create user", code: "INTERNAL" },
       { status: 500 }
@@ -196,10 +202,11 @@ export async function POST(req: Request) {
         { status: 409 }
       );
     }
-    console.error("POST /api/users failed:", err);
+    logger.error({ err }, "POST /api/users failed");
     return NextResponse.json(
       { error: "Could not create user", code: "INTERNAL" },
       { status: 500 }
     );
   }
+  });
 }

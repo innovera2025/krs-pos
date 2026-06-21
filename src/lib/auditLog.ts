@@ -1,6 +1,7 @@
 import { headers } from "next/headers";
 import type { AuditAction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { logger } from "@/lib/logger";
 
 /**
  * Audit-log writer (auth Phase 3).
@@ -50,9 +51,9 @@ export async function logAudit(data: AuditInput): Promise<void> {
       },
     })
     .then(() => undefined)
-    .catch((e) => {
+    .catch((err) => {
       // Best-effort: never propagate. The primary action already succeeded.
-      console.error("audit write failed:", e);
+      logger.error({ err }, "audit write failed");
     });
 }
 

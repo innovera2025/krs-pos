@@ -10,6 +10,9 @@ import {
   SyncJobPatchActionSchema,
   SyncJobReasonSchema,
 } from "@/lib/schemas/syncJob";
+// Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
+import { runWithRequestId } from "@/lib/requestContext";
+import { logger } from "@/lib/logger";
 
 // PATCH /api/sync-jobs/[id] — retry or skip a simulated KRS sync job (Phase 6b).
 // AUTH (auth Phase 2): admin-only — retry/skip are KRS Data Link admin actions.
@@ -37,6 +40,7 @@ export async function PATCH(
   req: Request,
   { params }: { params: { id: string } }
 ) {
+  return runWithRequestId(req, async () => {
   const gate = await requireAdmin();
   if ("response" in gate) return gate.response;
 
@@ -149,10 +153,11 @@ export async function PATCH(
         { status: 404 }
       );
     }
-    console.error("PATCH /api/sync-jobs/[id] failed:", err);
+    logger.error({ err }, "PATCH /api/sync-jobs/[id] failed");
     return NextResponse.json(
       { error: "Could not update sync job", code: "INTERNAL" },
       { status: 500 }
     );
   }
+  });
 }

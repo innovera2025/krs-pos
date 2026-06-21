@@ -16,6 +16,7 @@ import {
   clearAttempts,
 } from "@/lib/rateLimit";
 import { logAudit } from "@/lib/auditLog";
+import { logger } from "@/lib/logger";
 
 /**
  * Account-lockout policy (auth Phase 3). After LOCKOUT_THRESHOLD consecutive
@@ -199,10 +200,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
                   ...(reachedThreshold ? { lockedUntil } : {}),
                 },
               });
-            } catch (e) {
+            } catch (err) {
               // Never let a counter-update failure break the (already-failed)
               // login path; the generic null below still rejects.
-              console.error("lockout counter update failed:", e);
+              logger.error({ err }, "lockout counter update failed");
             }
             if (reachedThreshold) {
               await logAudit({
@@ -239,9 +240,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
               data: { failedLoginAttempts: 0, lockedUntil: null },
             });
           }
-        } catch (e) {
+        } catch (err) {
           // A reset failure must not block a valid sign-in.
-          console.error("lockout counter reset failed:", e);
+          logger.error({ err }, "lockout counter reset failed");
         }
         clearAttempts(rateKey);
 
