@@ -1,13 +1,28 @@
 "use client";
 
-// TODO(auth): real authentication is production-readiness Phase 1 — verify credentials
-// server-side, create a session (Auth.js/Lucia), set httpOnly cookie, then redirect
-// + enforce RBAC. This is a UI stub only.
+// Real authentication (production-readiness Phase 1): the form below calls
+// Auth.js's Credentials `signIn`, which verifies email+password server-side
+// (bcrypt) and sets the httpOnly JWT session cookie. Middleware + per-route
+// `requireUser`/`requireAdmin` enforce RBAC. This file WIRES the existing Taste
+// UI — the layout/copy are unchanged.
 
-import { useState, useId } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useId, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { signIn } from "next-auth/react";
 import { Store, Eye, EyeOff, ShieldAlert, CheckCircle2, Zap, BarChart3, Shield } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
+
+/** Where to send the user after a successful sign-in. Prefers the Auth.js
+ * `callbackUrl`, then a legacy `?next=`, then the POS home. Only same-origin
+ * relative paths are honored (an absolute/external URL is ignored to avoid an
+ * open-redirect). */
+function safeRedirectTarget(raw: string | null): string {
+  if (!raw) return "/pos";
+  // Must be a same-origin absolute path: starts with a single "/" and not "//"
+  // (protocol-relative) — otherwise fall back to the safe default.
+  if (raw.startsWith("/") && !raw.startsWith("//")) return raw;
+  return "/pos";
+}
 
 const FEATURES = [
   {
@@ -27,8 +42,14 @@ const FEATURES = [
   },
 ];
 
-export default function LoginPage() {
+/**
+ * The login form. Split out from the default export so the `useSearchParams`
+ * read (for `?callbackUrl` / `?next`) sits inside a Suspense boundary — required
+ * by the Next App Router (else the page bails out of static rendering at build).
+ */
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { showToast } = useToast();
 
   const emailId = useId();
@@ -41,6 +62,7 @@ export default function LoginPage() {
   const [rememberMe, setRememberMe] = useState(false);
   const [emailError, setEmailError] = useState("");
   const [passwordError, setPasswordError] = useState("");
+  const [formError, setFormError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   function validate(): boolean {
@@ -66,16 +88,40 @@ export default function LoginPage() {
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
+    setFormError("");
     if (!validate()) return;
 
     setIsSubmitting(true);
     try {
-      // Simulate brief network feel
-      await new Promise((r) => setTimeout(r, 400));
-      showToast("เดโม: ยังไม่ตรวจสอบรหัสผ่านจริง · Demo stub — no real auth");
-      router.push("/pos");
+      // Verify credentials server-side via Auth.js. `redirect: false` keeps the
+      // navigation client-side so we can show inline errors instead of bouncing
+      // to the default Auth.js error page.
+      const res = await signIn("credentials", {
+        email: email.trim(),
+        password,
+        redirect: false,
+      });
+
+      if (!res || res.error) {
+        // authorize() returns null for BOTH wrong credentials AND an inactive
+        // user (we intentionally don't distinguish, to avoid account
+        // enumeration) → a single generic message.
+        setFormError("อีเมลหรือรหัสผ่านไม่ถูกต้อง · Invalid email or password");
+        setIsSubmitting(false);
+        return;
+      }
+
+      // Success: honor ?callbackUrl / ?next (same-origin only), else /pos.
+      const target = safeRedirectTarget(
+        searchParams.get("callbackUrl") ?? searchParams.get("next")
+      );
+      showToast("เข้าสู่ระบบสำเร็จ · Signed in");
+      router.push(target);
+      // Keep the button in its loading state through the navigation; the page
+      // unmounts on redirect so we don't re-enable it.
     } catch {
-      // If navigation is blocked/interrupted, re-enable the form instead of locking it.
+      // Network/unexpected failure — re-enable the form with a generic message.
+      setFormError("เข้าสู่ระบบไม่สำเร็จ ลองอีกครั้ง · Sign-in failed, try again");
       setIsSubmitting(false);
     }
   }
@@ -288,30 +334,6 @@ export default function LoginPage() {
           minHeight: "100vh",
         }}
       >
-        {/* Demo warning badge — PROMINENTLY visible */}
-        <div
-          role="status"
-          aria-label="Demo mode — authentication not active"
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            flexWrap: "wrap",
-            gap: 8,
-            maxWidth: "100%",
-            background: "#fff4d8",
-            border: "1px solid #fcd34d",
-            borderRadius: 10,
-            padding: "8px 14px",
-            marginBottom: 28,
-            fontSize: 12,
-            fontWeight: 600,
-            color: "#92400e",
-          }}
-        >
-          <ShieldAlert size={14} strokeWidth={2.5} color="#d97706" aria-hidden="true" />
-          เดโม / Demo — auth ยังไม่เปิดใช้งานจริง
-        </div>
-
         {/* Mobile brand mark (shown when left panel is hidden) */}
         <div
           className="flex lg:hidden items-center gap-3 mb-8"
@@ -413,6 +435,7 @@ export default function LoginPage() {
                 onChange={(e) => {
                   setEmail(e.target.value);
                   if (emailError) setEmailError("");
+                  if (formError) setFormError("");
                 }}
                 aria-invalid={hasEmailError}
                 aria-describedby={hasEmailError ? `${emailId}-error` : undefined}
@@ -488,6 +511,7 @@ export default function LoginPage() {
                   onChange={(e) => {
                     setPassword(e.target.value);
                     if (passwordError) setPasswordError("");
+                    if (formError) setFormError("");
                   }}
                   aria-invalid={hasPasswordError}
                   aria-describedby={
@@ -614,7 +638,38 @@ export default function LoginPage() {
               >
                 จดจำฉัน · Remember me
               </label>
+              {/* TODO(auth phase 2): wire "Remember me" to the session maxAge. With
+                  Auth.js JWT sessions the cookie maxAge is config-level, not a
+                  per-sign-in toggle, so a longer-lived session for "remember me"
+                  needs a small custom-cookie/maxAge handler — deferred (the
+                  checkbox state is captured but not yet acted on). */}
             </div>
+
+            {/* Form-level error (wrong credentials / suspended account / network).
+                authorize() returns null for both bad-credentials and inactive
+                users, so the message is a single generic line by design. */}
+            {formError.length > 0 && (
+              <div
+                role="alert"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  background: "var(--red-soft)",
+                  border: "1px solid var(--red)",
+                  borderRadius: "var(--r-sm)",
+                  padding: "10px 12px",
+                  marginBottom: 16,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "var(--red)",
+                  lineHeight: 1.4,
+                }}
+              >
+                <ShieldAlert size={14} strokeWidth={2.5} aria-hidden="true" />
+                {formError}
+              </div>
+            )}
 
             {/* Sign-in CTA — matches Taste `.pay` button */}
             <button
@@ -702,5 +757,18 @@ export default function LoginPage() {
       </div>
 
     </div>
+  );
+}
+
+/**
+ * Default export wraps the form in a Suspense boundary because `LoginForm` reads
+ * `useSearchParams` (for ?callbackUrl / ?next); the Next App Router requires that
+ * read to be inside Suspense so the route can still be prerendered.
+ */
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
   );
 }

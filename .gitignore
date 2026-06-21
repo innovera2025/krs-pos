@@ -41,3 +41,6 @@ yarn-error.log*
 /playwright-report/
 /playwright/.cache/
 .playwright-mcp/
+
+# local-only compose override (dev DB host port mapping; never in prod)
+docker-compose.override.yml

@@ -1,81 +1,57 @@
 "use client";
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useState,
-} from "react";
+import { createContext, useContext } from "react";
+import { useSession } from "next-auth/react";
+import { prismaRoleToAppRole } from "@/lib/authRole";
 
 /**
- * ⚠️ DEMO ROLE STUB — NOT SECURITY.
+ * Session-backed role context (production-readiness Phase 1).
  *
- * This client-side role state mirrors Simple POS's demo role-switcher. It drives
- * the NavRail filter and the admin page guards for a faithful client demo only.
+ * The role is now DERIVED from the real Auth.js session (`useSession()`), not a
+ * localStorage demo value. The Prisma role on the session is mapped to the UI
+ * `AppRole` via `prismaRoleToAppRole` (ADMIN/MANAGER → admin, CASHIER → seller —
+ * MANAGER is treated as admin per the approved decision).
  *
- * It is NOT authentication or authorization:
- *  - the role lives in localStorage and is fully user-controllable/bypassable,
- *  - the server APIs do NOT enforce roles (any caller can hit them),
- *  - a "seller" can still reach an admin route by URL (the guard only redirects
- *    the client UI; it is not a security boundary).
- *
- * TODO(production-readiness): real auth/session + server-side RBAC + route
- * middleware. The session role (not this localStorage value) becomes the source
- * of truth, and every admin API/route is enforced on the server.
+ * ⚠️ This client role still drives UX ONLY (the NavRail filter + the AdminOnly
+ * page guard). The real authorization boundary is server-side: middleware
+ * (`authorized`) + per-route `requireUser`/`requireAdmin`. A tampered client role
+ * cannot grant access to a protected route or API.
  */
 
-/** UI role vocabulary (Simple POS uses seller/admin). Maps to Prisma Role:
- * admin ↔ ADMIN, seller ↔ CASHIER (MANAGER unused for now). */
+/** UI role vocabulary (Simple POS uses seller/admin). Maps from Prisma Role via
+ * lib/authRole: admin ↔ ADMIN|MANAGER, seller ↔ CASHIER. */
 export type AppRole = "admin" | "seller";
 
 type RoleContextValue = {
   role: AppRole;
-  setRole: (role: AppRole) => void;
-  // false until the persisted role has been read from localStorage on the
-  // client. Guards (AdminOnly) must wait for this before trusting `role`, so a
-  // seller never sees an admin screen flash on a direct load/refresh.
+  /** The logged-in user's display name, when available (shown in the NavRail). */
+  userName: string | null;
+  // false until the session status is resolved (not "loading"). Guards
+  // (AdminOnly) wait for this before trusting `role`, so a seller never sees an
+  // admin screen flash while the session is still loading.
   hydrated: boolean;
 };
 
 const RoleContext = createContext<RoleContextValue | null>(null);
 
-const STORAGE_KEY = "krspos.demoRole";
-const DEFAULT_ROLE: AppRole = "admin";
-
-function isAppRole(v: unknown): v is AppRole {
-  return v === "admin" || v === "seller";
-}
+/** Least-privileged default until/unless the session says otherwise. */
+const DEFAULT_ROLE: AppRole = "seller";
 
 export function RoleProvider({ children }: { children: React.ReactNode }) {
-  // Start from the default on both server and first client render to avoid a
-  // hydration mismatch; hydrate the persisted value in an effect below.
-  const [role, setRoleState] = useState<AppRole>(DEFAULT_ROLE);
-  // false on server + first client render; flips true after the effect reads
-  // the stored role. No hydration mismatch: both initial renders see false.
-  const [hydrated, setHydrated] = useState(false);
+  const { data: session, status } = useSession();
 
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(STORAGE_KEY);
-      if (isAppRole(stored)) setRoleState(stored);
-    } catch {
-      /* localStorage unavailable (private mode / SSR) — keep the default */
-    }
-    setHydrated(true);
-  }, []);
+  // `status` is "loading" | "authenticated" | "unauthenticated". We treat the
+  // role as known once it is no longer loading.
+  const hydrated = status !== "loading";
 
-  const setRole = useCallback((next: AppRole) => {
-    setRoleState(next);
-    try {
-      window.localStorage.setItem(STORAGE_KEY, next);
-    } catch {
-      /* persistence is best-effort for the demo */
-    }
-  }, []);
+  const role: AppRole = session?.user?.role
+    ? prismaRoleToAppRole(session.user.role)
+    : DEFAULT_ROLE;
+
+  const userName = session?.user?.name ?? null;
 
   return (
-    <RoleContext.Provider value={{ role, setRole, hydrated }}>
+    <RoleContext.Provider value={{ role, userName, hydrated }}>
       {children}
     </RoleContext.Provider>
   );

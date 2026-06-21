@@ -1,13 +1,15 @@
 import { test, expect } from "@playwright/test";
+import { loginAs } from "./helpers/auth";
 
 /**
  * 8-route smoke (Phase 7 regression guard). For each screen: navigate, assert the
  * HTTP response is not a 4xx/5xx, then assert a screen-specific marker is visible so
  * a blank/crashed render fails the test.
  *
- * The admin-gated screens (/products /users /data /docs) are CLIENT-gated by the
- * demo RoleProvider, whose default role is "admin" — so they render their content
- * (a seller would be redirected to /pos, but the default never is).
+ * AUTH (production-readiness Phase 1): the (shell) routes are now gated by
+ * middleware, so each protected-route test signs in first via `loginAs` (seeded
+ * admin → sees all 7 nav screens). The /login route itself is the one exception —
+ * it is public and asserts the sign-in form, so it does NOT pre-authenticate.
  *
  * Authored, not run, in Phase 7: the orchestrator starts the server + Postgres and
  * runs `npm run test:e2e`. No webServer is configured here (see playwright.config).
@@ -19,6 +21,8 @@ type RouteCheck = {
   name: string;
   /** Assert a screen-specific marker is visible. */
   marker: (page: import("@playwright/test").Page) => Promise<void>;
+  /** When true, sign in (seeded admin) before navigating. Default true. */
+  auth?: boolean;
 };
 
 const ROUTES: RouteCheck[] = [
@@ -90,6 +94,8 @@ const ROUTES: RouteCheck[] = [
   {
     path: "/login",
     name: "Login",
+    // Public route — do NOT pre-authenticate (we assert the sign-in form).
+    auth: false,
     marker: async (page) => {
       await expect(
         page.getByRole("heading", { name: "เข้าสู่ระบบ" })
@@ -101,6 +107,11 @@ const ROUTES: RouteCheck[] = [
 
 for (const route of ROUTES) {
   test(`route smoke: ${route.name} (${route.path})`, async ({ page }) => {
+    // Protected (shell) routes need a session — sign in first (seeded admin).
+    if (route.auth !== false) {
+      await loginAs(page);
+    }
+
     const response = await page.goto(route.path, { waitUntil: "domcontentloaded" });
     expect(response, `no response for ${route.path}`).not.toBeNull();
     const status = response!.status();

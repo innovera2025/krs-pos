@@ -1,16 +1,19 @@
 import type { AppRole } from "@/components/RoleProvider";
 
 /**
- * ⚠️ DEMO ROLE-GATE MAP — NOT SECURITY (rolegate-seller-vs-admin).
+ * ROLE-GATE MAP (rolegate-seller-vs-admin) — single source of truth.
  *
  * Which roles may see/visit each nav key. Mirrors Simple POS's navAccess:
  *  - pos / sales / shift  → both seller + admin
  *  - data / products / users / docs → admin only
  *
- * This drives the client NavRail filter and the admin page guard ONLY. It is
- * not an authorization boundary — the server does not enforce it.
- * TODO(production-readiness): enforce on the server via session role + route
- * middleware; this client map is for UX/demo only.
+ * This map is now enforced on BOTH boundaries:
+ *  - server: the middleware `authorized` callback (src/auth.config.ts) calls
+ *    `canAccess` with the session role → a seller is redirected off admin routes.
+ *  - client: the NavRail filter + the AdminOnly page guard (UX).
+ *
+ * The Prisma role is collapsed to the AppRole used here via lib/authRole
+ * (ADMIN/MANAGER → admin, CASHIER → seller).
  */
 export const NAV_ACCESS: Record<string, AppRole[]> = {
   pos: ["admin", "seller"],

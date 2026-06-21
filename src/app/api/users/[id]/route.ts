@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth";
 
-// ⚠️ RBAC / auth is NOT enforced here. There is no session yet, so any caller
-// can toggle a user's active state. CLIENT DEMO surface, not secured.
-// TODO(production-readiness): real auth/session + server-side RBAC + route
-// middleware (only an authenticated ADMIN may mutate users).
+// AUTH (production-readiness Phase 1): activating/deactivating a user requires an
+// authenticated ADMIN (or MANAGER, treated as admin). The per-handler
+// `requireAdmin` check is the real authorization boundary (defense-in-depth).
 
 const USER_PUBLIC_SELECT = {
   id: true,
@@ -24,6 +24,9 @@ export async function PATCH(
   req: Request,
   { params }: { params: { id: string } }
 ) {
+  const gate = await requireAdmin();
+  if ("response" in gate) return gate.response;
+
   const { id } = params;
   if (typeof id !== "string" || id.length === 0) {
     return NextResponse.json(

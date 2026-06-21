@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { Prisma, Role } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth";
 
-// ⚠️ RBAC / auth is NOT enforced on these routes. There is no session yet, so
-// any caller can list or create users. This is a CLIENT DEMO surface, not a
-// secured endpoint.
-// TODO(production-readiness): real auth/session + server-side RBAC + route
-// middleware (only an authenticated ADMIN may read/write users).
+// AUTH (production-readiness Phase 1): these routes require an authenticated
+// ADMIN (or MANAGER, treated as admin). The per-handler `requireAdmin` check is
+// the real authorization boundary (defense-in-depth) — a non-admin gets 403, an
+// anonymous caller 401, even if middleware is bypassed.
 
 // Fields safe to return to the client. The `password` column is NEVER selected
 // or returned by any handler here.
@@ -20,8 +20,11 @@ const USER_PUBLIC_SELECT = {
   createdAt: true,
 } as const;
 
-// GET /api/users — list users (password never selected/returned).
+// GET /api/users — list users (password never selected/returned). Admin-only.
 export async function GET() {
+  const gate = await requireAdmin();
+  if ("response" in gate) return gate.response;
+
   try {
     const users = await prisma.user.findMany({
       select: USER_PUBLIC_SELECT,
@@ -67,7 +70,11 @@ function placeholderPassword(): string {
 }
 
 // POST /api/users — create a user (returns the created user WITHOUT password).
+// Admin-only.
 export async function POST(req: Request) {
+  const gate = await requireAdmin();
+  if ("response" in gate) return gate.response;
+
   let body: CreateUserBody;
   try {
     body = (await req.json()) as CreateUserBody;

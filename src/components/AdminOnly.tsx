@@ -5,16 +5,17 @@ import { useRouter } from "next/navigation";
 import { useRole } from "@/components/RoleProvider";
 
 /**
- * ⚠️ CLIENT-ONLY ADMIN GUARD — NOT SECURITY.
+ * CLIENT ADMIN GUARD — UX layer over the real server boundary.
  *
  * Wraps an admin-only screen (/products, /users, and ready for /data, /docs):
- * if the demo role is "seller" it redirects to /pos and renders nothing.
+ * if the session-derived role is "seller" it redirects to /pos and renders
+ * nothing.
  *
- * This is purely a client-side UX redirect and is fully bypassable (a seller can
- * still load the route by URL; the server returns the page either way). It is NOT
- * an authorization boundary.
- * TODO(production-readiness): real auth/session + server-side RBAC + route
- * middleware that rejects unauthorized requests before the page renders.
+ * This is a client-side UX redirect for a clean experience. The ACTUAL
+ * authorization boundary is server-side: middleware (`authorized`) already
+ * bounces a seller off an admin route before this mounts, and the admin APIs are
+ * guarded by `requireAdmin`. A seller can no longer reach admin data by URL or by
+ * tampering with the client role.
  */
 export function AdminOnly({ children }: { children: React.ReactNode }) {
   // Hooks stay unconditional (called every render) regardless of branch below.

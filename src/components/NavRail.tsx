@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { signOut } from "next-auth/react";
 import {
   Store,
   PanelLeft,
@@ -11,7 +12,7 @@ import {
   Package,
   UsersRound,
   FileText,
-  UserCog,
+  LogOut,
   type LucideIcon,
 } from "lucide-react";
 import { useRole } from "@/components/RoleProvider";
@@ -42,13 +43,15 @@ const NAV_ITEMS: NavItem[] = [
 /**
  * Forest-gradient left rail navigation (nav-sidebar).
  *
- * Phase 4: items are now filtered by the DEMO role (rolegate-seller-vs-admin) via
- * `canAccess`. A seller sees only pos/sales/shift; an admin sees all 7. The bottom
- * role toggle (action-set-role-seller / action-set-role-admin) flips the demo role.
+ * Items are filtered by the SESSION role (rolegate-seller-vs-admin) via
+ * `canAccess`. A seller sees only pos/sales/shift; an admin (ADMIN or MANAGER)
+ * sees all 7. The bottom slot is now a real LOGOUT button (the former DEMO role
+ * toggle is removed — the role comes from the Auth.js session).
  *
- * ⚠️ The role filter is a CLIENT DEMO, not security. The server does not enforce
- * roles and a seller can still reach an admin route by URL. Real enforcement
- * (session role + route middleware) = production-readiness.
+ * ⚠️ The client role filter is UX only. The real enforcement is server-side:
+ * middleware (`authorized`) redirects unauthorized navigations and the API
+ * `requireUser`/`requireAdmin` guards reject unauthorized requests. A seller can
+ * no longer reach an admin route by URL (middleware bounces them to /pos).
  *
  * The red failed-job badge on the `data` item (display-sidebar-failed-badge-source)
  * is sourced (Phase 6b) from GET /api/sync-jobs/failed-count — a single
@@ -62,7 +65,7 @@ const NAV_ITEMS: NavItem[] = [
 export function NavRail() {
   const pathname = usePathname();
   const router = useRouter();
-  const { role, setRole } = useRole();
+  const { role, userName } = useRole();
 
   // Failed-sync-job count for the `data` badge (display-sidebar-failed-badge-
   // source). Init 0 → no layout shift; errors are swallowed (the rail must never
@@ -176,21 +179,22 @@ export function NavRail() {
         );
       })}
 
-      {/* DEMO role toggle (action-set-role-seller / action-set-role-admin).
-          ⚠️ Not security — flips the client-only demo role. */}
-      <RoleToggle role={role} onSetRole={setRole} />
+      {/* Real logout (replaces the former DEMO role toggle). Shows the logged-in
+          user's name (when available) above the sign-out button. */}
+      <LogoutButton role={role} userName={userName} />
     </nav>
   );
 }
 
-function RoleToggle({
+function LogoutButton({
   role,
-  onSetRole,
+  userName,
 }: {
   role: "admin" | "seller";
-  onSetRole: (r: "admin" | "seller") => void;
+  userName: string | null;
 }) {
-  const isAdmin = role === "admin";
+  // Thai-first role label for the small caption under the user name.
+  const roleLabel = role === "admin" ? "ผู้ดูแล" : "ผู้ขาย";
 
   return (
     <div
@@ -200,90 +204,76 @@ function RoleToggle({
         flexDirection: "column",
         alignItems: "center",
         gap: 8,
+        paddingBottom: 4,
       }}
     >
-      {/* DEMO marker — makes the non-security nature visible in the UI. */}
-      <span
-        aria-hidden="true"
-        title="โหมดสาธิต — สลับบทบาท (ไม่ใช่ระบบความปลอดภัยจริง)"
-        style={{
-          fontSize: 8,
-          fontWeight: 700,
-          letterSpacing: ".08em",
-          color: "#5f8a7c",
-          background: "rgba(255,255,255,.06)",
-          borderRadius: 6,
-          padding: "2px 5px",
-        }}
-      >
-        DEMO
-      </span>
+      {/* Logged-in identity (truncated). Hidden from a11y duplication via title. */}
+      {userName && (
+        <div
+          title={`${userName} · ${roleLabel}`}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 1,
+            maxWidth: 64,
+          }}
+        >
+          <span
+            style={{
+              fontSize: 9,
+              fontWeight: 700,
+              color: "#d5fff0",
+              lineHeight: 1.1,
+              maxWidth: 64,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {userName}
+          </span>
+          <span
+            style={{
+              fontSize: 8,
+              fontWeight: 600,
+              letterSpacing: ".06em",
+              color: "#5f8a7c",
+            }}
+          >
+            {roleLabel}
+          </span>
+        </div>
+      )}
 
-      <div
-        role="group"
-        aria-label="สลับบทบาท (เดโม) · Demo role switch — not real security"
+      <button
+        type="button"
+        onClick={() => signOut({ callbackUrl: "/login" })}
+        title="ออกจากระบบ · Sign out"
+        aria-label="ออกจากระบบ · Sign out"
         style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: 6,
-          padding: 5,
-          borderRadius: 14,
+          width: 52,
+          height: 52,
+          borderRadius: 16,
+          border: 0,
+          cursor: "pointer",
+          display: "grid",
+          placeItems: "center",
+          transition: ".16s",
           background: "rgba(255,255,255,.05)",
+          color: "#a0bfb5",
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = "rgba(239,68,68,.18)";
+          e.currentTarget.style.color = "#ffd9d9";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = "rgba(255,255,255,.05)";
+          e.currentTarget.style.color = "#a0bfb5";
         }}
       >
-        <button
-          type="button"
-          onClick={() => onSetRole("seller")}
-          aria-pressed={!isAdmin}
-          title="ผู้ขาย (เดโม) · Seller (demo)"
-          aria-label="สลับเป็นบทบาทผู้ขาย (เดโม)"
-          style={{
-            width: 44,
-            height: 40,
-            borderRadius: 10,
-            border: 0,
-            cursor: "pointer",
-            display: "grid",
-            placeItems: "center",
-            fontSize: 9,
-            fontWeight: 700,
-            lineHeight: 1.1,
-            transition: ".16s",
-            background: !isAdmin ? "rgba(35,200,132,.22)" : "transparent",
-            color: !isAdmin ? "#ffffff" : "#a0bfb5",
-            boxShadow: !isAdmin ? "inset 0 0 0 1px rgba(42,222,150,.5)" : "none",
-          }}
-        >
-          <UsersRound size={16} strokeWidth={2} />
-          <span style={{ marginTop: 2 }}>ผู้ขาย</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => onSetRole("admin")}
-          aria-pressed={isAdmin}
-          title="ผู้ดูแล (เดโม) · Admin (demo)"
-          aria-label="สลับเป็นบทบาทผู้ดูแล (เดโม)"
-          style={{
-            width: 44,
-            height: 40,
-            borderRadius: 10,
-            border: 0,
-            cursor: "pointer",
-            display: "grid",
-            placeItems: "center",
-            fontSize: 9,
-            fontWeight: 700,
-            lineHeight: 1.1,
-            transition: ".16s",
-            background: isAdmin ? "rgba(35,200,132,.22)" : "transparent",
-            color: isAdmin ? "#ffffff" : "#a0bfb5",
-            boxShadow: isAdmin ? "inset 0 0 0 1px rgba(42,222,150,.5)" : "none",
-          }}
-        >
-          <UserCog size={16} strokeWidth={2} />
-          <span style={{ marginTop: 2 }}>Admin</span>
-        </button>
-      </div>
+        <LogOut size={22} strokeWidth={2} />
+      </button>
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { Prisma, PaymentType, OrderStatus, SyncStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { bangkokYyyymmdd, bangkokDayWindow } from "@/lib/datetime";
+import { requireUser } from "@/lib/auth";
 
 /** Valid OrderStatus values for the optional `?status=` filter (Phase 5 history). */
 function isOrderStatus(v: string): v is OrderStatus {
@@ -15,12 +16,21 @@ function isSyncStatus(v: string): v is SyncStatus {
 
 // GET /api/orders — list recent orders (Phase 5 Sales History).
 //
+// AUTH (security-review FIX A): requires an authenticated session. Sales history
+// (/sales) is available to BOTH roles (cashier + admin), so requireUser (any
+// authenticated active user) is the correct gate — NOT requireAdmin. Without this
+// gate an anonymous request would leak the full sales ledger incl. Customer PII
+// (name/taxId/phone/address), payment refs/amounts, cashier names, and totals.
+//
 // Optional query filters (validated against the enums; unknown values are
 // ignored so a stray param never 500s the history page):
 //   ?status=COMPLETED|REFUNDED|VOIDED|PENDING|CANCELLED
 //   ?sync=PENDING|DAILY|SYNCED|FAILED|SKIPPED
 // `payments` is included so the sales list + reprint (ReceiptModal) have tenders.
 export async function GET(req: Request) {
+  const gate = await requireUser();
+  if ("response" in gate) return gate.response;
+
   const { searchParams } = new URL(req.url);
   const statusParam = searchParams.get("status");
   const syncParam = searchParams.get("sync");
@@ -63,7 +73,8 @@ type OrderRequestBody = {
   total: number;
   amountPaid: number;
   change: number;
-  cashierId?: string | null;
+  // NOTE: no `cashierId` here by design — the server forces it from the session
+  // (any client-sent cashierId is ignored, anti-forgery; see POST handler).
   // Phase 6a — customer linkage + tax-invoice request. customerId nullable =
   // walk-in. taxRequested requires a customerId whose Customer has a taxId.
   customerId?: string | null;
@@ -117,10 +128,22 @@ async function nextPosNo(
 
 // POST /api/orders — create an order (checkout)
 //
+// AUTH (production-readiness Phase 1): requires an authenticated session. The
+// cashier is taken from the SESSION (session.user.id), never from the client body
+// — a client-supplied `cashierId` is ignored (anti-forgery). This per-handler
+// check is the real authorization boundary (defense-in-depth); middleware is only
+// a UX redirect.
+//
 // TODO(production-readiness): Decimal-safe server recompute, idempotency key,
 // atomic conditional stock decrement. Those hardenings are owned by the
 // production-readiness program; Phase 3 must not regress them.
 export async function POST(req: Request) {
+  const gate = await requireUser();
+  if ("response" in gate) return gate.response;
+  const { session } = gate;
+  // The cashier is the authenticated user — authoritative, never the client body.
+  const cashierId = session.user.id;
+
   let body: Partial<OrderRequestBody>;
   try {
     body = (await req.json()) as Partial<OrderRequestBody>;
@@ -140,7 +163,8 @@ export async function POST(req: Request) {
     total = 0,
     amountPaid = 0,
     change = 0,
-    cashierId,
+    // NOTE: `cashierId` is intentionally NOT destructured from the body — it is
+    // forced from the session above. Any client-sent cashierId is ignored.
     customerId,
     taxRequested = false,
   } = body;
@@ -336,7 +360,8 @@ export async function POST(req: Request) {
           paymentType: primaryMethod,
           amountPaid: round2(Number(amountPaid)),
           change: round2(Number(change)),
-          cashierId: cashierId || null,
+          // Authoritative cashier from the session (set above), never the body.
+          cashierId,
           customerId: normalizedCustomerId,
           taxRequested: wantsTax,
           shiftId,

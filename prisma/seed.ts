@@ -1,6 +1,11 @@
 import { PrismaClient } from "@prisma/client";
+import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
+
+// bcrypt work factor for seeded credentials (OWASP-valid cost; matches the
+// authorize() verification path). Pure-JS bcryptjs → no native deps (Alpine-safe).
+const BCRYPT_COST = 12;
 
 async function main() {
   // Categories — 4 categories matching the Taste catalog
@@ -59,11 +64,16 @@ async function main() {
     });
   }
 
-  // Users — keep the existing admin and add two sellers (CASHIER) so the Users &
-  // Roles screen (Phase 4) has rows to exercise the active/inactive toggle and
-  // the filter chips. Passwords are non-functional placeholders for the demo.
-  // TODO(production-readiness): hash + first-login set; never store a plaintext
-  // or placeholder credential in a real deployment.
+  // Users — the admin + two sellers (CASHIER) so the Users & Roles screen
+  // (Phase 4) has rows to exercise the active/inactive toggle and filter chips.
+  //
+  // Production-readiness Phase 1: passwords are now bcrypt HASHES (cost 12),
+  // verified by the Auth.js Credentials authorize() with bcrypt.compare. Known
+  // dev credentials (for local smoke + e2e):
+  //   admin@krs-pos.local        / admin123   (ADMIN, active)
+  //   seller.aroon@krs-pos.local / seller123  (CASHIER, active)
+  //   seller.malee@krs-pos.local / seller123  (CASHIER, INACTIVE — cannot log in)
+  // The hash (not the plaintext) is stored; the plaintext above is dev-only.
   const seedUsers = [
     {
       email: "admin@krs-pos.local",
@@ -76,23 +86,38 @@ async function main() {
       email: "seller.aroon@krs-pos.local",
       name: "อรุณ ขายดี",
       role: "CASHIER" as const,
-      password: "!set-on-first-login-seed-aroon",
+      password: "seller123",
       isActive: true,
     },
     {
       email: "seller.malee@krs-pos.local",
       name: "มาลี พักงาน",
       role: "CASHIER" as const,
-      password: "!set-on-first-login-seed-malee",
+      password: "seller123",
       isActive: false,
     },
   ];
 
   for (const u of seedUsers) {
+    // Hash at seed time (never store plaintext). The hash is set on BOTH create
+    // and update so re-seeding an existing DB migrates any old plaintext row to a
+    // real bcrypt hash (the seed stays idempotent in effect — same credentials).
+    const passwordHash = bcrypt.hashSync(u.password, BCRYPT_COST);
     await prisma.user.upsert({
       where: { email: u.email },
-      update: {},
-      create: u,
+      update: {
+        name: u.name,
+        role: u.role,
+        password: passwordHash,
+        isActive: u.isActive,
+      },
+      create: {
+        email: u.email,
+        name: u.name,
+        role: u.role,
+        password: passwordHash,
+        isActive: u.isActive,
+      },
     });
   }
 
