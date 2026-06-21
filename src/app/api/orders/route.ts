@@ -1,8 +1,31 @@
 import { NextResponse } from "next/server";
-import { Prisma, PaymentType, OrderStatus, SyncStatus } from "@prisma/client";
+import {
+  Prisma,
+  PaymentType,
+  OrderStatus,
+  SyncStatus,
+  StockMovementType,
+  AuditAction,
+} from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { bangkokYyyymmdd, bangkokDayWindow } from "@/lib/datetime";
 import { requireUser } from "@/lib/auth";
+import { logAudit, ipFromHeaders } from "@/lib/auditLog";
+import {
+  computeOrderTotals,
+  OrderProductMissingError,
+  type BillDiscount,
+  type OrderRequestLine,
+} from "@/lib/pricing";
+// Shared wire serializer + satang helpers (FIX 1): every order response
+// (GET/POST here, and every PATCH return in [id]/route.ts) emits identical 2dp
+// string money fields. The serializer lives in its own module so both route
+// files can share it without coupling their include constants.
+import {
+  serializeOrder,
+  toSatang,
+  satangToString,
+} from "@/lib/orderSerialize";
 
 /** Valid OrderStatus values for the optional `?status=` filter (Phase 5 history). */
 function isOrderStatus(v: string): v is OrderStatus {
@@ -13,6 +36,18 @@ function isOrderStatus(v: string): v is OrderStatus {
 function isSyncStatus(v: string): v is SyncStatus {
   return (Object.values(SyncStatus) as string[]).includes(v);
 }
+
+/**
+ * The relation graph returned by both GET and POST. Shared so the response shape
+ * (and the explicit Decimal→string serializer in lib/orderSerialize) stay in
+ * lock-step across handlers.
+ */
+const ORDER_INCLUDE = {
+  items: { include: { product: true } },
+  payments: true,
+  cashier: { select: { id: true, name: true } },
+  customer: true,
+} satisfies Prisma.OrderInclude;
 
 // GET /api/orders — list recent orders (Phase 5 Sales History).
 //
@@ -41,19 +76,22 @@ export async function GET(req: Request) {
 
   const orders = await prisma.order.findMany({
     where,
-    include: {
-      items: { include: { product: true } },
-      payments: true,
-      cashier: { select: { id: true, name: true } },
-      customer: true,
-    },
+    include: ORDER_INCLUDE,
     orderBy: { createdAt: "desc" },
     take: 200,
   });
-  return NextResponse.json(orders);
+  return NextResponse.json(orders.map(serializeOrder));
 }
 
-type IncomingItem = { productId: string; quantity: number };
+type IncomingItem = {
+  productId: string;
+  quantity: number;
+  // Optional per-line discount in INTEGER SATANG (the cart's "ส่วนลดรายการ"
+  // feature). The server clamps it to [0, line gross] and folds it into the
+  // server recompute so the authoritative total matches the cart. Money authority
+  // still rests entirely with the server — this is a discount INPUT, not an amount.
+  lineDiscountSatang?: number;
+};
 
 type IncomingPaymentLine = {
   method: string;
@@ -64,15 +102,13 @@ type IncomingPaymentLine = {
 type OrderRequestBody = {
   items: IncomingItem[];
   paymentLines: IncomingPaymentLine[];
-  // Client-computed, VAT-inclusive money (baht). The cart's integer-satang engine
-  // (lib/pricing.ts) is authoritative for Phase 3; the server recompute below is
-  // per-line price authority only (anti-tamper on unitPrice), not total recompute.
-  subtotal: number;
-  discount: number;
-  tax: number;
-  total: number;
-  amountPaid: number;
-  change: number;
+  // Bill-level discount INPUT (not an amount): the server recomputes ALL money
+  // (subtotal/discount/tax/total/per-line) from DB prices + these two fields.
+  // discountValue >= 0; for percent additionally 0..100.
+  discountType?: "amount" | "percent";
+  discountValue?: number;
+  // NOTE: any client-sent subtotal/discount/tax/total/amountPaid/change is IGNORED
+  // — the server recomputes them. They are intentionally NOT in this type.
   // NOTE: no `cashierId` here by design — the server forces it from the session
   // (any client-sent cashierId is ignored, anti-forgery; see POST handler).
   // Phase 6a — customer linkage + tax-invoice request. customerId nullable =
@@ -93,12 +129,6 @@ const VALID_METHODS = new Set<PaymentType>([
 
 function isPaymentType(v: string): v is PaymentType {
   return (VALID_METHODS as Set<string>).has(v);
-}
-
-/** Round a baht number to 2dp via integer satang to avoid float drift on store. */
-function round2(baht: number): number {
-  if (!Number.isFinite(baht)) return 0;
-  return Math.round(baht * 100) / 100;
 }
 
 /**
@@ -157,12 +187,11 @@ export async function POST(req: Request) {
   const {
     items,
     paymentLines = [],
-    subtotal = 0,
-    discount = 0,
-    tax = 0,
-    total = 0,
-    amountPaid = 0,
-    change = 0,
+    discountType = "amount",
+    discountValue = 0,
+    // NOTE: subtotal/discount/tax/total/amountPaid/change are intentionally NOT
+    // read from the body — the server recomputes ALL of them below. Any value the
+    // client sends for those is ignored (anti-tamper).
     // NOTE: `cashierId` is intentionally NOT destructured from the body — it is
     // forced from the session above. Any client-sent cashierId is ignored.
     customerId,
@@ -176,6 +205,9 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   }
+  // INT4 cap matches the Postgres Int4 quantity column so an oversized qty returns
+  // 400 instead of overflowing to a 500 (mirrors stock-movements/route.ts).
+  const INT4_MAX = 2_147_483_647;
   if (
     items.some(
       (i) =>
@@ -183,11 +215,47 @@ export async function POST(req: Request) {
         typeof i.productId !== "string" ||
         !Number.isFinite(i.quantity) ||
         !Number.isInteger(i.quantity) ||
-        i.quantity <= 0
+        i.quantity <= 0 ||
+        i.quantity > INT4_MAX ||
+        // Per-line discount (if present) must be a non-negative integer (satang).
+        (i.lineDiscountSatang !== undefined &&
+          (!Number.isFinite(i.lineDiscountSatang) ||
+            !Number.isInteger(i.lineDiscountSatang) ||
+            i.lineDiscountSatang < 0))
     )
   ) {
     return NextResponse.json(
       { error: "Invalid line item", code: "BAD_ITEM" },
+      { status: 400 }
+    );
+  }
+
+  // --- bill-level discount input boundary (server is authoritative) ---
+  if (discountType !== "amount" && discountType !== "percent") {
+    return NextResponse.json(
+      { error: "Invalid discount type", code: "BAD_DISCOUNT" },
+      { status: 400 }
+    );
+  }
+  if (
+    !Number.isFinite(discountValue) ||
+    discountValue < 0 ||
+    (discountType === "percent" && discountValue > 100)
+  ) {
+    return NextResponse.json(
+      { error: "Invalid discount value", code: "BAD_DISCOUNT" },
+      { status: 400 }
+    );
+  }
+  // Sub-cent precision guard (FIX 6). pricing.ts converts an "amount" discount to
+  // satang via roundSatang(value * 100); a value with more than 2 decimal places
+  // (e.g. 1.005 -> float 100.4999… -> 100 instead of 101) silently under-discounts
+  // by 1 satang. Reject any discountValue carrying >2dp so the satang conversion is
+  // EXACT. (For percent the value feeds subtotal*pct/100 and is already rounded to
+  // satang, but bounding precision keeps the input contract uniform and clean.)
+  if (Math.round(discountValue * 100) !== discountValue * 100) {
+    return NextResponse.json(
+      { error: "discountValue must have at most 2 decimal places", code: "BAD_DISCOUNT" },
       { status: 400 }
     );
   }
@@ -198,10 +266,29 @@ export async function POST(req: Request) {
       { status: 422 }
     );
   }
+  // Upper bound on split lines (FIX 5 — hardening). A real split is a handful of
+  // tenders; without a cap a crafted POST with thousands of 1-satang lines that
+  // still sum to the total would pass the sum check and write thousands of
+  // PaymentLine rows. 20 is comfortably above any legitimate split.
+  const MAX_PAYMENT_LINES = 20;
+  if (paymentLines.length > MAX_PAYMENT_LINES) {
+    return NextResponse.json(
+      { error: "Too many payment lines", code: "TOO_MANY_PAYMENTS" },
+      { status: 422 }
+    );
+  }
+  // Cap on a payment reference (FIX 5). A legitimate slip/txn ref is short; an
+  // unbounded reference is a write-amplification / abuse vector. Reject (422)
+  // rather than silently truncate so the money path fails loudly at the boundary.
+  const MAX_REFERENCE_LEN = 100;
 
-  // Normalize + validate every payment line.
-  const normalizedPays: { method: PaymentType; amount: number; reference: string | null }[] =
-    [];
+  // Normalize + validate every payment line. Amounts are tracked in INTEGER
+  // SATANG so the split-sum vs total comparison below is exact (no float drift).
+  const normalizedPays: {
+    method: PaymentType;
+    amountSatang: number;
+    reference: string | null;
+  }[] = [];
   for (const pl of paymentLines) {
     if (!pl || typeof pl.method !== "string" || !isPaymentType(pl.method)) {
       return NextResponse.json(
@@ -209,8 +296,16 @@ export async function POST(req: Request) {
         { status: 422 }
       );
     }
-    const amt = round2(Number(pl.amount));
-    if (!Number.isFinite(amt) || amt < 0) {
+    const amtSatang = toSatang(pl.amount);
+    // A payment line must carry a POSITIVE amount — `amt <= 0` is rejected (a
+    // zero-amount line is meaningless and, combined with a zero-total order, was a
+    // fraud vector). Each line must also fit the Decimal(10,2) column, whose max
+    // is 99,999,999.99 baht = 9,999,999,999 satang.
+    if (
+      !Number.isFinite(amtSatang) ||
+      amtSatang <= 0 ||
+      amtSatang > 9_999_999_999
+    ) {
       return NextResponse.json(
         { error: "Invalid payment amount", code: "BAD_AMOUNT" },
         { status: 422 }
@@ -220,44 +315,30 @@ export async function POST(req: Request) {
       typeof pl.reference === "string" && pl.reference.trim().length > 0
         ? pl.reference.trim()
         : null;
-    normalizedPays.push({ method: pl.method, amount: amt, reference });
+    // Reference length cap (FIX 5) — checked AFTER trimming so trailing whitespace
+    // never tips a legitimate ref over the limit.
+    if (reference !== null && reference.length > MAX_REFERENCE_LEN) {
+      return NextResponse.json(
+        { error: "Payment reference too long", code: "BAD_PAYMENT" },
+        { status: 422 }
+      );
+    }
+    normalizedPays.push({ method: pl.method, amountSatang: amtSatang, reference });
   }
 
-  const totalBaht = round2(Number(total));
-
-  // Split sum must equal the bill total within 0.01 baht.
-  const paySum = round2(
-    normalizedPays.reduce((acc, p) => acc + p.amount, 0)
+  // amountPaid is SERVER-COMPUTED as the sum of payment lines (satang) — never
+  // trusted from the client body.
+  const amountPaidSatang = normalizedPays.reduce(
+    (acc, p) => acc + p.amountSatang,
+    0
   );
-  if (Math.abs(paySum - totalBaht) > 0.01) {
-    return NextResponse.json(
-      {
-        error: `ยอดชำระ (${paySum.toFixed(2)}) ไม่ตรงกับยอดที่ต้องจ่าย (${totalBaht.toFixed(2)})`,
-        code: "PAYMENT_MISMATCH",
-      },
-      { status: 422 }
-    );
-  }
-
-  // Cash sufficiency: amountPaid (cash received) must cover the CASH PORTION
-  // (cashDue = sum of CASH line amounts), not the full bill — the split-sum gate
-  // above already proves the full bill is covered. This admits valid mixed
-  // cash+non-cash splits where cash received only needs to cover its own line(s).
-  const cashDue = round2(
-    normalizedPays
-      .filter((p) => p.method === PaymentType.CASH)
-      .reduce((s, p) => s + p.amount, 0)
-  );
-  if (cashDue > 0 && round2(Number(amountPaid)) + 0.01 < cashDue) {
-    return NextResponse.json(
-      { error: "รับเงินสดน้อยกว่ายอดที่ต้องจ่าย", code: "INSUFFICIENT_CASH" },
-      { status: 422 }
-    );
-  }
 
   // Primary/dominant method for reporting/back-compat: cash if any cash line,
   // else the first line's method.
-  const hasCash = cashDue > 0;
+  const cashDueSatang = normalizedPays
+    .filter((p) => p.method === PaymentType.CASH)
+    .reduce((s, p) => s + p.amountSatang, 0);
+  const hasCash = cashDueSatang > 0;
   const primaryMethod: PaymentType = hasCash
     ? PaymentType.CASH
     : normalizedPays[0].method;
@@ -311,35 +392,76 @@ export async function POST(req: Request) {
       }
     }
 
-    // Server-authoritative per-line price: recompute unitPrice/lineTotal from the
-    // DB product prices (anti-tamper). Stored bill money (subtotal/discount/tax/
-    // total/amountPaid/change) is the VAT-inclusive client computation as sent.
+    // Server-authoritative recompute: fetch DB product prices (ACTIVE only — a
+    // deactivated product must not be sellable) and recompute ALL money from them
+    // + the requested quantities + the bill discount. Any client-sent subtotal/
+    // discount/tax/total/amountPaid/change is ignored.
     const productIds = items.map((i) => i.productId);
     const products = await prisma.product.findMany({
-      where: { id: { in: productIds } },
+      where: { id: { in: productIds }, isActive: true },
+      select: { id: true, price: true },
     });
 
-    const lineItems = items.map((item) => {
-      const product = products.find((p) => p.id === item.productId);
-      if (!product) {
-        throw new ProductNotFoundError(item.productId);
-      }
-      const unitPrice = Number(product.price);
-      const lineTotal = round2(unitPrice * item.quantity);
-      return {
-        productId: product.id,
-        quantity: item.quantity,
-        unitPrice,
-        lineTotal,
-      };
-    });
+    const bill: BillDiscount = { type: discountType, value: discountValue };
+    const requestedLines: OrderRequestLine[] = items.map((i) => ({
+      productId: i.productId,
+      quantity: i.quantity,
+      lineDiscountSatang: i.lineDiscountSatang,
+    }));
+
+    // computeOrderTotals throws OrderProductMissingError for an unknown/inactive
+    // product (→ 404 below) and RangeError for an out-of-range discount (already
+    // validated at the boundary above, so this is a belt-and-braces guard).
+    const totals = computeOrderTotals(products, requestedLines, bill);
+
+    // Server-computed bill money (integer satang → Decimal-safe baht strings).
+    const subtotalBaht = satangToString(totals.subtotalSatang);
+    const discountBaht = satangToString(totals.billDiscountSatang);
+    const taxBaht = satangToString(totals.vatSatang);
+    const totalBaht = satangToString(totals.totalSatang);
+    const amountPaidBaht = satangToString(amountPaidSatang);
+    // change = max(amountPaid - total, 0), SERVER-computed (never trusted).
+    const changeSatang = Math.max(amountPaidSatang - totals.totalSatang, 0);
+    const changeBaht = satangToString(changeSatang);
+
+    // Split sum must equal the SERVER total exactly (integer satang — no float
+    // drift). This compares against the authoritative total, not a client value.
+    if (amountPaidSatang !== totals.totalSatang) {
+      return NextResponse.json(
+        {
+          error: `ยอดชำระ (${satangToString(amountPaidSatang)}) ไม่ตรงกับยอดที่ต้องจ่าย (${totalBaht})`,
+          code: "PAYMENT_MISMATCH",
+        },
+        { status: 422 }
+      );
+    }
+
+    // Cash sufficiency: the CASH received (amountPaid covers all tenders; the cash
+    // lines' own sum is cashDueSatang) must cover the cash portion. With the exact
+    // split-sum gate above, amountPaid === total, so amountPaid always covers
+    // cashDue — this guard stays as defense-in-depth.
+    if (cashDueSatang > 0 && amountPaidSatang < cashDueSatang) {
+      return NextResponse.json(
+        { error: "รับเงินสดน้อยกว่ายอดที่ต้องจ่าย", code: "INSUFFICIENT_CASH" },
+        { status: 422 }
+      );
+    }
+
+    // Per-line OrderItem rows from the SERVER recompute (unitPrice/lineTotal in
+    // Decimal-safe baht strings — never the client's per-line amounts).
+    const lineItems = totals.lines.map((l) => ({
+      productId: l.productId,
+      quantity: l.quantity,
+      unitPrice: satangToString(l.priceSatang),
+      lineTotal: satangToString(l.lineTotalSatang),
+    }));
 
     const now = new Date();
 
     // Phase 5 (Decision A2): link the new order to the current OPEN shift if one
     // exists, else leave shiftId null. This MUST NOT block checkout when no shift
     // is open — a sale can happen before a shift is opened, and that order simply
-    // carries no shiftId. Totals/pricing logic below is unchanged.
+    // carries no shiftId. Totals/pricing logic above is unchanged.
     const openShift = await prisma.shift.findFirst({
       where: { status: "OPEN" },
       orderBy: { openedAt: "desc" },
@@ -353,13 +475,13 @@ export async function POST(req: Request) {
       const created = await tx.order.create({
         data: {
           orderNumber,
-          subtotal: round2(Number(subtotal)),
-          tax: round2(Number(tax)),
-          discount: round2(Number(discount)),
+          subtotal: subtotalBaht,
+          tax: taxBaht,
+          discount: discountBaht,
           total: totalBaht,
           paymentType: primaryMethod,
-          amountPaid: round2(Number(amountPaid)),
-          change: round2(Number(change)),
+          amountPaid: amountPaidBaht,
+          change: changeBaht,
           // Authoritative cashier from the session (set above), never the body.
           cashierId,
           customerId: normalizedCustomerId,
@@ -369,37 +491,90 @@ export async function POST(req: Request) {
           payments: {
             create: normalizedPays.map((p) => ({
               method: p.method,
-              amount: p.amount,
+              amount: satangToString(p.amountSatang),
               reference: p.reference,
             })),
           },
         },
-        include: {
-          items: { include: { product: true } },
-          payments: true,
-          cashier: { select: { id: true, name: true } },
-          customer: true,
-        },
+        include: ORDER_INCLUDE,
       });
 
-      // TODO(production-readiness): atomic conditional stock decrement
-      // (WHERE stock >= qty) to prevent overselling under concurrency.
+      // Atomic conditional stock decrement: only decrement when stock >= qty. The
+      // `WHERE stock >= qty` guard + the count===1 assert prevents overselling
+      // under concurrency (two checkouts of the last unit cannot both succeed) and
+      // prevents negative stock. A 0-count means insufficient stock → 409, which
+      // rolls back the whole transaction (the order create above is undone).
       for (const item of lineItems) {
-        await tx.product.update({
-          where: { id: item.productId },
+        const dec = await tx.product.updateMany({
+          where: { id: item.productId, stock: { gte: item.quantity } },
           data: { stock: { decrement: item.quantity } },
+        });
+        if (dec.count !== 1) {
+          throw new InsufficientStockError(item.productId);
+        }
+        // SALE ledger row: qty is stored as a NEGATIVE delta (stock out), the
+        // mirror of RECEIVE's positive delta — see StockMovement sign convention.
+        await tx.stockMovement.create({
+          data: {
+            productId: item.productId,
+            type: StockMovementType.SALE,
+            qty: -item.quantity,
+            reference: orderNumber,
+          },
         });
       }
 
       return created;
     });
 
-    return NextResponse.json(order, { status: 201 });
+    // Money/ledger audit (Sub-phase B). BEST-EFFORT, AFTER commit — never inside
+    // the transaction (mirrors ORDER_VOIDED/ORDER_REFUNDED). A failed audit write
+    // never fails the sale.
+    await logAudit({
+      action: AuditAction.ORDER_CREATED,
+      actorId: cashierId,
+      actorEmail: session.user.email ?? null,
+      ip: await ipFromHeaders(),
+      targetType: "Order",
+      targetId: order.id,
+      detail: JSON.stringify({
+        orderNumber: order.orderNumber,
+        total: totalBaht,
+      }),
+    });
+
+    return NextResponse.json(serializeOrder(order), { status: 201 });
   } catch (err) {
-    if (err instanceof ProductNotFoundError) {
+    if (
+      err instanceof ProductNotFoundError ||
+      err instanceof OrderProductMissingError
+    ) {
       return NextResponse.json(
         { error: `Product not found: ${err.productId}`, code: "PRODUCT_NOT_FOUND" },
         { status: 404 }
+      );
+    }
+    if (err instanceof InsufficientStockError) {
+      return NextResponse.json(
+        {
+          error: "สต็อกไม่เพียงพอ",
+          code: "INSUFFICIENT_STOCK",
+          productId: err.productId,
+        },
+        { status: 409 }
+      );
+    }
+    // Concurrent checkouts can collide on the daily orderNumber (count-based
+    // sequence under READ COMMITTED). The collision-free DB sequence is deferred
+    // (Sub-phase C); for now translate the unique-constraint violation into a clean
+    // 409 the client can retry, instead of a silent 500.
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2002"
+    ) {
+      return NextResponse.json(
+        { error: "เลขที่บิลซ้ำ กรุณาลองใหม่", code: "ORDER_NUMBER_CONFLICT" },
+        { status: 409 }
       );
     }
     // Sanitized 500 — never leak internals to the client.
@@ -415,5 +590,18 @@ class ProductNotFoundError extends Error {
   constructor(public readonly productId: string) {
     super(`Product not found: ${productId}`);
     this.name = "ProductNotFoundError";
+  }
+}
+
+/**
+ * Thrown inside the checkout transaction when the atomic conditional decrement
+ * (`updateMany WHERE stock >= qty`) matches 0 rows — i.e. the product no longer
+ * has enough stock. Throwing rolls back the whole transaction (the order create
+ * is undone) and maps to a clean 409 INSUFFICIENT_STOCK.
+ */
+class InsufficientStockError extends Error {
+  constructor(public readonly productId: string) {
+    super(`Insufficient stock: ${productId}`);
+    this.name = "InsufficientStockError";
   }
 }

@@ -2,7 +2,10 @@ export type Product = {
   id: string;
   name: string;
   sku: string;
-  price: number;
+  // Wire format from Prisma JSON: a Decimal serializes to a 2dp numeric STRING
+  // (e.g. "59.00"), not a number. All consumers go through bahtToSatang/Number()
+  // which accept a string, so this matches the real runtime shape (gap T1).
+  price: string;
   stock: number;
   barcode?: string | null;
   imageUrl?: string | null;

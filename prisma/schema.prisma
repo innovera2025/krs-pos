@@ -147,6 +147,10 @@ enum AuditAction {
   USER_CREATED
   USER_DEACTIVATED
   USER_ACTIVATED
+  // Sale created at checkout (Financial/Inventory correctness, Sub-phase B). The
+  // POST /api/orders success path writes this best-effort, AFTER commit — the
+  // money-trail counterpart to ORDER_REFUNDED / ORDER_VOIDED.
+  ORDER_CREATED
   ORDER_REFUNDED
   ORDER_VOIDED
   SESSION_REVOKED

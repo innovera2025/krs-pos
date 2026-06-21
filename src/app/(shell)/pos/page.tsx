@@ -413,8 +413,12 @@ export default function POSPage() {
       (acc, l) => acc + bahtToSatang(l.amount),
       0
     );
-    // Split sum must equal the total within 0.01 baht (1 satang).
-    if (Math.abs(paidSatang - totalSatang) > 1) {
+    // Split sum must equal the total EXACTLY (FIX 4 — client/server parity). The
+    // server requires exact satang equality (orders/route.ts PAYMENT_MISMATCH), so
+    // the client mirrors it: any nonzero satang difference is rejected here rather
+    // than passing the client and failing the server with a confusing 422. The
+    // auto-fill (toFixed(2) on the split lines) keeps a normal split exactly equal.
+    if (paidSatang - totalSatang !== 0) {
       setPayError(
         `ยอดชำระ (${(paidSatang / 100).toFixed(2)}) ไม่ตรงกับยอดที่ต้องจ่าย (${(
           totalSatang / 100
@@ -462,18 +466,27 @@ export default function POSPage() {
           items: cart.map((i) => ({
             productId: i.product.id,
             quantity: i.quantity,
+            // Per-line discount (ส่วนลดรายการ) in integer satang — the server
+            // folds this into its authoritative recompute so its total matches
+            // the cart. Omitted when 0.
+            ...(i.lineDiscountSatang > 0
+              ? { lineDiscountSatang: i.lineDiscountSatang }
+              : {}),
           })),
           paymentLines: payLines.map((l) => ({
             method: methodToEnum(l.method),
             amount: bahtToSatang(l.amount) / 100,
             reference: trimmedRef.length > 0 ? trimmedRef : null,
           })),
-          subtotal: totals.subtotalSatang / 100,
-          discount: totals.billDiscountSatang / 100,
-          tax: totals.vatSatang / 100,
-          total: totalSatang / 100,
-          amountPaid: amountPaidSatang / 100,
-          change: changeSatang / 100,
+          // Bill-level discount INPUT (not an amount). The server recomputes ALL
+          // money (subtotal/discount/tax/total/amountPaid/change) from DB prices +
+          // these two fields — the previously-sent computed money values are no
+          // longer trusted and are intentionally omitted.
+          discountType,
+          discountValue: (() => {
+            const v = Number(discountDraft.trim());
+            return Number.isFinite(v) && v > 0 ? v : 0;
+          })(),
           customerId: customer?.id ?? null,
           taxRequested,
         }),

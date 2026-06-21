@@ -202,13 +202,16 @@ async function main() {
       createdAt: "2026-06-16T06:20:00.000Z", // 13:20
     },
     {
-      // Refunded bill: total stored negative (−65.00) with a credit-note doc, but
-      // the PaymentLine keeps the original POSITIVE tender (+65.00) — refund is a
-      // status transition that doesn't rewrite payment rows.
+      // Refunded bill: refund is a STATUS transition only — the app's refund
+      // handler (orders/[id]/route.ts) keeps the original POSITIVE total and sets
+      // status REFUNDED (it does NOT rewrite total/tax or the PaymentLine). The
+      // credit-note doc records the reversal; reports exclude non-COMPLETED bills
+      // so the positive total never double-counts. Positive total also satisfies
+      // Order_total_nonneg_chk (Financial/Inventory correctness, Sub-phase B).
       orderNumber: "POS-20260616-0038",
       status: "REFUNDED",
       syncStatus: "SYNCED",
-      total: -65.0,
+      total: 65.0,
       paymentAmount: 65.0,
       accountingDocNo: "CN-2026-000087",
       taxRequested: false,

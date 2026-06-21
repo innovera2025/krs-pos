@@ -6,12 +6,18 @@ import {
   SyncJobType,
   SyncDirection,
   SyncJobStatus,
+  StockMovementType,
   AuditAction,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
 import { isAdminRole } from "@/lib/authRole";
 import { logAudit, ipFromHeaders } from "@/lib/auditLog";
+// Shared wire serializer (FIX 1): PATCH responses must emit the SAME 2dp string
+// money fields as GET/POST. Returning a raw Prisma record let Decimal.toJSON()
+// drop trailing zeros ("65.00" -> "65"), corrupting the Sales-History row after a
+// refund/void. Apply serializeOrder() at EVERY PATCH return site.
+import { serializeOrder } from "@/lib/orderSerialize";
 
 // domain-no-destructive-delete: orders are NEVER deleted — only status
 // transitions. There is intentionally NO DELETE handler on this route.
@@ -169,7 +175,7 @@ export async function PATCH(
         });
         return order;
       });
-      return NextResponse.json(updated);
+      return NextResponse.json(serializeOrder(updated));
     } catch (err) {
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&
@@ -191,7 +197,15 @@ export async function PATCH(
   try {
     const existing = await prisma.order.findUnique({
       where: { id },
-      select: { id: true, status: true, syncStatus: true, total: true },
+      select: {
+        id: true,
+        status: true,
+        syncStatus: true,
+        total: true,
+        // Items drive the stock restore — both refund and void return the sold
+        // units to inventory.
+        items: { select: { productId: true, quantity: true } },
+      },
     });
     if (!existing) {
       return NextResponse.json(
@@ -201,7 +215,10 @@ export async function PATCH(
     }
 
     // Pre-checks are server-side (the route is open; the client cannot be trusted
-    // to gate refund/void by status — risk #1 in the Phase 5 research).
+    // to gate refund/void by status — risk #1 in the Phase 5 research). The
+    // authoritative gate is the CONDITIONAL update inside the transaction below
+    // (status === COMPLETED); this early check just returns a friendly message
+    // without opening a transaction for an already-terminal bill.
     if (existing.status !== OrderStatus.COMPLETED) {
       return NextResponse.json(
         {
@@ -240,10 +257,71 @@ export async function PATCH(
       };
     }
 
-    const updated = await prisma.order.update({
-      where: { id },
-      data: updateData,
-      include: ORDER_DETAIL_INCLUDE,
+    // Action-specific conditional WHERE (FIX 3 — void TOCTOU). Refund keeps the
+    // plain `status === COMPLETED` guard (it has no SYNCED lock). VOID additionally
+    // re-checks `syncStatus !== SYNCED` INSIDE the transaction: the pre-transaction
+    // findUnique above only read a snapshot, so a sync job flipping the bill to
+    // SYNCED in the race window would otherwise let an already-synced void commit.
+    // Folding the lock into the conditional updateMany closes that window atomically.
+    const transitionWhere: Prisma.OrderWhereInput =
+      action === "void"
+        ? {
+            id,
+            status: OrderStatus.COMPLETED,
+            syncStatus: { not: SyncStatus.SYNCED },
+          }
+        : { id, status: OrderStatus.COMPLETED };
+
+    // ONE transaction: conditional status transition + stock restore. The
+    // conditional `updateMany` (count===1 assert) closes the double-fire race (I4):
+    // two concurrent refund/void requests can no longer both transition the same
+    // bill — the loser matches 0 rows and is rejected, rolling back its (would-be)
+    // stock restore. Both refund AND void return the sold units to inventory +
+    // write an ADJUST ledger row.
+    const updated = await prisma.$transaction(async (tx) => {
+      const transition = await tx.order.updateMany({
+        where: transitionWhere,
+        data: updateData,
+      });
+      if (transition.count !== 1) {
+        // For VOID, a 0-count can mean EITHER the bill is no longer COMPLETED
+        // (double-fire) OR it raced to SYNCED in the window. Re-read once to return
+        // the precise code: VOID_SYNCED_LOCKED if it is now SYNCED, else
+        // INVALID_STATE. Refund only has the INVALID_STATE failure mode.
+        if (action === "void") {
+          const current = await tx.order.findUnique({
+            where: { id },
+            select: { syncStatus: true },
+          });
+          if (current?.syncStatus === SyncStatus.SYNCED) {
+            throw new VoidSyncedLockedError();
+          }
+        }
+        throw new OrderStateConflictError();
+      }
+
+      for (const item of existing.items) {
+        await tx.product.update({
+          where: { id: item.productId },
+          data: { stock: { increment: item.quantity } },
+        });
+        // Stock restore ledger row: ADJUST with a POSITIVE qty (stock back in),
+        // referencing the action so the trail distinguishes refund vs void.
+        await tx.stockMovement.create({
+          data: {
+            productId: item.productId,
+            type: StockMovementType.ADJUST,
+            qty: item.quantity,
+            reference: `${action}:${existing.id}`,
+          },
+        });
+      }
+
+      // Re-read with relations for the response (the updateMany returns a count).
+      return tx.order.findUniqueOrThrow({
+        where: { id },
+        include: ORDER_DETAIL_INCLUDE,
+      });
     });
 
     // Money/ledger audit (auth Phase 3). BEST-EFFORT, AFTER the update commits —
@@ -271,8 +349,36 @@ export async function PATCH(
       }),
     });
 
-    return NextResponse.json(updated);
+    return NextResponse.json(serializeOrder(updated));
   } catch (err) {
+    // VOID lost the race to a sync job that flipped the bill to SYNCED inside the
+    // transaction window (FIX 3). Report the precise domain-synced-bills-locked 409
+    // a sequential request would get — a synced bill must be reversed via a credit
+    // note, not voided.
+    if (err instanceof VoidSyncedLockedError) {
+      return NextResponse.json(
+        {
+          error: "บิลนี้ส่งเข้าบัญชีแล้ว ยกเลิกไม่ได้ — ต้องใช้ใบลดหนี้",
+          code: "VOID_SYNCED_LOCKED",
+        },
+        { status: 409 }
+      );
+    }
+    // Conditional status transition matched 0 rows — the bill was concurrently
+    // refunded/voided (double-fire race, I4). Report the same INVALID_STATE 409 a
+    // sequential second request would get.
+    if (err instanceof OrderStateConflictError) {
+      return NextResponse.json(
+        {
+          error:
+            action === "refund"
+              ? "คืนเงินได้เฉพาะบิลที่ชำระแล้ว"
+              : "ยกเลิก (Void) ได้เฉพาะบิลที่ชำระแล้ว",
+          code: "INVALID_STATE",
+        },
+        { status: 409 }
+      );
+    }
     if (
       err instanceof Prisma.PrismaClientKnownRequestError &&
       err.code === "P2025"
@@ -287,5 +393,32 @@ export async function PATCH(
       { error: "Could not update order", code: "INTERNAL" },
       { status: 500 }
     );
+  }
+}
+
+/**
+ * Thrown inside the refund/void transaction when the conditional status
+ * transition (`updateMany WHERE status === COMPLETED`) matches 0 rows — i.e. the
+ * bill was already transitioned by a concurrent request (double-fire race, I4).
+ * Maps to a 409 INVALID_STATE, rolling back the would-be stock restore.
+ */
+class OrderStateConflictError extends Error {
+  constructor() {
+    super("Order is no longer COMPLETED");
+    this.name = "OrderStateConflictError";
+  }
+}
+
+/**
+ * Thrown inside the VOID transaction when the conditional updateMany matches 0
+ * rows AND a re-read shows the bill is now SYNCED (FIX 3 — void TOCTOU): a sync
+ * job flipped syncStatus to SYNCED in the race window after the pre-transaction
+ * findUnique. Maps to a 409 VOID_SYNCED_LOCKED (domain-synced-bills-locked),
+ * rolling back the would-be stock restore.
+ */
+class VoidSyncedLockedError extends Error {
+  constructor() {
+    super("Order was synced before the void committed");
+    this.name = "VoidSyncedLockedError";
   }
 }
