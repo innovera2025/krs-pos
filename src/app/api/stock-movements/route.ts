@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
 import { Prisma, StockMovementType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth";
 
-// ⚠️ RBAC / auth is NOT enforced here. There is no session yet, so any caller
-// can receive stock. CLIENT DEMO surface, not secured.
-// TODO(production-readiness): real auth/session + server-side RBAC + route
-// middleware (only an authenticated ADMIN may receive stock).
+// AUTH (auth Phase 2): admin-only — receiving stock (GRN) is an inventory action
+// reserved for an authenticated admin (ADMIN/MANAGER).
 
 type ReceiveStockBody = {
   productId?: unknown;
@@ -16,6 +15,9 @@ type ReceiveStockBody = {
 // POST /api/stock-movements — receive stock (GRN). Increments Product.stock by
 // qty AND records a RECEIVE StockMovement, atomically in one $transaction.
 export async function POST(req: Request) {
+  const gate = await requireAdmin();
+  if ("response" in gate) return gate.response;
+
   let body: ReceiveStockBody;
   try {
     body = (await req.json()) as ReceiveStockBody;

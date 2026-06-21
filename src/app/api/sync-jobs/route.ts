@@ -5,6 +5,7 @@ import {
   SyncDirection,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth";
 
 // KRS sync jobs API (Phase 6b). The KRS transport is SIMULATED — there is no real
 // MySQL/SSL connection here. The list + the two POST actions (pull / insert-all)
@@ -13,7 +14,9 @@ import { prisma } from "@/lib/prisma";
 // (decision B). Checkout does NOT create SALE jobs (decision F) — jobs come from
 // the seed, the 6a request-tax path, and these simulated actions.
 //
-// TODO(production-readiness): real KRS transport, idempotency on insert-all, auth.
+// AUTH (auth Phase 2): admin-only on BOTH GET and POST — KRS Data Link is an
+// admin nav area.
+// TODO(production-readiness): real KRS transport, idempotency on insert-all.
 
 /** Valid SyncJobStatus values for the optional `?status=` filter. */
 function isSyncJobStatus(v: string): v is SyncJobStatus {
@@ -26,6 +29,9 @@ function isSyncJobStatus(v: string): v is SyncJobStatus {
 // is ignored (a stray param never 500s the /data screen), matching the orders
 // route convention.
 export async function GET(req: Request) {
+  const gate = await requireAdmin();
+  if ("response" in gate) return gate.response;
+
   const { searchParams } = new URL(req.url);
   const statusParam = searchParams.get("status");
 
@@ -54,6 +60,9 @@ type PostBody = { action?: unknown };
 //     drained (a field-map mismatch must be fixed, not silently synced). When
 //     nothing is pending it returns { synced: 0 } (no error).
 export async function POST(req: Request) {
+  const gate = await requireAdmin();
+  if ("response" in gate) return gate.response;
+
   let body: PostBody;
   try {
     body = (await req.json()) as PostBody;

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { requireUser } from "@/lib/auth";
 
 // This route reads request searchParams, so it is inherently dynamic. Declaring it
 // explicitly silences the benign DYNAMIC_SERVER_USAGE build log (the route is
@@ -15,7 +16,14 @@ export const dynamic = "force-dynamic";
 // The picker only SELECTS existing (seeded) customers — there is intentionally
 // NO POST/add-customer in 6a (customer CRUD is out of scope). The select is
 // narrowed to the fields the picker + tax-invoice header need.
+//
+// AUTH (auth Phase 2): requireUser — the customer picker is used at POS checkout
+// by cashiers, so any authenticated active session is the correct gate (NOT
+// admin); the response carries Customer PII so it must not be anonymous.
 export async function GET(req: Request) {
+  const gate = await requireUser();
+  if ("response" in gate) return gate.response;
+
   try {
     const { searchParams } = new URL(req.url);
     const q = (searchParams.get("q") ?? "").trim();

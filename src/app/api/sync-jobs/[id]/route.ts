@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { Prisma, SyncJobStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth";
 
 // PATCH /api/sync-jobs/[id] — retry or skip a simulated KRS sync job (Phase 6b).
+// AUTH (auth Phase 2): admin-only — retry/skip are KRS Data Link admin actions.
 // The status gates are SERVER-enforced (the client cannot be trusted to gate a
 // retry/skip by state — mirrors the orders/[id] route convention).
 //
@@ -27,6 +29,9 @@ export async function PATCH(
   req: Request,
   { params }: { params: { id: string } }
 ) {
+  const gate = await requireAdmin();
+  if ("response" in gate) return gate.response;
+
   const { id } = params;
   if (typeof id !== "string" || id.length === 0) {
     return NextResponse.json(

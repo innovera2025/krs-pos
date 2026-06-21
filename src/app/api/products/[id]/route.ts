@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth";
 
-// ⚠️ RBAC / auth is NOT enforced here. There is no session yet, so any caller
-// can edit a product. CLIENT DEMO surface, not secured.
-// TODO(production-readiness): real auth/session + server-side RBAC + route
-// middleware (only an authenticated ADMIN may edit products).
+// AUTH (auth Phase 2): admin-only — only an authenticated admin (ADMIN/MANAGER)
+// may edit a product.
 
 type PatchProductBody = {
   name?: unknown;
@@ -21,6 +20,9 @@ export async function PATCH(
   req: Request,
   { params }: { params: { id: string } }
 ) {
+  const gate = await requireAdmin();
+  if ("response" in gate) return gate.response;
+
   const { id } = params;
   if (typeof id !== "string" || id.length === 0) {
     return NextResponse.json(

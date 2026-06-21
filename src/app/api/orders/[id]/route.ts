@@ -8,11 +8,18 @@ import {
   SyncJobStatus,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { requireUser } from "@/lib/auth";
+import { isAdminRole } from "@/lib/authRole";
 
 // domain-no-destructive-delete: orders are NEVER deleted — only status
 // transitions. There is intentionally NO DELETE handler on this route.
-// TODO(production-readiness): auth + audit (who/when) + idempotency. The route is
-// currently open (no session) and a double-fire refund/void is not idempotent.
+//
+// AUTH (auth Phase 2): PER-ACTION RBAC. Any authenticated active session may
+// reach this route (requireUser). "request-tax" stays at requireUser (a cashier
+// may request a tax invoice). "refund" and "void" additionally require an admin
+// (ADMIN/MANAGER) — a cashier attempting either gets a 403 FORBIDDEN.
+// TODO(production-readiness): audit (who/when) + idempotency — a double-fire
+// refund/void is not yet idempotent.
 
 const ORDER_DETAIL_INCLUDE = {
   items: { include: { product: true } },
@@ -45,6 +52,12 @@ export async function PATCH(
   req: Request,
   { params }: { params: { id: string } }
 ) {
+  // Any active session may reach this route; refund/void are additionally
+  // restricted to admins below (after the action is parsed).
+  const gate = await requireUser();
+  if ("response" in gate) return gate.response;
+  const { session } = gate;
+
   const { id } = params;
   if (typeof id !== "string" || id.length === 0) {
     return NextResponse.json(
@@ -71,6 +84,18 @@ export async function PATCH(
         code: "BAD_ACTION",
       },
       { status: 400 }
+    );
+  }
+
+  // AUTH (auth Phase 2): refund/void are admin-only money/ledger reversals. A
+  // cashier may reach "request-tax" but not refund or void — block with 403.
+  if (
+    (action === "refund" || action === "void") &&
+    !isAdminRole(session.user.role)
+  ) {
+    return NextResponse.json(
+      { error: "ต้องเป็นผู้ดูแลระบบ", code: "FORBIDDEN" },
+      { status: 403 }
     );
   }
 

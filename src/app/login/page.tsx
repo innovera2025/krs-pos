@@ -103,10 +103,22 @@ function LoginForm() {
       });
 
       if (!res || res.error) {
-        // authorize() returns null for BOTH wrong credentials AND an inactive
-        // user (we intentionally don't distinguish, to avoid account
-        // enumeration) → a single generic message.
-        setFormError("อีเมลหรือรหัสผ่านไม่ถูกต้อง · Invalid email or password");
+        // auth Phase 2: a rate-limit lockout throws CredentialsSignin("RATE_LIMITED")
+        // server-side; Auth.js surfaces it as `res.code === "RATE_LIMITED"`. Show a
+        // distinct "try again later" message in that case.
+        const isRateLimited =
+          typeof res?.code === "string" &&
+          res.code.toUpperCase().includes("RATE_LIMITED");
+        if (isRateLimited) {
+          setFormError(
+            "พยายามเข้าสู่ระบบมากเกินไป ลองใหม่ภายหลัง · Too many attempts, try again later"
+          );
+        } else {
+          // authorize() returns null for BOTH wrong credentials AND an inactive
+          // user (we intentionally don't distinguish, to avoid account
+          // enumeration) → a single generic message.
+          setFormError("อีเมลหรือรหัสผ่านไม่ถูกต้อง · Invalid email or password");
+        }
         setIsSubmitting(false);
         return;
       }

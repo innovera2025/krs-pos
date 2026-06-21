@@ -3,6 +3,7 @@ import { Prisma, OrderStatus, PaymentType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { bangkokYyyymmdd, bangkokDayWindow } from "@/lib/datetime";
 import { methodLabel } from "@/components/pos/paymentMeta";
+import { requireUser } from "@/lib/auth";
 
 // Shift lifecycle + Z-report (Phase 5: flow-shift-lifecycle, screen-shift-close).
 //
@@ -10,8 +11,11 @@ import { methodLabel } from "@/components/pos/paymentMeta";
 // satang) and serialized as a String via `.toFixed(2)` — never `Number()` — to
 // avoid float drift across many bills (Decimal→String, matching the Phase 3
 // precedent). The full end-to-end Decimal recompute is production-readiness.
-// TODO(production-readiness): auth (only an authenticated cashier/manager may
-// open/close), audit trail, and idempotency on open/close.
+//
+// AUTH (auth Phase 2): requireUser on BOTH GET and POST — the shift screen is
+// available to both roles (a cashier opens/closes their own shift), so any
+// authenticated active session is the correct gate (NOT admin).
+// TODO(production-readiness): audit trail and idempotency on open/close.
 
 /** Convert a Prisma Decimal | string | number to integer satang. */
 function toSatang(v: Prisma.Decimal | string | number | null | undefined): number {
@@ -156,6 +160,9 @@ async function buildZReport(shiftId: string, openingFloatSatang: number) {
 // Z-report aggregates for that shift. Returns { shift, zReport } or
 // { shift: null, zReport: null } when no shift has ever been opened.
 export async function GET() {
+  const gate = await requireUser();
+  if ("response" in gate) return gate.response;
+
   try {
     const shift =
       (await prisma.shift.findFirst({
@@ -216,6 +223,9 @@ async function nextShiftNumber(now: Date): Promise<string> {
 //     the open shift CLOSED with closedAt + countedCash, returns the daily
 //     summary number DS-YYYYMMDD.
 export async function POST(req: Request) {
+  const gate = await requireUser();
+  if ("response" in gate) return gate.response;
+
   let body: ShiftPostBody;
   try {
     body = (await req.json()) as ShiftPostBody;
