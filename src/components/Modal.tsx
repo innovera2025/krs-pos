@@ -11,6 +11,31 @@ type ModalProps = {
 };
 
 /**
+ * Module-level stack of currently-open Modal tokens (most-recently-opened last).
+ * Each open Modal pushes its own stable token on open and removes it on
+ * close/unmount; the Escape handler only fires for the token at the TOP of the
+ * stack, so a single Escape closes just the front-most dialog (stacked-escape
+ * fix). A unique-object token survives StrictMode double-invoke without needing
+ * identity beyond `===`, and removal is by value so cleanup order is irrelevant.
+ */
+const modalStack: object[] = [];
+
+function pushModal(token: object) {
+  // Guard against a duplicate push (e.g. an effect re-run) so the stack never
+  // holds the same token twice and removal stays unambiguous.
+  if (!modalStack.includes(token)) modalStack.push(token);
+}
+
+function removeModal(token: object) {
+  const i = modalStack.indexOf(token);
+  if (i !== -1) modalStack.splice(i, 1);
+}
+
+function isTopModal(token: object) {
+  return modalStack.length > 0 && modalStack[modalStack.length - 1] === token;
+}
+
+/**
  * Shared modal primitive.
  *
  * - Backdrop click closes; the inner panel stops click propagation so clicks
@@ -23,6 +48,8 @@ type ModalProps = {
 export function Modal({ open, onClose, label, children }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
+  // Stable per-instance token for the open-modal stack (stacked-escape fix).
+  const stackToken = useRef<object>({});
 
   // Effect A — depends on [open] ONLY so it never re-runs (and never yanks focus
   // back to the first focusable) when a parent passes a fresh onClose closure on
@@ -73,14 +100,25 @@ export function Modal({ open, onClose, label, children }: ModalProps) {
 
   // Effect B — the Escape listener lives separately with deps [open, onClose] so
   // a fresh onClose closure only re-adds/removes this lightweight listener; it
-  // never re-runs the focus/scroll-lock effect above.
+  // never re-runs the focus/scroll-lock effect above. This Modal registers on the
+  // module-level stack while open and only honors Escape when it is the top-most
+  // open Modal, so a single Escape over stacked modals closes just the front one
+  // (stacked-escape fix). Stack membership is cleaned up on close/unmount.
   useEffect(() => {
     if (!open) return;
+    const token = stackToken.current;
+    pushModal(token);
     const onEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      if (!isTopModal(token)) return; // a lower modal must not also close
+      e.stopPropagation();
+      onClose();
     };
     document.addEventListener("keydown", onEscape);
-    return () => document.removeEventListener("keydown", onEscape);
+    return () => {
+      document.removeEventListener("keydown", onEscape);
+      removeModal(token);
+    };
   }, [open, onClose]);
 
   if (!open) return null;

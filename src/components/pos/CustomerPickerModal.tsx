@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { UserRound } from "lucide-react";
+import { UserRound, UserRoundPlus, Pencil } from "lucide-react";
 import { Modal } from "@/components/Modal";
 import type { CustomerDTO } from "@/types";
 
@@ -13,6 +13,15 @@ type CustomerPickerModalProps = {
   onPickWalkIn: () => void;
   /** Close without changing the selection (close-customer-picker / X / Escape). */
   onClose: () => void;
+  /** Open the add-customer form (Phase 4 4c) so a tax customer can be added mid-sale. */
+  onAddCustomer: () => void;
+  /** Open the edit-customer form pre-filled with this row (Phase 4 4c). */
+  onEditCustomer: (customer: CustomerDTO) => void;
+  /**
+   * Bumped by the parent after a successful create/edit to force a re-fetch so
+   * the freshly added/changed customer appears without re-opening the picker.
+   */
+  refreshSignal: number;
 };
 
 type FetchState = "idle" | "loading" | "ready" | "error";
@@ -45,16 +54,25 @@ export function CustomerPickerModal({
   onPick,
   onPickWalkIn,
   onClose,
+  onAddCustomer,
+  onEditCustomer,
+  refreshSignal,
 }: CustomerPickerModalProps) {
   const [query, setQuery] = useState("");
   const [customers, setCustomers] = useState<CustomerDTO[]>([]);
   const [state, setState] = useState<FetchState>("idle");
 
-  // Fetch the customer list once per open. Reset query on open so a re-open is
-  // a fresh search.
+  // Reset the query on open so a re-open is a fresh search (kept separate from the
+  // fetch effect, which also re-runs on a refreshSignal bump where the query
+  // should be preserved).
+  useEffect(() => {
+    if (open) setQuery("");
+  }, [open]);
+
+  // Fetch the customer list on open AND whenever the parent bumps refreshSignal
+  // (after a create/edit) so a freshly added/changed customer appears in place.
   useEffect(() => {
     if (!open) return;
-    setQuery("");
     const ctrl = new AbortController();
     setState("loading");
     fetch("/api/customers", { signal: ctrl.signal })
@@ -72,7 +90,7 @@ export function CustomerPickerModal({
         setState("error");
       });
     return () => ctrl.abort();
-  }, [open]);
+  }, [open, refreshSignal]);
 
   // Client-side filter: case-insensitive substring on name OR taxId.
   const q = query.trim().toLowerCase();
@@ -92,7 +110,19 @@ export function CustomerPickerModal({
       >
         {/* Header + search */}
         <div className="border-b px-[18px] py-4" style={{ borderColor: "#f1f5f9" }}>
-          <div className="text-[15px] font-bold">เลือกลูกค้า · Select customer</div>
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[15px] font-bold">เลือกลูกค้า · Select customer</div>
+            {/* Add a tax customer mid-sale (Phase 4 4c). */}
+            <button
+              type="button"
+              onClick={onAddCustomer}
+              className="flex h-9 flex-shrink-0 items-center gap-1.5 rounded-[10px] px-3 text-[12.5px] font-bold text-white transition"
+              style={{ background: "var(--brand)" }}
+            >
+              <UserRoundPlus size={16} strokeWidth={2.2} />
+              เพิ่มลูกค้า
+            </button>
+          </div>
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -161,43 +191,60 @@ export function CustomerPickerModal({
                 : c.phone
                   ? c.phone
                   : "สมาชิก · ไม่มีเลขภาษี";
+              // The row is a flex container (not a single button) so the per-row
+              // edit affordance can be its own button — a button nested in a
+              // button is invalid HTML.
               return (
-                <button
+                <div
                   key={c.id}
-                  type="button"
-                  onClick={() => onPick(c)}
-                  className="flex w-full items-center gap-3 rounded-[11px] p-3 text-left transition hover:bg-[#f1f5f9]"
+                  className="group flex items-center gap-1 rounded-[11px] transition hover:bg-[#f1f5f9]"
                 >
-                  <span
-                    className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full text-[13px] font-semibold"
-                    style={{ background: "#e0e7ff", color: "#4338ca" }}
+                  <button
+                    type="button"
+                    onClick={() => onPick(c)}
+                    className="flex min-w-0 flex-1 items-center gap-3 rounded-[11px] p-3 text-left"
                   >
-                    {initialsFor(c.name)}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[14px] font-semibold">
-                      {c.name}
-                    </span>
                     <span
-                      className="mono block truncate text-[11.5px]"
-                      style={{ color: "var(--soft)" }}
+                      className="grid h-10 w-10 flex-shrink-0 place-items-center rounded-full text-[13px] font-semibold"
+                      style={{ background: "#e0e7ff", color: "#4338ca" }}
                     >
-                      {sub}
+                      {initialsFor(c.name)}
                     </span>
-                  </span>
-                  {taxOk && (
-                    <span
-                      className="flex-shrink-0 rounded-md px-2 py-[3px] text-[10px] font-semibold"
-                      style={{
-                        background: "#eff6ff",
-                        color: "#2563eb",
-                        border: "1px solid #bfdbfe",
-                      }}
-                    >
-                      มีข้อมูลภาษี
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[14px] font-semibold">
+                        {c.name}
+                      </span>
+                      <span
+                        className="mono block truncate text-[11.5px]"
+                        style={{ color: "var(--soft)" }}
+                      >
+                        {sub}
+                      </span>
                     </span>
-                  )}
-                </button>
+                    {taxOk && (
+                      <span
+                        className="flex-shrink-0 rounded-md px-2 py-[3px] text-[10px] font-semibold"
+                        style={{
+                          background: "#eff6ff",
+                          color: "#2563eb",
+                          border: "1px solid #bfdbfe",
+                        }}
+                      >
+                        มีข้อมูลภาษี
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onEditCustomer(c)}
+                    aria-label={`แก้ไข ${c.name}`}
+                    title="แก้ไขลูกค้า · Edit"
+                    className="mr-1.5 grid h-9 w-9 flex-shrink-0 place-items-center rounded-[10px] border transition hover:bg-white"
+                    style={{ borderColor: "var(--line)", color: "var(--muted)" }}
+                  >
+                    <Pencil size={15} strokeWidth={2} />
+                  </button>
+                </div>
               );
             })}
         </div>

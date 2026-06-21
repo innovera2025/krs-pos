@@ -26,6 +26,10 @@ import { CartLine } from "@/components/pos/CartLine";
 import { TotalsBar } from "@/components/pos/TotalsBar";
 import { PaymentModal } from "@/components/pos/PaymentModal";
 import { CustomerPickerModal } from "@/components/pos/CustomerPickerModal";
+import {
+  CustomerFormModal,
+  type CustomerFormInput,
+} from "@/components/pos/CustomerFormModal";
 import { ReceiptModal } from "@/components/pos/ReceiptModal";
 import { methodToEnum } from "@/components/pos/paymentMeta";
 
@@ -77,6 +81,16 @@ export default function POSPage() {
   const [customer, setCustomer] = useState<CustomerDTO | null>(null);
   const [taxRequested, setTaxRequested] = useState(false);
   const [custPickerOpen, setCustPickerOpen] = useState(false);
+
+  // ---- add/edit-customer form (Phase 4 tax-invoice 4c) ----
+  // The form modal is opened FROM the picker (add button or per-row pencil). On a
+  // successful create/edit, `custRefreshSignal` is bumped to make the picker
+  // re-fetch so the new/changed row appears; a create also auto-selects it.
+  const [custFormOpen, setCustFormOpen] = useState(false);
+  const [custEditing, setCustEditing] = useState<CustomerDTO | null>(null);
+  const [custFormSubmitting, setCustFormSubmitting] = useState(false);
+  const [custFormError, setCustFormError] = useState("");
+  const [custRefreshSignal, setCustRefreshSignal] = useState(0);
 
   // ---- payment modal state (owned here so closePayment can preserve payLines) ----
   const [payOpen, setPayOpen] = useState(false);
@@ -293,6 +307,110 @@ export default function POSPage() {
     setCustomer(null);
     setTaxRequested(false);
     setCustPickerOpen(false);
+  }
+
+  // ---- add/edit-customer (Phase 4 tax-invoice 4c) ----
+  // Open the form in ADD mode (no editing row) from the picker's "เพิ่มลูกค้า".
+  function openAddCustomer() {
+    setCustEditing(null);
+    setCustFormError("");
+    setCustFormOpen(true);
+  }
+
+  // Open the form in EDIT mode pre-filled from a picker row.
+  function openEditCustomer(c: CustomerDTO) {
+    setCustEditing(c);
+    setCustFormError("");
+    setCustFormOpen(true);
+  }
+
+  function closeCustomerForm() {
+    if (custFormSubmitting) return;
+    setCustFormOpen(false);
+    setCustFormError("");
+  }
+
+  // POST (create) or PATCH (edit) the customer, then refresh the picker. On a
+  // create, auto-select the new customer (and apply the tax gate via pickCustomer)
+  // so the cashier can immediately request a tax invoice for it. The server
+  // re-validates and owns TAXID_TAKEN/VALIDATION/NOT_FOUND.
+  async function submitCustomerForm(input: CustomerFormInput) {
+    const editingId = custEditing?.id ?? null;
+    setCustFormSubmitting(true);
+    setCustFormError("");
+
+    // PATCH (edit) vs POST (create) build the payload differently:
+    //  - EDIT: send the optional keys UNCONDITIONALLY so the server can CLEAR
+    //    them. The server schema transforms "" → null for taxId/address/phone
+    //    (clearing the column), so omitting an emptied field (the old behavior)
+    //    would silently keep the stale value. buyerBranchCode can't be "" (fails
+    //    the 5-digit rule) so an empty branch sends the HQ default "00000".
+    //  - CREATE: omit empty optionals (defaulting to null/"00000" server-side).
+    const payload: Record<string, string> = { name: input.name };
+    if (editingId) {
+      payload.taxId = input.taxId;
+      payload.address = input.address;
+      payload.phone = input.phone;
+      payload.buyerBranchCode =
+        input.buyerBranchCode.length > 0 ? input.buyerBranchCode : "00000";
+    } else {
+      if (input.taxId.length > 0) payload.taxId = input.taxId;
+      if (input.address.length > 0) payload.address = input.address;
+      if (input.phone.length > 0) payload.phone = input.phone;
+      if (input.buyerBranchCode.length > 0)
+        payload.buyerBranchCode = input.buyerBranchCode;
+    }
+
+    try {
+      const res = await fetch(
+        editingId ? `/api/customers/${editingId}` : "/api/customers",
+        {
+          method: editingId ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }
+      );
+
+      if (!res.ok) {
+        let code = "";
+        try {
+          const body = (await res.json()) as { code?: string };
+          code = body?.code ?? "";
+        } catch {
+          /* non-JSON error body — fall through to the generic message */
+        }
+        const message =
+          code === "TAXID_TAKEN"
+            ? "เลขผู้เสียภาษีนี้ถูกใช้งานแล้ว"
+            : code === "VALIDATION"
+              ? "ข้อมูลไม่ถูกต้อง ตรวจสอบเลขภาษี/รหัสสาขาอีกครั้ง"
+              : code === "NOT_FOUND"
+                ? "ไม่พบลูกค้ารายนี้ (อาจถูกลบไปแล้ว)"
+                : "บันทึกลูกค้าไม่สำเร็จ ลองใหม่อีกครั้ง";
+        setCustFormError(message);
+        return;
+      }
+
+      const saved = (await res.json()) as CustomerDTO;
+      setCustFormOpen(false);
+      // Make the picker re-fetch so the new/edited row is reflected.
+      setCustRefreshSignal((n) => n + 1);
+
+      if (editingId) {
+        // Edit: if the currently-selected customer was the one edited, refresh the
+        // selection (and re-apply the tax gate in case its taxId changed).
+        if (customer?.id === editingId) pickCustomer(saved);
+        showToast("บันทึกการแก้ไขลูกค้าแล้ว · Customer updated");
+      } else {
+        // Create: auto-select the new customer so the sale continues with it.
+        pickCustomer(saved);
+        showToast("เพิ่มลูกค้าแล้ว · Customer added");
+      }
+    } catch {
+      setCustFormError("เชื่อมต่อไม่สำเร็จ ลองใหม่อีกครั้ง");
+    } finally {
+      setCustFormSubmitting(false);
+    }
   }
 
   function toggleTax() {
@@ -795,12 +913,25 @@ export default function POSPage() {
         />
       </aside>
 
-      {/* Customer picker (Phase 6a) */}
+      {/* Customer picker (Phase 6a) + add/edit affordances (Phase 4 4c) */}
       <CustomerPickerModal
         open={custPickerOpen}
         onPick={pickCustomer}
         onPickWalkIn={pickWalkIn}
         onClose={() => setCustPickerOpen(false)}
+        onAddCustomer={openAddCustomer}
+        onEditCustomer={openEditCustomer}
+        refreshSignal={custRefreshSignal}
+      />
+
+      {/* Add / edit-customer form (Phase 4 tax-invoice 4c) */}
+      <CustomerFormModal
+        open={custFormOpen}
+        editing={custEditing}
+        submitting={custFormSubmitting}
+        error={custFormError}
+        onClose={closeCustomerForm}
+        onSubmit={submitCustomerForm}
       />
 
       {/* Payment modal (Phase 3 + Phase 6a tax toggle) */}
