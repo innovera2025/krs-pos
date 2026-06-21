@@ -21,6 +21,22 @@ services:
       timeout: 5s
       retries: 5
 
+  # One-shot migration runner. Builds the `migrate` Dockerfile target (full deps +
+  # prisma CLI) and runs `prisma migrate deploy` once, then exits 0. The app service
+  # waits for this to complete successfully before it starts.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrate
+    container_name: krs-pos-migrate
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+
   app:
     build:
       context: .
@@ -30,13 +46,32 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # Start only after migrations have been applied (migrate exits 0).
+      migrate:
+        condition: service_completed_successfully
     environment:
       # Inside compose this must point at host `db`, e.g.
       # postgresql://krs_app:PASSWORD@db:5432/krs_pos?schema=public
       DATABASE_URL: ${DATABASE_URL}
       NODE_ENV: production
+      # REQUIRED: Auth.js session-signing secret. Without it src/lib/env.ts throws at
+      # boot and the container never becomes healthy. Supplied from the git-ignored .env.
+      AUTH_SECRET: ${AUTH_SECRET}
+      # Behind a reverse proxy without an explicit AUTH_URL, trust the forwarded host
+      # header so Auth.js builds correct callback/redirect URLs. Defaults to true here.
+      AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
+      # Optional explicit base-URL override (e.g. http://localhost:3000). Empty = unset
+      # → Auth.js infers it (or relies on AUTH_TRUST_HOST).
+      AUTH_URL: ${AUTH_URL:-}
     ports:
       - "3000:3000"
+    # Cap container resources so a single app can't starve the host. The Compose
+    # Spec honors `deploy.resources.limits` under plain `docker compose up`.
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
     # Liveness + DB-readiness probe. Hits GET /api/health (public), which runs a
     # `SELECT 1` and returns 503 when Postgres is unreachable — so the container is
     # marked unhealthy on a booted-but-broken app, not just a crashed process.
