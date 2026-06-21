@@ -6,6 +6,10 @@ import type { OrderDTO } from "@/types";
 import { money } from "@/lib/money";
 import { methodLabel } from "./paymentMeta";
 import { FauxQR } from "./FauxQR";
+// Dynamic sync badge (GAP 2): the same {label/en/bg/fg/dot} metadata Sales
+// History uses, so the receipt reflects the bill's REAL syncStatus instead of a
+// hardcoded "Queued" state.
+import { syncMeta } from "@/components/sales/saleMeta";
 
 type ReceiptModalProps = {
   open: boolean;
@@ -63,6 +67,10 @@ export function ReceiptModal({
   // fresh P3 receipts have accountingDocNo === null → keep the placeholder.
   const acctNo = order.accountingDocNo ?? "— รอออกเอกสาร —";
   const acctColor = order.accountingDocNo ? "#0f172a" : "var(--soft)";
+  // Dynamic sync badge (GAP 2): reflect the bill's real syncStatus (PENDING /
+  // DAILY / SYNCED / FAILED / SKIPPED) instead of a hardcoded "Queued" state. A
+  // fresh sale is PENDING (the badge then reads "รอส่ง · Pending").
+  const sy = syncMeta(order.syncStatus);
 
   // display-receipt-payment-fallback: reprinted/seeded bills may arrive without
   // persisted payment lines. Fall back to a single line derived from the order's
@@ -207,6 +215,14 @@ export function ReceiptModal({
                 ข้อมูลผู้เสียภาษี
               </div>
               <div style={{ fontFamily: "var(--font-sans)" }}>{order.customer.name}</div>
+              {/* Customer address (GAP 1) — the billing/tax address ("ที่อยู่ออก
+                  ใบกำกับ") from the Simple POS IA; rendered when the customer has
+                  one (older/walk-in members may not). */}
+              {order.customer.address && (
+                <div style={{ fontFamily: "var(--font-sans)" }}>
+                  {order.customer.address}
+                </div>
+              )}
               <div>TIN {order.customer.taxId}</div>
             </div>
           )}
@@ -236,21 +252,22 @@ export function ReceiptModal({
             </div>
           </div>
 
-          {/* Sync badge (display-receipt-sync-badge) — placeholder; real sync is Phase 6 */}
+          {/* Sync badge (display-receipt-sync-badge) — DYNAMIC (GAP 2): driven by
+              order.syncStatus via the shared syncMeta, matching Sales History. */}
           <div
             className="mt-[18px] flex items-center gap-2.5 rounded-[12px] border px-3.5 py-3"
-            style={{ background: "#eff6ff", borderColor: "#bfdbfe" }}
+            style={{ background: sy.bg, borderColor: sy.fg + "33" }}
           >
             <span
               className="h-[9px] w-[9px] flex-shrink-0 rounded-full"
-              style={{ background: "#2563eb" }}
+              style={{ background: sy.dot }}
             />
             <div className="flex-1">
-              <div className="text-[13px] font-semibold" style={{ color: "#1e40af" }}>
-                กำลังส่งเข้า KRS
+              <div className="text-[13px] font-semibold" style={{ color: sy.fg }}>
+                {sy.label}
               </div>
-              <div className="text-[11px]" style={{ color: "#1e40af", opacity: 0.75 }}>
-                Queued — INSERT to KRS
+              <div className="text-[11px]" style={{ color: sy.fg, opacity: 0.75 }}>
+                {sy.en}
               </div>
             </div>
           </div>

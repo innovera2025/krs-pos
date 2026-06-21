@@ -51,6 +51,52 @@ const EnvSchema = z.object({
   // behind a reverse proxy WITHOUT an explicit AUTH_URL. Documented in .env.example;
   // not validated as required.
   AUTH_TRUST_HOST: z.string().optional(),
+
+  // --- Seller identity for the Thai full tax invoice (Phase 4, owner decision
+  // D2: ENV-based). ALL OPTIONAL at boot — a deploy that never issues a tax
+  // invoice (and CI/e2e) must still boot, so these are NOT fail-fast required
+  // here. SHAPE is validated when present; issue-time enforcement (a 422
+  // SELLER_NOT_CONFIGURED when SELLER_TAX_ID/NAME/ADDRESS are unset) happens in
+  // the request-tax route, not at boot. NEVER put a real/fabricated TIN in
+  // .env.example — only a CHANGE_ME placeholder.
+  //
+  // SELLER_TAX_ID — the seller's 13-digit Revenue-Department TIN. When set it
+  // must be EXACTLY 13 digits (the §86/4 mandatory particular). When unset, the
+  // request-tax route refuses to mint a number.
+  SELLER_TAX_ID: z
+    .string()
+    .regex(/^\d{13}$/, "SELLER_TAX_ID must be exactly 13 digits")
+    .optional(),
+  // SELLER_NAME — the seller's registered legal name (§86/4 particular). Length
+  // cap (FIX 6) mirrors the shape-validation rigor of SELLER_TAX_ID/BRANCH_CODE —
+  // a runaway value is a misconfiguration, not a legal name.
+  SELLER_NAME: z
+    .string()
+    .min(1)
+    .max(200, "SELLER_NAME must be at most 200 characters")
+    .optional(),
+  // SELLER_ADDRESS — the seller's registered address (§86/4 particular). Length
+  // cap (FIX 6) bounds the env-sourced value.
+  SELLER_ADDRESS: z
+    .string()
+    .min(1)
+    .max(300, "SELLER_ADDRESS must be at most 300 characters")
+    .optional(),
+  // SELLER_BRANCH_CODE — the seller's 5-digit RD branch designation. "00000" =
+  // สำนักงานใหญ่ (head office). When set it must be exactly 5 digits. Defaulted
+  // to HQ in sellerConfig when unset (HQ is the safe single-branch default).
+  SELLER_BRANCH_CODE: z
+    .string()
+    .regex(/^\d{5}$/, "SELLER_BRANCH_CODE must be exactly 5 digits")
+    .optional(),
+  // SELLER_BRANCH_LABEL — the human branch label (e.g. "สำนักงานใหญ่" or
+  // "สาขาสีลม"). Free text; defaulted in sellerConfig when unset. Length cap
+  // (FIX 6) bounds the env-sourced value.
+  SELLER_BRANCH_LABEL: z
+    .string()
+    .min(1)
+    .max(100, "SELLER_BRANCH_LABEL must be at most 100 characters")
+    .optional(),
 });
 
 function loadEnv(): z.infer<typeof EnvSchema> {
@@ -70,6 +116,14 @@ function loadEnv(): z.infer<typeof EnvSchema> {
         ) ?? "development",
       AUTH_URL: process.env.AUTH_URL,
       AUTH_TRUST_HOST: process.env.AUTH_TRUST_HOST,
+      // Seller identity (Phase 4) — passed through unvalidated during the build
+      // phase (no tax invoice is issued at build time); real shape validation +
+      // issue-time enforcement happen at runtime.
+      SELLER_TAX_ID: process.env.SELLER_TAX_ID,
+      SELLER_NAME: process.env.SELLER_NAME,
+      SELLER_ADDRESS: process.env.SELLER_ADDRESS,
+      SELLER_BRANCH_CODE: process.env.SELLER_BRANCH_CODE,
+      SELLER_BRANCH_LABEL: process.env.SELLER_BRANCH_LABEL,
     };
   }
 

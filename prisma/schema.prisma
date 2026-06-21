@@ -21,6 +21,12 @@ model Customer {
   taxId     String?  @unique
   phone     String?
   address   String?
+  // Buyer's RD branch designation for a full §86/4 tax invoice (Phase 4). The
+  // 5-digit Revenue-Department branch code — "00000" = สำนักงานใหญ่ (head
+  // office), "00001"+ = สาขาที่ N. Distinct from `branchId` below (which is the
+  // SELLER's internal branch). Required on a full tax invoice so the buyer can
+  // claim input VAT; defaults to HQ for the common single-branch buyer.
+  buyerBranchCode String @default("00000")
   // Multi-branch-ready data model (domain-multi-branch-ready) — single-branch
   // deployments use the BR-01 default.
   branchId  String   @default("BR-01")
@@ -223,9 +229,19 @@ model Order {
   // field exists now so the seed can express synced/daily/failed/skipped states
   // and the void-lock rule (domain-synced-bills-locked) can be enforced.
   syncStatus   SyncStatus  @default(PENDING)
-  // Accounting document number (TAX-…, CN-…). Issued by the accounting layer
-  // (Phase 6); held here so seeded/synced bills can display their doc number.
-  accountingDocNo String?
+  // Accounting document number (TAX-…, CN-…). The sequential §86/4 tax-invoice
+  // number is minted LOCALLY at request-tax time (Phase 4, D1) and written here.
+  // @unique is a DB backstop (FIX 5) against any duplicate doc number — pairs with
+  // the in-tx conditional mint guard (FIX 2). Nullable: Postgres allows many NULLs
+  // under a unique index, so unrequested bills (and the single seeded value) are
+  // fine.
+  accountingDocNo String?     @unique
+  // Tax-invoice ISSUE date (§86/4(7), FIX 1). Stamped at request-tax time from the
+  // SAME Postgres-now / Asia/Bangkok basis as the number mint — this is the date
+  // the invoice was ISSUED, which for a post-sale request differs from
+  // `createdAt` (the SALE date). The A4 document renders this; legacy rows
+  // (null) fall back to createdAt.
+  taxIssuedAt  DateTime?
   // Whether a tax invoice was requested for this bill (filter chip ขอใบกำกับ).
   taxRequested Boolean     @default(false)
   items        OrderItem[]
@@ -248,6 +264,20 @@ model DailyOrderCounter {
   // "YYYYMMDD" in Asia/Bangkok (matches bangkokDayStamp / bangkokYyyymmdd).
   day String @id
   seq Int    @default(0)
+}
+
+// Sequential tax-invoice number counter (Phase 4 — Thai full §86/4 invoice). One
+// row per Asia/Bangkok calendar YEAR; `seq` is bumped atomically at request-tax
+// time via a raw `INSERT ... ON CONFLICT (year) DO UPDATE SET seq = seq + 1
+// RETURNING seq` upsert — race-free, mirroring DailyOrderCounter. Yearly reset
+// (D5): the issued number is `TAX-${year}-${seq padded to 6}` (matches the seed
+// `TAX-2026-000418`). Minted INSIDE the request-tax transaction so a rolled-back
+// request does not consume a tax-invoice number. The §86/4(4) serial requirement
+// (strict ascending, no reuse) is satisfied by the atomic per-year sequence.
+model TaxInvoiceCounter {
+  // "YYYY" in Asia/Bangkok (derived from the Postgres transaction clock).
+  year String @id
+  seq  Int    @default(0)
 }
 
 enum OrderStatus {

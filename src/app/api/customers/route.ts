@@ -52,6 +52,9 @@ export async function GET(req: Request) {
           taxId: true,
           phone: true,
           address: true,
+          // Buyer RD branch designation (Phase 4) — part of the CustomerDTO shape
+          // so a picked customer carries it for the full §86/4 tax invoice.
+          buyerBranchCode: true,
           branchId: true,
         },
         orderBy: { name: "asc" },

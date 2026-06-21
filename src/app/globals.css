@@ -158,7 +158,13 @@ textarea:focus-visible,
 
 /* 80mm thermal receipt print isolation (domain-receipt-80mm).
    Hide everything except the .print-receipt paper, then pin it full-bleed at
-   72mm so a thermal printer / PDF renders only the receipt. */
+   72mm so a thermal printer / PDF renders only the receipt.
+
+   Scoping: the DEFAULT @page is 80mm (the common case — a normal sale receipt).
+   The A4 full tax invoice (Phase 4) toggles `body.printing-tax-invoice` while its
+   modal is open; that body class overrides @page to A4 portrait and isolates the
+   .print-tax-invoice paper instead. Only one print modal is open at a time, so
+   the two paths never collide. */
 @media print {
   @page {
     size: 80mm auto;
@@ -178,5 +184,46 @@ textarea:focus-visible,
   }
   .no-print {
     display: none;
+  }
+}
+
+/* A4 full tax invoice print isolation (Phase 4 — Thai §86/4 full tax invoice,
+   owner decision D4: a SEPARATE A4 document). Active only while the tax-invoice
+   modal is open (body.printing-tax-invoice). Renders ONLY the A4 invoice on an
+   A4-portrait page box, isolated from the 80mm thermal path above.
+
+   FIX 7 — reliable A4 page sizing. The `page` property on `body` does NOT
+   reliably switch the page box in Chromium (per CSS Paged Media, the named-page
+   association is honored on the element that actually generates the page box, not
+   reliably when set on `body`). So the named page `tax-invoice` is assigned to
+   the printed `.print-tax-invoice` ELEMENT itself — that element generates the
+   page box, so `@page tax-invoice { size: A4 portrait }` governs it. The default
+   `@page { size: 80mm auto }` (above) still governs the 80mm `.print-receipt`
+   path; the two are isolated by the `body.printing-tax-invoice` scope and the
+   fact that only one print modal is ever open at a time. */
+@media print {
+  @page tax-invoice {
+    size: A4 portrait;
+    margin: 0;
+  }
+  body.printing-tax-invoice .print-receipt,
+  body.printing-tax-invoice .print-receipt * {
+    /* A receipt modal is never open at the same time, but be explicit. */
+    visibility: hidden;
+  }
+  body.printing-tax-invoice .print-tax-invoice,
+  body.printing-tax-invoice .print-tax-invoice * {
+    visibility: visible;
+  }
+  body.printing-tax-invoice .print-tax-invoice {
+    /* Assign the named A4 page to the element that generates the page box (FIX 7)
+       — this is what makes @page tax-invoice's A4 size reliably apply. */
+    page: tax-invoice;
+    position: fixed;
+    inset: 0;
+    width: 210mm;
+    /* Let the content flow across A4 pages for a long line-item list. */
+    height: auto;
+    margin: 0;
   }
 }

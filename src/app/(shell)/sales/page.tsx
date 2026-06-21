@@ -7,8 +7,9 @@ import { ReceiptModal } from "@/components/pos/ReceiptModal";
 import { SalesTable } from "@/components/sales/SalesTable";
 import { FilterChips } from "@/components/sales/FilterChips";
 import { SaleDetailDrawer } from "@/components/sales/SaleDetailDrawer";
+import { TaxInvoiceDocument } from "@/components/sales/TaxInvoiceDocument";
 import { matchesFilter, type SalesFilter } from "@/components/sales/saleMeta";
-import type { OrderDTO } from "@/types";
+import type { OrderDTO, SellerConfigDTO } from "@/types";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -29,6 +30,12 @@ export default function SalesPage() {
   const [receiptOrder, setReceiptOrder] = useState<OrderDTO | null>(null);
   const [receiptOpen, setReceiptOpen] = useState(false);
 
+  // Tax-invoice A4 document (Phase 4). The seller block is fetched once from
+  // /api/seller-config (env-based, D2); null = seller not configured.
+  const [taxInvoiceOrder, setTaxInvoiceOrder] = useState<OrderDTO | null>(null);
+  const [taxInvoiceOpen, setTaxInvoiceOpen] = useState(false);
+  const [seller, setSeller] = useState<SellerConfigDTO | null>(null);
+
   async function loadOrders() {
     setLoadState("loading");
     try {
@@ -44,6 +51,19 @@ export default function SalesPage() {
 
   useEffect(() => {
     loadOrders();
+    // Seller identity for the A4 tax invoice (D2). Best-effort: a failure leaves
+    // `seller` null, which the print flow surfaces as a clear toast (it never
+    // blocks the rest of Sales History).
+    (async () => {
+      try {
+        const res = await fetch("/api/seller-config");
+        if (!res.ok) return;
+        const data = (await res.json()) as { seller: SellerConfigDTO | null };
+        setSeller(data.seller ?? null);
+      } catch {
+        /* leave seller null; print-tax-invoice will toast SELLER_NOT_CONFIGURED */
+      }
+    })();
   }, []);
 
   // Filter by chip + search (posNo/customer), mirroring Simple POS salesRows.
@@ -149,6 +169,31 @@ export default function SalesPage() {
     setReceiptOrder(null);
   }
 
+  // ---- print/reprint the A4 full tax invoice (Phase 4) ----
+  // Renders the §86/4 TaxInvoiceDocument from STORED order/customer fields. Only
+  // a bill that already carries a minted accountingDocNo reaches this (the drawer
+  // gates the button), and the seller block must be configured (D2).
+  function printTaxInvoice(order: OrderDTO) {
+    if (!order.accountingDocNo) {
+      showToast("ยังไม่ได้ออกใบกำกับภาษีสำหรับบิลนี้");
+      return;
+    }
+    if (!seller) {
+      showToast(
+        "ยังไม่ได้ตั้งค่าข้อมูลผู้ขายสำหรับออกใบกำกับภาษี · Seller not configured"
+      );
+      return;
+    }
+    setTaxInvoiceOrder(order);
+    setTaxInvoiceOpen(true);
+    setDetail(null);
+  }
+
+  function closeTaxInvoice() {
+    setTaxInvoiceOpen(false);
+    setTaxInvoiceOrder(null);
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 p-[22px]">
       {/* Header */}
@@ -249,6 +294,7 @@ export default function SalesPage() {
         onVoid={(o) => patchOrder(o, "void")}
         onRequestTax={requestTax}
         onPrint={reprint}
+        onPrintTaxInvoice={printTaxInvoice}
       />
 
       {/* Reprint receipt (action-print-from-history). onNewSale closes the modal. */}
@@ -258,6 +304,17 @@ export default function SalesPage() {
         onPrint={() => window.print()}
         onEmail={() => showToast("ส่งลิงก์ใบเสร็จแล้ว")}
         onNewSale={closeReceipt}
+      />
+
+      {/* A4 full tax invoice (Phase 4). Reprint-only: renders from stored fields +
+          the env seller block. window.print() isolates the .print-tax-invoice
+          paper (A4 portrait) via the @media print rules in globals.css. */}
+      <TaxInvoiceDocument
+        open={taxInvoiceOpen}
+        order={taxInvoiceOrder}
+        seller={seller}
+        onClose={closeTaxInvoice}
+        onPrint={() => window.print()}
       />
     </div>
   );

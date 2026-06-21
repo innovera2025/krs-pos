@@ -13,6 +13,11 @@ import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
 import { isAdminRole } from "@/lib/authRole";
 import { logAudit, ipFromHeaders } from "@/lib/auditLog";
+// Phase 4 — Thai full §86/4 tax invoice. Seller identity (D2, issue-time
+// enforcement) + the pure number formatter. The sequential number is minted
+// LOCALLY at request-tax time (D1) and written into Order.accountingDocNo.
+import { getSellerConfig } from "@/lib/sellerConfig";
+import { formatTaxInvoiceNumber } from "@/lib/datetime";
 // Shared wire serializer (FIX 1): PATCH responses must emit the SAME 2dp string
 // money fields as GET/POST. Returning a raw Prisma record let Decimal.toJSON()
 // drop trailing zeros ("65.00" -> "65"), corrupting the Sales-History row after a
@@ -46,6 +51,59 @@ const ORDER_DETAIL_INCLUDE = {
 
 type PatchOrderBody = { action?: unknown };
 
+/**
+ * Mint the next sequential tax-invoice number (Phase 4 — Thai full §86/4
+ * invoice, owner decision D1: LOCAL number source). Mirrors `nextOrderNumber`
+ * in the checkout route: a RAW `INSERT ... ON CONFLICT (year) DO UPDATE SET
+ * seq = seq + 1 RETURNING year, seq` upsert against TaxInvoiceCounter — atomic
+ * in a single statement (Prisma's non-raw `upsert` is find-then-write and races
+ * on the first insert of the year). The calendar YEAR is derived INSIDE the
+ * upsert from the Postgres transaction clock at Asia/Bangkok
+ * (`to_char(now() AT TIME ZONE 'Asia/Bangkok', 'YYYY')`), NOT a JS clock, so the
+ * year prefix agrees with the DB and can't straddle the Bangkok New-Year window.
+ *
+ * Runs INSIDE the request-tax transaction so a rolled-back request does NOT
+ * consume a number (§86/4(4) serial requirement: strict ascending, no reuse).
+ * Defensive on a malformed/empty result so a corrupt number can never be issued.
+ *
+ * Also RETURNs the Postgres transaction-clock instant (`issuedAt`) from the SAME
+ * statement (FIX 1 — §86/4(7) issue date). Reusing `now()` here means the printed
+ * issue date and the year-prefix of the number share ONE DB clock, so they can't
+ * straddle the Bangkok New-Year window or drift from a JS clock.
+ */
+async function nextTaxInvoiceNumber(
+  tx: Prisma.TransactionClient
+): Promise<{ docNo: string; issuedAt: Date }> {
+  const rows = await tx.$queryRaw<
+    { year: string; seq: number; issued_at: Date }[]
+  >`
+    INSERT INTO "TaxInvoiceCounter" ("year", "seq")
+    VALUES (to_char((now() AT TIME ZONE 'Asia/Bangkok'), 'YYYY'), 1)
+    ON CONFLICT ("year")
+    DO UPDATE SET "seq" = "TaxInvoiceCounter"."seq" + 1
+    RETURNING "year", "seq", now() AS "issued_at"
+  `;
+  const row = rows[0];
+  const year = row?.year;
+  const seq = row?.seq;
+  const issuedAt = row?.issued_at;
+  if (typeof year !== "string" || year.length === 0) {
+    // Defensive: the upsert always returns exactly one row with the year key.
+    // Never trust an empty/malformed result — it would corrupt the doc number.
+    throw new Error("TaxInvoiceCounter upsert returned no year");
+  }
+  if (typeof seq !== "number" || !Number.isFinite(seq) || seq < 1) {
+    // Defensive: the counter starts at 1; a seq < 1 would yield TAX-YYYY-000000.
+    throw new Error("TaxInvoiceCounter upsert returned no sequence");
+  }
+  if (!(issuedAt instanceof Date) || Number.isNaN(issuedAt.getTime())) {
+    // Defensive: `now()` always returns a valid timestamptz; never stamp a bad
+    // issue date onto a legal document.
+    throw new Error("TaxInvoiceCounter upsert returned no issued-at instant");
+  }
+  return { docNo: formatTaxInvoiceNumber(year, seq), issuedAt };
+}
+
 // PATCH /api/orders/[id] — refund or void a sale (append-only status transition).
 //
 //   { action: "refund" } — requires status COMPLETED (else 409 INVALID_STATE);
@@ -57,13 +115,20 @@ type PatchOrderBody = { action?: unknown };
 //     syncStatus !== SYNCED (else 409 VOID_SYNCED_LOCKED, domain-synced-bills-
 //     locked). Sets status VOIDED, total 0, tax 0, syncStatus SKIPPED.
 //
-//   { action: "request-tax" } (Phase 6a) — requires status COMPLETED (else 409
-//     INVALID_STATE; a REFUNDED/VOIDED bill must not enqueue a tax invoice) AND
-//     the order to have a customerId whose Customer has a non-empty taxId (else
-//     422 TAX_REQUIRES_TAX_CUSTOMER, domain-tax-invoice-requires-tax-customer).
-//     In one $transaction it sets order.taxRequested = true and creates a PENDING
-//     TAX_INVOICE SyncJob (direction INSERT, ref = orderNumber, amount = total).
-//     accountingDocNo is NOT issued now — it returns async on a future KRS sync.
+//   { action: "request-tax" } (Phase 6a; LOCAL numbering added Phase 4) —
+//     requires status COMPLETED (else 409 INVALID_STATE; a REFUNDED/VOIDED bill
+//     must not issue a tax invoice) AND the order to have a customerId whose
+//     Customer has a non-empty taxId (else 422 TAX_REQUIRES_TAX_CUSTOMER,
+//     domain-tax-invoice-requires-tax-customer). Idempotent: a bill that already
+//     has taxRequested === true returns 409 ALREADY_REQUESTED (no second mint, no
+//     second SyncJob). Before minting, the seller identity must be configured
+//     (SELLER_TAX_ID/NAME/ADDRESS) else 422 SELLER_NOT_CONFIGURED. Phase 4 (D1):
+//     the sequential §86/4 tax-invoice number is minted LOCALLY at this point —
+//     in one $transaction it atomically bumps TaxInvoiceCounter, writes the
+//     formatted number to Order.accountingDocNo, sets taxRequested = true, and
+//     creates a PENDING TAX_INVOICE SyncJob (direction INSERT, ref = orderNumber,
+//     amount = total). The KRS SyncJob is kept for reporting but the printable
+//     number no longer depends on a future sync.
 export async function PATCH(
   req: Request,
   { params }: { params: { id: string } }
@@ -134,6 +199,9 @@ export async function PATCH(
           orderNumber: true,
           status: true,
           total: true,
+          // Idempotency (Phase 4): a bill already flagged must not re-mint a
+          // number or enqueue a second SyncJob.
+          taxRequested: true,
           customer: { select: { id: true, taxId: true } },
         },
       });
@@ -144,8 +212,22 @@ export async function PATCH(
         );
       }
 
+      // Idempotency guard (Phase 4a). A double request-tax (double-click / retry)
+      // must NOT enqueue a second SyncJob or re-mint a second tax-invoice number.
+      // Checked BEFORE the COMPLETED/customer gates and BEFORE minting so a repeat
+      // request is a clean 409, never a duplicate document.
+      if (existing.taxRequested) {
+        return NextResponse.json(
+          {
+            error: "บิลนี้ขอใบกำกับภาษีไปแล้ว",
+            code: "ALREADY_REQUESTED",
+          },
+          { status: 409 }
+        );
+      }
+
       // Only a COMPLETED bill can request a tax invoice — a refunded/voided bill
-      // retains its customerId but must not enqueue a TAX_INVOICE SyncJob.
+      // retains its customerId but must not issue a tax invoice.
       if (existing.status !== OrderStatus.COMPLETED) {
         return NextResponse.json(
           {
@@ -170,13 +252,56 @@ export async function PATCH(
         );
       }
 
-      // One transaction: flag the order + enqueue a PENDING TAX_INVOICE SyncJob.
-      // accountingDocNo is intentionally left untouched — it is issued async on a
-      // future KRS sync (production-readiness / 6b).
+      // Seller identity gate (Phase 4b, owner decision D2: issue-time
+      // enforcement). A full §86/4 invoice MUST carry the seller's name, address,
+      // and 13-digit TIN. If those env vars are unset, refuse to mint a number —
+      // BEFORE consuming a sequence — with a clear 422 so the operator configures
+      // the seller instead of issuing a non-compliant (or gap-creating) invoice.
+      const seller = getSellerConfig();
+      if (!seller) {
+        return NextResponse.json(
+          {
+            error:
+              "ยังไม่ได้ตั้งค่าข้อมูลผู้ขาย (เลขประจำตัวผู้เสียภาษี/ชื่อ/ที่อยู่) สำหรับออกใบกำกับภาษี",
+            code: "SELLER_NOT_CONFIGURED",
+          },
+          { status: 422 }
+        );
+      }
+
+      // One transaction (Phase 4 — LOCAL numbering, D1 + FIX 2 double-mint race).
+      // The pre-tx ALREADY_REQUESTED check above only read a snapshot, so two
+      // concurrent request-tax calls could both pass it and both mint (duplicate
+      // tax-invoice number + 2 SyncJobs + overwrite). The REAL guard is the
+      // CONDITIONAL transition INSIDE the tx (mirrors the refund/void double-fire
+      // guard): an `updateMany WHERE status=COMPLETED AND taxRequested=false` that
+      // must match exactly ONE row. The mint runs ONLY on the winning path, AFTER
+      // the conditional flip succeeds — so the loser matches 0 rows and rolls back
+      // having consumed NO sequence and created NO second SyncJob. The mint itself
+      // also runs inside the tx, so a rolled-back request never consumes a number.
       const updated = await prisma.$transaction(async (tx) => {
+        // CONDITIONAL transition (FIX 2). Flip taxRequested false → true only if
+        // the bill is still COMPLETED and not yet requested. count !== 1 means a
+        // concurrent request already won (or the bill left COMPLETED) — throw to
+        // roll back (no sequence consumed, no SyncJob created).
+        const transition = await tx.order.updateMany({
+          where: {
+            id,
+            status: OrderStatus.COMPLETED,
+            taxRequested: false,
+          },
+          data: { taxRequested: true },
+        });
+        if (transition.count !== 1) {
+          throw new TaxAlreadyRequestedError();
+        }
+
+        // Winner only: mint the sequential number + the §86/4(7) issue date from
+        // ONE Postgres-now / Asia/Bangkok basis, then stamp them onto the order.
+        const { docNo, issuedAt } = await nextTaxInvoiceNumber(tx);
         const order = await tx.order.update({
           where: { id },
-          data: { taxRequested: true },
+          data: { accountingDocNo: docNo, taxIssuedAt: issuedAt },
           include: ORDER_DETAIL_INCLUDE,
         });
         await tx.syncJob.create({
@@ -197,6 +322,19 @@ export async function PATCH(
       );
       return NextResponse.json(serializeOrder(updated));
     } catch (err) {
+      // Lost the conditional-transition race (FIX 2): a concurrent request-tax
+      // already flipped the bill. Return the SAME 409 ALREADY_REQUESTED a
+      // sequential second request gets — the tx rolled back, so NO sequence was
+      // consumed and NO second SyncJob exists.
+      if (err instanceof TaxAlreadyRequestedError) {
+        return NextResponse.json(
+          {
+            error: "บิลนี้ขอใบกำกับภาษีไปแล้ว",
+            code: "ALREADY_REQUESTED",
+          },
+          { status: 409 }
+        );
+      }
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&
         err.code === "P2025"
@@ -447,5 +585,20 @@ class VoidSyncedLockedError extends Error {
   constructor() {
     super("Order was synced before the void committed");
     this.name = "VoidSyncedLockedError";
+  }
+}
+
+/**
+ * Thrown inside the request-tax transaction when the conditional taxRequested
+ * transition (`updateMany WHERE status === COMPLETED AND taxRequested === false`)
+ * matches 0 rows — i.e. a concurrent request-tax already flipped the bill
+ * (double-mint race, FIX 2). Maps to a 409 ALREADY_REQUESTED, rolling back the
+ * would-be sequence consumption + second SyncJob so no duplicate tax-invoice
+ * number is ever issued.
+ */
+class TaxAlreadyRequestedError extends Error {
+  constructor() {
+    super("Tax invoice was already requested for this order");
+    this.name = "TaxAlreadyRequestedError";
   }
 }

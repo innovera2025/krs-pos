@@ -118,7 +118,24 @@ export type CustomerDTO = {
   taxId?: string | null;
   phone?: string | null;
   address?: string | null;
+  // Buyer's RD branch designation for a full §86/4 tax invoice (Phase 4). 5-digit
+  // RD branch code — "00000" = สำนักงานใหญ่. Defaulted to HQ in the schema.
+  buyerBranchCode: string;
   branchId: string;
+};
+
+/**
+ * Seller identity block for the A4 full tax invoice (Phase 4, §86/4). Mirrors
+ * `SellerConfig` in src/lib/sellerConfig.ts (which reads it from env, NODE-only).
+ * Declared here so the client document + the GET /api/seller-config fetch share
+ * one shape without importing the NODE-only env module into the client bundle.
+ */
+export type SellerConfigDTO = {
+  name: string;
+  address: string;
+  taxId: string;
+  branchCode: string;
+  branchLabel: string;
 };
 
 /** The order object returned by the orders API — drives the receipt + history. */
@@ -136,6 +153,10 @@ export type OrderDTO = {
   // Phase 5 fields (sales history / sync / tax-invoice filter).
   syncStatus: SyncStatus;
   accountingDocNo?: string | null;
+  // Tax-invoice ISSUE date (§86/4(7), FIX 1) — ISO string, serialized like other
+  // dates via the Date → toJSON() pass in serializeOrder. Null for bills with no
+  // tax invoice and legacy pre-FIX-1 rows; the A4 document falls back to createdAt.
+  taxIssuedAt?: string | null;
   taxRequested: boolean;
   shiftId?: string | null;
   // Phase 6a — customer linkage (null/undefined = walk-in / ลูกค้าทั่วไป).

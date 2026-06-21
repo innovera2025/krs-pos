@@ -22,6 +22,12 @@ type SaleDetailDrawerProps = {
   /** Request a tax invoice (action-request-tax-invoice). Phase 6a. */
   onRequestTax: (order: OrderDTO) => void;
   onPrint: (order: OrderDTO) => void;
+  /**
+   * Print/reprint the A4 full tax invoice (Phase 4). Enabled only when the bill
+   * already has a minted `accountingDocNo` (a tax invoice was issued). Renders
+   * the §86/4 TaxInvoiceDocument from STORED order/customer fields.
+   */
+  onPrintTaxInvoice: (order: OrderDTO) => void;
 };
 
 /**
@@ -46,6 +52,7 @@ export function SaleDetailDrawer({
   onVoid,
   onRequestTax,
   onPrint,
+  onPrintTaxInvoice,
 }: SaleDetailDrawerProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
@@ -120,11 +127,24 @@ export function SaleDetailDrawer({
   // customer). Walk-in / no-tax-customer / non-COMPLETED bills keep the button
   // disabled (mirrors the route's 409 INVALID_STATE + 422 gates).
   const customerName = order.customer?.name ?? WALK_IN_LABEL;
-  const canTax =
+  // Whether the bill has a tax-eligible customer (COMPLETED + customer w/ taxId).
+  // Drives the walk-in warning note independently of `canTax` so an already-issued
+  // bill (taxRequested) doesn't wrongly show the "ลูกค้าทั่วไป" note.
+  const hasTaxCustomer =
     order.status === "COMPLETED" &&
     order.customer != null &&
     typeof order.customer.taxId === "string" &&
     order.customer.taxId.trim().length > 0;
+  // Phase 4a: the "ขอใบกำกับภาษี" button is enabled only when the bill is
+  // tax-eligible AND a tax invoice has NOT already been requested (`!taxRequested`,
+  // mirroring the Simple POS `!x.tax` gate + the route's 409 ALREADY_REQUESTED).
+  const canTax = hasTaxCustomer && !order.taxRequested;
+  // A tax invoice has already been issued for this bill → enable the reprint
+  // action and skip the request-tax button (it would 409 ALREADY_REQUESTED).
+  const hasTaxInvoice =
+    order.taxRequested &&
+    typeof order.accountingDocNo === "string" &&
+    order.accountingDocNo.trim().length > 0;
 
   return (
     <div
@@ -206,7 +226,11 @@ export function SaleDetailDrawer({
             </div>
           </div>
 
-          {!canTax ? (
+          {/* Walk-in / no-tax-customer note — shown only when the bill is NOT
+              tax-eligible AND has not already been issued an invoice (so a bill
+              that already has a tax invoice shows neither this note nor the
+              request button — only the reprint action below). */}
+          {!hasTaxCustomer && !hasTaxInvoice ? (
             <div
               className="mt-4 rounded-[11px] border px-[13px] py-[11px] text-[12px]"
               style={{ background: "#fffbeb", borderColor: "#fde68a", color: "#a16207" }}
@@ -221,23 +245,42 @@ export function SaleDetailDrawer({
           className="flex flex-col gap-[9px] border-t px-[22px] py-4"
           style={{ borderColor: "#f1f5f9" }}
         >
-          {/* ขอใบกำกับภาษี — enabled only when the bill has a tax customer
-              (canTax). Walk-in / no-tax-customer bills keep it disabled with the
-              warning note shown above. */}
-          <button
-            type="button"
-            onClick={() => onRequestTax(order)}
-            disabled={!canTax || busy}
-            title={
-              canTax
-                ? "ขอใบกำกับภาษี"
-                : "ลูกค้าทั่วไป — ต้องระบุข้อมูลภาษีก่อน"
-            }
-            className="flex h-[46px] items-center justify-center gap-2 rounded-[11px] text-[13.5px] font-bold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:opacity-50"
-            style={{ background: "#2563eb" }}
-          >
-            ขอใบกำกับภาษี · Request tax invoice
-          </button>
+          {/* ขอใบกำกับภาษี — enabled only when the bill has a tax customer and a
+              tax invoice has NOT already been requested (canTax). Walk-in /
+              no-tax-customer bills keep it disabled with the warning note above.
+              Once a tax invoice IS issued this button is replaced by the reprint
+              action below (a second request would 409 ALREADY_REQUESTED). */}
+          {!hasTaxInvoice && (
+            <button
+              type="button"
+              onClick={() => onRequestTax(order)}
+              disabled={!canTax || busy}
+              title={
+                canTax
+                  ? "ขอใบกำกับภาษี"
+                  : "ลูกค้าทั่วไป — ต้องระบุข้อมูลภาษีก่อน"
+              }
+              className="flex h-[46px] items-center justify-center gap-2 rounded-[11px] text-[13.5px] font-bold text-white transition hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:opacity-50"
+              style={{ background: "#2563eb" }}
+            >
+              ขอใบกำกับภาษี · Request tax invoice
+            </button>
+          )}
+
+          {/* พิมพ์ใบกำกับภาษี — reprint the A4 full §86/4 invoice. Shown only when
+              the bill already carries a minted accountingDocNo (a tax invoice was
+              issued). Renders the TaxInvoiceDocument from STORED fields only. */}
+          {hasTaxInvoice && (
+            <button
+              type="button"
+              onClick={() => onPrintTaxInvoice(order)}
+              className="flex h-[46px] items-center justify-center gap-2 rounded-[11px] text-[13.5px] font-bold text-white transition hover:bg-[#1d4ed8]"
+              style={{ background: "#2563eb" }}
+            >
+              <Printer size={16} strokeWidth={2} />
+              พิมพ์ใบกำกับภาษี · Print tax invoice
+            </button>
+          )}
 
           {(canRefund || canVoid) && (
             <div className="flex gap-[9px]">

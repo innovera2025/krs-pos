@@ -59,6 +59,18 @@ export function formatOrderNumber(day: string, seq: number): string {
 }
 
 /**
+ * Format the sequential tax-invoice number from a Bangkok calendar YEAR and an
+ * atomic per-year sequence: `TAX-YYYY-NNNNNN` with the sequence zero-padded to 6
+ * (Phase 4 — Thai full §86/4 invoice, owner decision D5). Matches the seeded
+ * `TAX-2026-000418`. Pure — lives here (not in the route file) because a Next.js
+ * route may only export route handlers; the year is fed from the Postgres
+ * transaction clock at request-tax time (mirroring formatOrderNumber's day).
+ */
+export function formatTaxInvoiceNumber(year: string, seq: number): string {
+  return `TAX-${year}-${String(seq).padStart(6, "0")}`;
+}
+
+/**
  * The UTC instant window [start, nextDay) covering the Asia/Bangkok calendar day
  * of `now`. UTC = Bangkok − 7h.
  */
