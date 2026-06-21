@@ -15,6 +15,10 @@ FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate
+# `next build` needs no runtime secrets: src/lib/env.ts skips its fail-fast during
+# the build phase (NEXT_PHASE=phase-production-build), and the build runs no DB
+# query. The runner stage below receives the REAL DATABASE_URL/AUTH_SECRET from the
+# container env at runtime, where env.ts DOES fail-fast on a missing/invalid value.
 RUN npm run build
 
 # ---- Runner (production) ----

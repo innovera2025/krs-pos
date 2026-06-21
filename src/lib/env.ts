@@ -53,6 +53,25 @@ const EnvSchema = z.object({
 });
 
 function loadEnv(): z.infer<typeof EnvSchema> {
+  // `next build` imports server modules (prisma/auth) for page-data collection, but
+  // the build does NO DB query and signs NO session — runtime secrets aren't needed
+  // then. Skip the fail-fast during the Next build phase so the production image can
+  // build WITHOUT baking in (or faking) DATABASE_URL/AUTH_SECRET. The guard still
+  // runs at real server boot (NEXT_PHASE is unset / != build), so a misconfigured
+  // RUNTIME still fails fast. No fake secret literal lives here (values default to "").
+  if (process.env.NEXT_PHASE === "phase-production-build") {
+    return {
+      DATABASE_URL: process.env.DATABASE_URL ?? "",
+      AUTH_SECRET: process.env.AUTH_SECRET ?? "",
+      NODE_ENV:
+        (["development", "test", "production"] as const).find(
+          (m) => m === process.env.NODE_ENV
+        ) ?? "development",
+      AUTH_URL: process.env.AUTH_URL,
+      AUTH_TRUST_HOST: process.env.AUTH_TRUST_HOST,
+    };
+  }
+
   const parsed = EnvSchema.safeParse(process.env);
   if (!parsed.success) {
     // Build a single, readable message listing every offending variable so an
