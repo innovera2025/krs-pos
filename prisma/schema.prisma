@@ -82,6 +82,24 @@ enum SyncJobStatus {
   SKIPPED
 }
 
+// Store-level settings singleton (Receipt print-size feature). Exactly ONE row
+// (`id @default("singleton")`) holds the admin-configurable thermal-receipt page
+// size: `receiptWidthMm` (40–120, preset 58/80 + free input), and the height
+// either AUTO (`receiptHeightAuto = true`, the today/default behavior matching
+// `@page { size: 80mm auto }`) or a FIXED `receiptHeightMm` (50–400). When
+// `receiptHeightAuto` is true `receiptHeightMm` is forced NULL by the API. Seller
+// identity stays in ENV (sellerConfig.ts) and is intentionally NOT migrated here;
+// the nullable slots keep the model extensible for future store settings without
+// touching seller config.
+model ShopSettings {
+  id                String   @id @default("singleton")
+  receiptWidthMm    Int      @default(80)
+  receiptHeightAuto Boolean  @default(true)
+  receiptHeightMm   Int?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique

@@ -267,3 +267,19 @@ export type ShiftResponse = {
   shift: ShiftDTO | null;
   zReport: ZReportDTO | null;
 };
+
+/**
+ * Store-level receipt print-size settings (Receipt print-size feature). Mirrors
+ * the `ShopSettings` singleton's receipt fields. Shared by GET /api/settings (read
+ * by the cashier to size the printed receipt) and PATCH /api/settings (admin save)
+ * and the Settings screen, so the client never imports the NODE-only Zod schema.
+ *
+ * `receiptWidthMm` is bounded 40–120 by the API; when `receiptHeightAuto` is true
+ * `receiptHeightMm` is null (height = `auto`), otherwise it is the fixed mm value
+ * (50–400). The print path computes the @page size from this shape.
+ */
+export type ShopSettingsDTO = {
+  receiptWidthMm: number;
+  receiptHeightAuto: boolean;
+  receiptHeightMm: number | null;
+};

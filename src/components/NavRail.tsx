@@ -12,6 +12,7 @@ import {
   Package,
   UsersRound,
   FileText,
+  SlidersHorizontal,
   LogOut,
   type LucideIcon,
 } from "lucide-react";
@@ -37,6 +38,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: "data", label: "การเชื่อมข้อมูล", labelEn: "KRS Data Link", route: "/data", icon: DatabaseZap, badge: true },
   { key: "products", label: "สินค้า/สต็อก", labelEn: "Products", route: "/products", icon: Package },
   { key: "users", label: "จัดการผู้ใช้", labelEn: "Users & Roles", route: "/users", icon: UsersRound },
+  { key: "settings", label: "ตั้งค่าร้านค้า", labelEn: "Shop Settings", route: "/settings", icon: SlidersHorizontal },
   { key: "docs", label: "เอกสารดีไซน์", labelEn: "Design Spec", route: "/docs", icon: FileText },
 ];
 
@@ -45,8 +47,9 @@ const NAV_ITEMS: NavItem[] = [
  *
  * Items are filtered by the SESSION role (rolegate-seller-vs-admin) via
  * `canAccess`. A seller sees only pos/sales/shift; an admin (ADMIN or MANAGER)
- * sees all 7. The bottom slot is now a real LOGOUT button (the former DEMO role
- * toggle is removed — the role comes from the Auth.js session).
+ * sees all admin items (incl. settings/docs). The bottom slot is now a real
+ * LOGOUT button (the former DEMO role toggle is removed — the role comes from the
+ * Auth.js session).
  *
  * ⚠️ The client role filter is UX only. The real enforcement is server-side:
  * middleware (`authorized`) redirects unauthorized navigations and the API

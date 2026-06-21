@@ -9,7 +9,8 @@ import { FilterChips } from "@/components/sales/FilterChips";
 import { SaleDetailDrawer } from "@/components/sales/SaleDetailDrawer";
 import { TaxInvoiceDocument } from "@/components/sales/TaxInvoiceDocument";
 import { matchesFilter, type SalesFilter } from "@/components/sales/saleMeta";
-import type { OrderDTO, SellerConfigDTO } from "@/types";
+import { printReceiptWithSize } from "@/lib/receiptPrint";
+import type { OrderDTO, SellerConfigDTO, ShopSettingsDTO } from "@/types";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -26,9 +27,16 @@ export default function SalesPage() {
   // refund/void request in flight (disables the drawer's action buttons).
   const [actionBusy, setActionBusy] = useState(false);
 
-  // Reprint (action-print-from-history) reuses the 80mm ReceiptModal.
+  // Reprint (action-print-from-history) reuses the thermal ReceiptModal.
   const [receiptOrder, setReceiptOrder] = useState<OrderDTO | null>(null);
   const [receiptOpen, setReceiptOpen] = useState(false);
+
+  // Receipt print-size settings (Receipt print-size feature). Fetched once on
+  // mount so the reprint path applies the admin-configured size; null until
+  // resolved → the thermal reprint falls back to the globals.css 80mm default.
+  const [receiptSettings, setReceiptSettings] = useState<ShopSettingsDTO | null>(
+    null
+  );
 
   // Tax-invoice A4 document (Phase 4). The seller block is fetched once from
   // /api/seller-config (env-based, D2); null = seller not configured.
@@ -62,6 +70,18 @@ export default function SalesPage() {
         setSeller(data.seller ?? null);
       } catch {
         /* leave seller null; print-tax-invoice will toast SELLER_NOT_CONFIGURED */
+      }
+    })();
+    // Receipt print-size settings (Receipt print-size feature). Best-effort: a
+    // failure leaves settings null → the thermal reprint uses the 80mm default.
+    (async () => {
+      try {
+        const res = await fetch("/api/settings");
+        if (!res.ok) return;
+        const data = (await res.json()) as { settings: ShopSettingsDTO };
+        setReceiptSettings(data.settings);
+      } catch {
+        /* leave settings null → globals.css 80mm fallback */
       }
     })();
   }, []);
@@ -297,11 +317,13 @@ export default function SalesPage() {
         onPrintTaxInvoice={printTaxInvoice}
       />
 
-      {/* Reprint receipt (action-print-from-history). onNewSale closes the modal. */}
+      {/* Reprint receipt (action-print-from-history). onNewSale closes the modal.
+          Uses the admin-configured receipt size (Receipt print-size feature);
+          falls back to the globals.css 80mm default until settings load. */}
       <ReceiptModal
         open={receiptOpen}
         order={receiptOrder}
-        onPrint={() => window.print()}
+        onPrint={() => printReceiptWithSize(receiptSettings)}
         onEmail={() => showToast("ส่งลิงก์ใบเสร็จแล้ว")}
         onNewSale={closeReceipt}
       />

@@ -8,6 +8,19 @@ const prisma = new PrismaClient();
 const BCRYPT_COST = 12;
 
 async function main() {
+  // ShopSettings singleton (Receipt print-size feature). Upsert the single
+  // `id: "singleton"` row with schema defaults (80mm width, height AUTO) so the
+  // receipt page-size settings always exist after a seed. Defaults match today's
+  // `@page { size: 80mm auto }` behavior → no behavior change. The GET /api/settings
+  // route also upserts-on-read, so the app works even before a seed runs; this
+  // makes the row explicit in a freshly seeded DB. Idempotent: re-running is a
+  // no-op on the existing row (update:{}).
+  await prisma.shopSettings.upsert({
+    where: { id: "singleton" },
+    update: {},
+    create: { id: "singleton" },
+  });
+
   // Categories — 4 categories matching the Taste catalog
   // (drink / food / dessert / goods). The UI maps these names to slugs+icons.
   const drink = await prisma.category.upsert({

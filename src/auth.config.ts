@@ -26,6 +26,7 @@ const PROTECTED_PREFIXES = [
   "/data",
   "/products",
   "/users",
+  "/settings",
   "/docs",
 ];
 
@@ -64,7 +65,7 @@ export const authConfig: NextAuthConfig = {
      * - Always allow non-protected paths (/login, /api/auth/*, assets are
      *   excluded by the matcher, but this is belt-and-braces).
      * - Require a signed-in user for any protected (shell) prefix.
-     * - For admin-only nav areas (data/products/users/docs) additionally require
+     * - For admin-only nav areas (data/products/users/settings/docs) additionally require
      *   the mapped role to satisfy NAV_ACCESS; a seller hitting an admin route is
      *   redirected to /pos (a route they can access) instead of /login.
      */

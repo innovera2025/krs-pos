@@ -11,8 +11,10 @@ import type {
   PayLine,
   PayMethod,
   OrderDTO,
+  ShopSettingsDTO,
 } from "@/types";
 import { useToast } from "@/components/ToastProvider";
+import { printReceiptWithSize } from "@/lib/receiptPrint";
 import {
   bahtToSatang,
   computeTotals,
@@ -104,6 +106,14 @@ export default function POSPage() {
   const [receiptOrder, setReceiptOrder] = useState<OrderDTO | null>(null);
   const [receiptOpen, setReceiptOpen] = useState(false);
 
+  // ---- receipt print-size settings (Receipt print-size feature) ----
+  // Fetched once on mount from GET /api/settings (requireUser). null until
+  // resolved; printReceipt() falls back to the globals.css 80mm default while
+  // null, so a slow/failed fetch never blocks printing.
+  const [receiptSettings, setReceiptSettings] = useState<ShopSettingsDTO | null>(
+    null
+  );
+
   const searchRef = useRef<HTMLInputElement>(null);
 
   // ---- checkout idempotency key (Sub-phase C) ----
@@ -144,6 +154,24 @@ export default function POSPage() {
       .catch((err) => {
         if (err?.name === "AbortError" || ctrl.signal.aborted) return;
         setLoadState("error");
+      });
+    return () => ctrl.abort();
+  }, []);
+
+  // Receipt print-size settings (Receipt print-size feature). Fetched once on
+  // mount so the receipt print path can apply the admin-configured size. Errors
+  // are swallowed → receiptSettings stays null → printReceipt() falls back to the
+  // globals.css 80mm default (printing must never break on a settings load).
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetch("/api/settings", { signal: ctrl.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { settings: ShopSettingsDTO } | null) => {
+        if (ctrl.signal.aborted || !data?.settings) return;
+        setReceiptSettings(data.settings);
+      })
+      .catch(() => {
+        /* ignore — leave settings null → 80mm fallback */
       });
     return () => ctrl.abort();
   }, []);
@@ -672,11 +700,10 @@ export default function POSPage() {
   function printReceipt() {
     showToast("กำลังเปิดหน้าต่างพิมพ์ใบเสร็จ");
     setTimeout(() => {
-      try {
-        window.print();
-      } catch {
-        /* printing unavailable in this environment */
-      }
+      // Inject the admin-configured @page size before printing (Receipt print-size
+      // feature). Falls back to the globals.css 80mm default when settings haven't
+      // loaded. The A4 tax-invoice path is untouched.
+      printReceiptWithSize(receiptSettings);
     }, 120);
   }
 
