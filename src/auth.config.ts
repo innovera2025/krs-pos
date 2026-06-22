@@ -18,8 +18,16 @@ import { prismaRoleToAppRole } from "@/lib/authRole";
  * and must never be the only gate.
  */
 
-/** The shell route prefixes that require an authenticated session. */
-const PROTECTED_PREFIXES = [
+/**
+ * The shell route prefixes that require an authenticated session.
+ *
+ * Exported as the single source of truth: the middleware (src/middleware.ts)
+ * reuses this (via navKeyForPath) to enforce the route gate INSIDE its
+ * `auth((req) => …)` callback. In this Auth.js v5 build the callback's returned
+ * NextResponse WINS over the `authorized` callback's `return false`, so the gate
+ * cannot live in `authorized` alone — both stay wired to these same prefixes.
+ */
+export const PROTECTED_PREFIXES = [
   "/pos",
   "/sales",
   "/shift",
@@ -30,7 +38,7 @@ const PROTECTED_PREFIXES = [
 ];
 
 /** Map a (shell) pathname to its NAV_ACCESS key, or null if not a nav route. */
-function navKeyForPath(pathname: string): string | null {
+export function navKeyForPath(pathname: string): string | null {
   for (const prefix of PROTECTED_PREFIXES) {
     if (pathname === prefix || pathname.startsWith(prefix + "/")) {
       return prefix.slice(1); // "/users" → "users"
@@ -60,6 +68,16 @@ export const authConfig: NextAuthConfig = {
 
     /**
      * Middleware route gate (UX redirect only — NOT the security boundary).
+     *
+     * ⚠️ NOTE on the callback wrapper form: middleware.ts uses
+     * `auth((req) => { … return NextResponse.next(); })`. In this Auth.js v5
+     * build the callback's RETURNED NextResponse wins over this `authorized`
+     * result — so when middleware short-circuits with a NextResponse, this
+     * callback's `return false` is NOT applied. The EFFECTIVE gate therefore
+     * lives inside the middleware callback (which reuses navKeyForPath /
+     * canAccess / prismaRoleToAppRole). This `authorized` callback is kept as
+     * correct, belt-and-braces defense-in-depth (e.g. if the wrapper form is
+     * ever removed) — it is intentionally NOT deleted.
      *
      * - Always allow non-protected paths (/login, /api/auth/*, assets are
      *   excluded by the matcher, but this is belt-and-braces).
