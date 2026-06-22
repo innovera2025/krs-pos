@@ -75,7 +75,16 @@ export function NavRail() {
   // break navigation). Re-fetched on mount and whenever DataFlowTab dispatches
   // `krs:sync-jobs-changed`, so the badge clears after a retry/skip.
   const [failedJobCount, setFailedJobCount] = useState(0);
+  // The badge ONLY ever renders on the admin-only `data` item, so gate the whole
+  // fetch + listener behind `canAccess("data", role)` (perf): a seller can never
+  // see the badge, so fetching /api/sync-jobs/failed-count for them is a wasted
+  // request (and a likely 401). For a seller we skip the fetch + listener
+  // entirely; the badge stays at 0/hidden — the same visible result, since a
+  // seller doesn't see `data` anyway. `role` is a dep so the gate re-evaluates if
+  // role resolves after mount (e.g. an admin's session arriving late).
+  const canSeeData = canAccess("data", role);
   useEffect(() => {
+    if (!canSeeData) return;
     let mounted = true;
     // A still-mounted check avoids a setState-after-unmount warning if a fetch
     // resolves after the rail (theoretically) unmounts.
@@ -97,7 +106,7 @@ export function NavRail() {
       mounted = false;
       window.removeEventListener("krs:sync-jobs-changed", loadFailedCount);
     };
-  }, []);
+  }, [canSeeData]);
 
   const visibleItems = NAV_ITEMS.filter((item) => canAccess(item.key, role));
 

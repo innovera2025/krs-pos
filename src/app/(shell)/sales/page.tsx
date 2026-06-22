@@ -58,32 +58,41 @@ export default function SalesPage() {
   }
 
   useEffect(() => {
-    loadOrders();
-    // Seller identity for the A4 tax invoice (D2). Best-effort: a failure leaves
-    // `seller` null, which the print flow surfaces as a clear toast (it never
-    // blocks the rest of Sales History).
-    (async () => {
-      try {
-        const res = await fetch("/api/seller-config");
-        if (!res.ok) return;
-        const data = (await res.json()) as { seller: SellerConfigDTO | null };
-        setSeller(data.seller ?? null);
-      } catch {
-        /* leave seller null; print-tax-invoice will toast SELLER_NOT_CONFIGURED */
-      }
-    })();
-    // Receipt print-size settings (Receipt print-size feature). Best-effort: a
-    // failure leaves settings null → the thermal reprint uses the 80mm default.
-    (async () => {
-      try {
-        const res = await fetch("/api/settings");
-        if (!res.ok) return;
-        const data = (await res.json()) as { settings: ShopSettingsDTO };
-        setReceiptSettings(data.settings);
-      } catch {
-        /* leave settings null → globals.css 80mm fallback */
-      }
-    })();
+    // Batch the three mount fetches into a single Promise.all so they fire
+    // concurrently from one place. loadOrders() ALONE drives loadState
+    // (loading → ready/error); seller-config + settings are BEST-EFFORT siblings
+    // whose failures must never flip loadState to error nor throw out of the
+    // effect — each catches internally and leaves its state null on failure.
+    void Promise.all([
+      // Orders — the primary load. loadOrders() owns loadState and swallows its
+      // own errors into the "error" state (the retry button re-invokes it).
+      loadOrders(),
+      // Seller identity for the A4 tax invoice (D2). Best-effort: a failure leaves
+      // `seller` null, which the print flow surfaces as a clear toast (it never
+      // blocks the rest of Sales History).
+      (async () => {
+        try {
+          const res = await fetch("/api/seller-config");
+          if (!res.ok) return;
+          const data = (await res.json()) as { seller: SellerConfigDTO | null };
+          setSeller(data.seller ?? null);
+        } catch {
+          /* leave seller null; print-tax-invoice will toast SELLER_NOT_CONFIGURED */
+        }
+      })(),
+      // Receipt print-size settings (Receipt print-size feature). Best-effort: a
+      // failure leaves settings null → the thermal reprint uses the 80mm default.
+      (async () => {
+        try {
+          const res = await fetch("/api/settings");
+          if (!res.ok) return;
+          const data = (await res.json()) as { settings: ShopSettingsDTO };
+          setReceiptSettings(data.settings);
+        } catch {
+          /* leave settings null → globals.css 80mm fallback */
+        }
+      })(),
+    ]);
   }, []);
 
   // Filter by chip + search (posNo/customer), mirroring Simple POS salesRows.

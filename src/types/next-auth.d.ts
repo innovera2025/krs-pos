@@ -46,5 +46,13 @@ declare module "@auth/core/jwt" {
      * diverge (an admin bumped tokenVersion).
      */
     tokenVersion?: number;
+    /**
+     * Last time the jwt callback ran the DB liveness re-check (epoch ms, perf
+     * optimization). Used to THROTTLE that re-check to once per
+     * SESSION_REVALIDATE_MS instead of every request. Optional: a token minted
+     * before this field existed has it undefined → treated as "due" so the next
+     * request runs a full check and stamps it.
+     */
+    lastCheckedAt?: number;
   }
 }

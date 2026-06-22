@@ -38,6 +38,30 @@ const LOCKOUT_MS = 15 * 60 * 1000;
 const DUMMY_HASH = bcrypt.hashSync("invalid-password-placeholder", 12);
 
 /**
+ * Session liveness re-validation window (perf optimization). The jwt callback's
+ * per-request DB liveness re-check (deactivation / force-logout via tokenVersion /
+ * role-demotion) used to run a `prisma.user.findUnique` on EVERY authenticated
+ * request — a DB round-trip per request, the app's prime auth hotspot. We now
+ * throttle that re-check to at most once per SESSION_REVALIDATE_MS (~10s, the
+ * owner-chosen value below), caching the last-known role/tokenVersion on the
+ * token between checks.
+ *
+ * Tradeoff (owner-chosen balance for a single-store cash POS): a server-side
+ * liveness change (deactivation, tokenVersion bump / force-logout, role
+ * demotion) now propagates within UP TO SESSION_REVALIDATE_MS (~10s) instead of
+ * instantly — a small, bounded latency traded for removing a DB round-trip from
+ * every request. The owner picked ~10s as the balance between cutting the
+ * per-request DB read and keeping force-logout / deactivation reasonably prompt
+ * on this cash POS. This is safe because (a) sign-in still validates immediately
+ * — `authorize()` already checked isActive and read the live tokenVersion before
+ * the session is minted — and (b) a hard sign-out is still instant (the cookie
+ * is cleared regardless of this window). The window only delays *server-
+ * initiated* revocation of an already-issued token, never grants access that
+ * sign-in itself would refuse.
+ */
+const SESSION_REVALIDATE_MS = 10_000;
+
+/**
  * Auth.js v5 — full (Node-runtime) config (production-readiness Phase 1).
  *
  * Security model (cash POS — highest-stakes surface):
@@ -48,10 +72,12 @@ const DUMMY_HASH = bcrypt.hashSync("invalid-password-placeholder", 12);
  *    signed with AUTH_SECRET.
  *  - `isActive` is enforced TWICE:
  *      1. at sign-in time, in `authorize` (an inactive user cannot log in), and
- *      2. on EVERY request, in the `jwt` callback (re-reads isActive from the DB
- *         by token.sub so a deactivation takes effect promptly despite the JWT
- *         being self-contained — without this, a stolen/old token for a now
- *         deactivated user would stay valid until expiry).
+ *      2. periodically (THROTTLED) in the `jwt` callback — it re-reads isActive
+ *         from the DB by token.sub at most once per SESSION_REVALIDATE_MS so a
+ *         deactivation still takes effect promptly (within that window) despite
+ *         the JWT being self-contained, WITHOUT paying a DB round-trip on every
+ *         request. Without this re-check a stolen/old token for a now-deactivated
+ *         user would stay valid until expiry.
  *
  * Edge-safe callbacks (session/authorized) + pages + session strategy live in
  * src/auth.config.ts so middleware can import them without pulling in Prisma or
@@ -271,28 +297,58 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     /**
      * jwt callback (Node runtime — has DB access).
      *
-     * - On sign-in (`user` present): stamp id + role onto the token.
-     * - On EVERY call: re-read isActive from the DB by token.sub. If the user no
-     *   longer exists or is now inactive, blank out `sub`/`role` so the
-     *   `authorized` callback (which requires `auth.user`) treats the request as
-     *   unauthenticated → the user is redirected to /login on the next protected
-     *   navigation, and API `requireUser` returns 401. This makes deactivation
-     *   take effect promptly even though the JWT itself is self-contained.
+     * - On sign-in (`user` present): stamp id + role + tokenVersion onto the
+     *   token and RETURN immediately — `authorize()` already validated this user
+     *   this turn (isActive + live tokenVersion), so the liveness re-check below
+     *   would be a redundant DB read. We also stamp `lastCheckedAt` so the first
+     *   throttled re-check is scheduled SESSION_REVALIDATE_MS from sign-in.
+     * - On subsequent calls (no `user`): re-read isActive/role/tokenVersion from
+     *   the DB by token.sub, but THROTTLED — at most once per SESSION_REVALIDATE_MS
+     *   (or immediately when Auth.js fires a session `update`). This removes the
+     *   DB round-trip from every request (the prime auth hotspot) while still
+     *   propagating a deactivation / force-logout (tokenVersion bump) / role
+     *   demotion within the window. When the re-check runs and the user no longer
+     *   exists or is inactive, or its tokenVersion is stale, we blank out
+     *   `sub`/`role` so the `authorized` callback (which requires `auth.user`)
+     *   treats the request as unauthenticated → redirect to /login on the next
+     *   protected navigation, and API `requireUser` returns 401.
+     *
+     * Backward compatibility: a token minted before this change has no
+     * `lastCheckedAt` (undefined) → treated as "due" below → a full check runs
+     * and stamps it, so existing sessions self-heal onto the throttled path.
      */
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger }) {
       // Initial sign-in: persist id + role + tokenVersion from the authorize()
-      // result. The stamped tokenVersion is the force-logout baseline.
+      // result. The stamped tokenVersion is the force-logout baseline. authorize()
+      // already validated this user this turn, so SKIP the redundant liveness DB
+      // read and return now; stamp lastCheckedAt to schedule the next re-check.
       if (user) {
         token.sub = user.id;
         token.id = user.id;
         token.role = user.role;
         token.tokenVersion = user.tokenVersion;
+        token.lastCheckedAt = Date.now();
+        return token;
       }
 
-      // Per-request liveness re-check. token.sub is the user id. The same single
-      // query also fetches tokenVersion for the force-logout check (no extra DB
-      // round-trip).
+      // Throttled per-request liveness re-check. Run the DB read ONLY when due:
+      //  - an explicit session `update` trigger (force a fresh read), OR
+      //  - lastCheckedAt is missing / not a number (legacy token → self-heal), OR
+      //  - SESSION_REVALIDATE_MS has elapsed since the last check.
+      // Otherwise trust the cached role/tokenVersion already on the token.
       if (token.sub) {
+        const now = Date.now();
+        const last =
+          typeof token.lastCheckedAt === "number" ? token.lastCheckedAt : null;
+        const due =
+          trigger === "update" ||
+          last === null ||
+          now < last || // wall clock jumped backward (NTP/VM migration) → re-validate now
+          now - last >= SESSION_REVALIDATE_MS;
+        if (!due) return token;
+
+        // Due: re-read. The same single query also fetches tokenVersion for the
+        // force-logout check (no extra DB round-trip).
         const fresh = await prisma.user.findUnique({
           where: { id: token.sub },
           select: { isActive: true, role: true, tokenVersion: true },
@@ -315,8 +371,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           delete token.tokenVersion;
           return token;
         }
-        // Keep the role fresh too (e.g. an admin demotion takes effect promptly).
+        // Keep the role fresh too (e.g. an admin demotion takes effect promptly)
+        // and re-stamp the check time to reschedule the next throttled re-check.
         token.role = fresh.role;
+        token.lastCheckedAt = now;
       }
 
       return token;

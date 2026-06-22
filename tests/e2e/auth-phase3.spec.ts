@@ -130,6 +130,12 @@ test.describe("Auth Phase 3: lockout / force-logout / set-password", () => {
   test("force-logout: admin tokenVersion bump invalidates the user's session", async ({
     browser,
   }) => {
+    // This test intentionally waits out the throttled jwt liveness re-check
+    // window (~10s, SESSION_REVALIDATE_MS) before revocation lands, so raise the
+    // per-test timeout well above the global 30s default — otherwise the poll
+    // below (and the configured single retry) could time out.
+    test.setTimeout(45_000);
+
     // Admin context (seeded admin) creates the user + performs the force-logout.
     const adminPage = await browser.newPage();
     await loginAs(adminPage);
@@ -162,15 +168,27 @@ test.describe("Auth Phase 3: lockout / force-logout / set-password", () => {
       });
       expect(flRes.status(), "PATCH forceLogout").toBe(200);
 
-      // Force-logout is enforced at the DATA boundary: the Node `auth()` jwt
-      // callback re-reads tokenVersion from the DB on every API request, so the
-      // user's stale JWT is now rejected → 401 on any authenticated API. (The
-      // edge middleware is a UX gate only — it does NOT re-read the DB — so the
-      // static page SHELL may still render until the cookie expires; the real
-      // revocation is that every data call/mutation now fails. Page-level
+      // Force-logout is enforced at the DATA boundary, but the Node `auth()` jwt
+      // liveness re-check is THROTTLED to once per ~10s (SESSION_REVALIDATE_MS)
+      // as a perf optimization, so revocation is bounded-eventual, not instant:
+      // the user's stamped tokenVersion is only re-read from the DB on the first
+      // request at/after ~10s from sign-in, at which point the stale JWT is
+      // rejected → 401 on any authenticated API. (The edge middleware is a UX
+      // gate only — it does NOT re-read the DB — so the static page SHELL may
+      // still render until the cookie expires; the real revocation is that every
+      // data call/mutation fails once the throttled re-check lands. Page-level
       // redirect-on-revoke is a documented, deferred enhancement.)
-      const afterFL = await userPage.request.get("/api/orders");
-      expect(afterFL.status(), "force-logout revokes API access").toBe(401);
+      //
+      // Poll until the revocation lands (well within the window + margin).
+      await expect
+        .poll(
+          async () => (await userPage.request.get("/api/orders")).status(),
+          {
+            message: "force-logout revokes API access within the revalidation window",
+            timeout: 15_000,
+          }
+        )
+        .toBe(401);
     } finally {
       await deactivateUser(admin, user.id);
       await userContext.close();

@@ -269,6 +269,16 @@ model Order {
   payments     PaymentLine[]
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
+
+  // Recent-orders sort: GET /api/orders defaults to orderBy { createdAt: desc }
+  // and Sales History lists newest-first — index the sort key.
+  @@index([createdAt])
+  // `?status=` filter + createdAt sort (e.g. COMPLETED-only history/aggregates):
+  // composite so the filter+sort is served by one index.
+  @@index([status, createdAt])
+  // Z-report aggregates a shift's orders by this FK. Postgres does NOT auto-index
+  // foreign keys, so add it explicitly for the per-shift lookup.
+  @@index([shiftId])
 }
 
 // Collision-safe daily POS number sequence (Financial/Inventory correctness,
