@@ -27,6 +27,10 @@ yarn-error.log*
 .env
 .env*.local
 
+# database backups (dumps + globals from scripts/backup.sh — never commit data)
+/backups/
+*.dump
+
 # prisma
 /prisma/*.db
 

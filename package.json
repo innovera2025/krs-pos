@@ -14,7 +14,9 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts",
-    "db:push": "prisma db push"
+    "db:push": "prisma db push",
+    "db:backup": "sh scripts/backup.sh",
+    "db:restore": "sh scripts/restore.sh"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
