@@ -1,10 +1,15 @@
 /**
- * Shared client-state types for the KRS connection simulation (decision B/C).
- * The Connection tab keeps host/port/db/user/ssl/status + session counters in pure
- * React state (no server persistence — real KRS config = production-readiness).
+ * Shared client-state types for the KRS Connection tab.
+ *
+ * As of krs-sync P1 the connection is REAL: the tab loads its config from
+ * GET /api/krs/settings on mount, persists via PATCH, and tests via
+ * POST /api/krs/test-connection. The engine is fixed to SQL Server (the POS now
+ * targets a KRS MS SQL Server, default port 1433). The defaults below are EMPTY /
+ * disconnected — the form is populated by the server on mount, and the status is
+ * "disconnected" until the first real Test Connection.
  */
 
-/** Tri-state connection status (the engine never reaches a real DB). */
+/** Tri-state connection status. "disconnected" is the initial/unknown state. */
 export type DbStatus = "connected" | "disconnected" | "testing";
 
 /** Sync mode option (Field Mapping → SyncMode section). `daily` is the default. */
@@ -14,16 +19,26 @@ export type SyncMode = "realtime" | "daily" | "manual";
 export type StockMethod = "perpetual" | "periodic";
 
 /**
- * The simulated KRS connection config + live stats held on /data. Defaults mirror
- * the Simple POS source-of-truth (203.0.113.45:3306 / krs_pos / krs_app / SSL on).
+ * The KRS connection config + live stats held on /data. `engine` is the read-only
+ * DISPLAY string ("SQL Server"); the DB stores the canonical "SQLSERVER". The
+ * password is never held here — only `passwordSet` (true when the server has a
+ * stored encrypted password) drives the masked-input placeholder.
  */
 export type DbState = {
-  engine: string; // "MySQL" — read-only in the UI
+  engine: string; // "SQL Server" — read-only display (DB stores "SQLSERVER")
   host: string;
   port: string;
   name: string;
   user: string;
   ssl: boolean;
+  /** Trust a self-signed KRS cert when SSL is on (on-prem-friendly default true).
+   *  Only meaningful when `ssl` is true. */
+  trustServerCert: boolean;
+  /** True when the server has a stored (encrypted) password — drives the masked
+   *  password placeholder. The plaintext/ciphertext is never sent to the client. */
+  passwordSet: boolean;
+  /** Saved sync mode (realtime | daily | manual), loaded from / saved to the DB. */
+  syncMode: SyncMode;
   status: DbStatus;
   latency: number; // ms
   lastCheck: string; // HH:MM:SS display string
@@ -31,17 +46,20 @@ export type DbState = {
   lastInsert: string | null; // last test-insert timestamp display string
 };
 
-/** The initial connection state (Simple POS defaults). */
+/** The initial connection state — empty + disconnected until GET populates it. */
 export const INITIAL_DB_STATE: DbState = {
-  engine: "MySQL",
-  host: "203.0.113.45",
-  port: "3306",
-  name: "krs_pos",
-  user: "krs_app",
+  engine: "SQL Server",
+  host: "",
+  port: "1433",
+  name: "",
+  user: "",
   ssl: true,
-  status: "connected",
-  latency: 18,
-  lastCheck: "14:24:50",
+  trustServerCert: true,
+  passwordSet: false,
+  syncMode: "realtime",
+  status: "disconnected",
+  latency: 0,
+  lastCheck: "",
   inserted: 0,
   lastInsert: null,
 };

@@ -97,6 +97,15 @@ const EnvSchema = z.object({
     .min(1)
     .max(100, "SELLER_BRANCH_LABEL must be at most 100 characters")
     .optional(),
+
+  // --- KRS sync — AES-256-GCM key for encrypting KrsConnectionSettings.encryptedPassword
+  // (krs-sync P1, P0 spec §2.1/§3.3). OPTIONAL at boot: a non-KRS deploy (and
+  // CI/e2e) must still boot, so this is NOT a fail-fast boot requirement. The
+  // authoritative fail-fast (missing/empty/wrong-length) lives at the encrypt/
+  // decrypt callsite in src/lib/krs/crypto.ts, fired at first KRS write/connect —
+  // NOT here. Shape is recorded only so the validated `env` object carries it.
+  // When set it must decode to exactly 32 bytes (base64); crypto.ts enforces that.
+  KRS_CONFIG_ENC_KEY: z.string().optional(),
 });
 
 function loadEnv(): z.infer<typeof EnvSchema> {
@@ -124,6 +133,10 @@ function loadEnv(): z.infer<typeof EnvSchema> {
       SELLER_ADDRESS: process.env.SELLER_ADDRESS,
       SELLER_BRANCH_CODE: process.env.SELLER_BRANCH_CODE,
       SELLER_BRANCH_LABEL: process.env.SELLER_BRANCH_LABEL,
+      // KRS encryption key (krs-sync P1) — passed through unvalidated during the
+      // build phase (no KRS write/connect happens at build time); the real
+      // length validation lives at the crypto.ts callsite at runtime.
+      KRS_CONFIG_ENC_KEY: process.env.KRS_CONFIG_ENC_KEY,
     };
   }
 

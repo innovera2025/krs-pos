@@ -283,3 +283,23 @@ export type ShopSettingsDTO = {
   receiptHeightAuto: boolean;
   receiptHeightMm: number | null;
 };
+
+/**
+ * KRS connection settings as returned by GET /api/krs/settings (krs-sync P1).
+ * `passwordSet` is true when an encrypted password is stored; the plaintext and
+ * the ciphertext blob are NEVER returned (P0 spec §2.5). Shared by the GET/PATCH
+ * routes and the Connection tab so the client never imports the NODE-only schema.
+ */
+export type KrsConnectionSettingsDTO = {
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  passwordSet: boolean;
+  ssl: boolean;
+  /** Trust a self-signed KRS cert when SSL is on (on-prem-friendly; default true).
+   *  Only meaningful when `ssl` is true. */
+  trustServerCert: boolean;
+  engine: string;
+  syncMode: string;
+};

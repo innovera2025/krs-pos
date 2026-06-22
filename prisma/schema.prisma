@@ -178,6 +178,11 @@ enum AuditAction {
   ORDER_REFUNDED
   ORDER_VOIDED
   SESSION_REVOKED
+  // KRS connection settings changed (krs-sync P1). Written best-effort, AFTER the
+  // KrsConnectionSettings upsert commits, when `host` (or `port`) changes — the
+  // compensating audit control for the deliberate no-private-IP-denylist SSRF
+  // stance (P0 spec §1.2.1). `detail` holds {newHost,newPort} JSON.
+  KRS_SETTINGS_CHANGED
 }
 
 model Category {
@@ -403,4 +408,25 @@ model Shift {
 enum ShiftStatus {
   OPEN
   CLOSED
+}
+
+// KRS connection profile (krs-sync P1). Singleton — exactly ONE row, mirroring
+// ShopSettings (id @default("singleton")). Stores the MS SQL Server connection
+// parameters configured from the Admin /data Connection tab. The password is
+// AES-256-GCM encrypted at rest (see encryptedPassword); plaintext never persists.
+// This model is connection CONFIG only — the live mssql ConnectionPool is opened
+// in src/lib/krs/client.ts, NOT here, and NEVER via the Prisma singleton.
+model KrsConnectionSettings {
+  id                String   @id @default("singleton")
+  host              String                                  // SQL Server hostname or IP
+  port              Int      @default(1433)                 // SQL Server default port
+  database          String                                  // target database name
+  username          String                                  // SQL Server SQL-auth username
+  encryptedPassword String?                                 // AES-256-GCM blob (see lib/krs/crypto.ts); null = not yet set
+  ssl               Boolean  @default(true)                 // TLS / encrypt connection (mssql options.encrypt)
+  trustServerCert   Boolean  @default(true)                 // trust a self-signed KRS cert when SSL is on (on-prem-friendly; mssql options.trustServerCertificate)
+  engine            String   @default("SQLSERVER")          // fixed; read-only display in UI
+  syncMode          String   @default("realtime")           // "realtime" | "daily" | "manual"
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 }

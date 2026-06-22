@@ -28,9 +28,14 @@ const TABS: { key: DataTab; label: string; en: string }[] = [
 /**
  * KRS Data Link admin screen (Phase 6b). 4 tabs (Connection / Field Mapping /
  * Data Flow / Live Data) + a tri-state live-status pill. AdminOnly-wrapped (the
- * client demo guard). The connection/mapping/mode state is pure client React state
- * (decisions B/C/D); only the Data Flow SyncJob CRUD touches the server. The KRS
- * transport is SIMULATED throughout — there is no real MySQL/SSL connection.
+ * client demo guard).
+ *
+ * As of krs-sync P1 the Connection tab is a REAL admin-only MS SQL Server
+ * connection (the `mssql` driver, encrypted config + AES-256-GCM password, real
+ * test-connection/introspection routes) — NOT a simulation. The Field Mapping and
+ * sync-mode/stock-method state is still pure client React state (decisions B/C/D),
+ * and only the Data Flow SyncJob CRUD touches the server; those sync tabs remain
+ * SIMULATED (the real outbox/sync pipeline is P2/P3).
  */
 export default function DataPage() {
   return (
@@ -70,52 +75,10 @@ function DataScreen() {
     []
   );
 
-  // Holds the pending 1100ms testConnection timer. testConnection is an onClick
-  // handler, so React never consumes a returned cleanup; we clear it explicitly on
-  // unmount (below) to avoid a deferred setState/toast firing on the next route.
-  const testTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // testConnection: status → testing immediately; after 1100ms → connected with a
-  // random latency (9–31) + fresh lastCheck. Pure client; no DB.
-  const testConnection = useCallback(() => {
-    if (testing) return;
-    if (testTimerRef.current) clearTimeout(testTimerRef.current);
-    setTesting(true);
-    setDbState((s) => ({ ...s, status: "testing" }));
-    showToast(`กำลังทดสอบการเชื่อมต่อ ${db.host}...`);
-    testTimerRef.current = setTimeout(() => {
-      const latency = Math.floor(Math.random() * 23 + 9); // 9–31
-      const pad = (n: number) => String(n).padStart(2, "0");
-      const lastCheck = `14:${pad(Math.floor(Math.random() * 60))}:${pad(
-        Math.floor(Math.random() * 60)
-      )}`;
-      testTimerRef.current = null;
-      setTesting(false);
-      setDbState((s) => ({ ...s, status: "connected", latency, lastCheck }));
-      showToast(`เชื่อมต่อสำเร็จ · ${db.engine} @ ${db.host} (${latency}ms)`);
-    }, 1100);
-  }, [testing, db.host, db.engine, showToast]);
-
-  // Clear any pending testConnection timer on unmount so the deferred
-  // setTesting/setDbState/showToast never fires after the screen is gone (e.g. an
-  // admin→seller role flip → AdminOnly redirect, or a NavRail nav click within ~1.1s).
-  useEffect(() => {
-    return () => {
-      if (testTimerRef.current) clearTimeout(testTimerRef.current);
-    };
-  }, []);
-
-  // insertTestRow: bump the session counter + lastInsert ts (NO DB write). Feeds
-  // the green "just inserted" row in the Live Data sales table.
-  const insertTestRow = useCallback(() => {
-    const now = new Date();
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const ts = `2026-06-16 14:${pad(now.getSeconds())}:${pad(
-      Math.floor(Math.random() * 60)
-    )}`;
-    setDbState((s) => ({ ...s, inserted: s.inserted + 1, lastInsert: ts }));
-    showToast(`INSERT 1 row → ${db.name}.sales · สำเร็จ (1 row affected)`);
-  }, [db.name, showToast]);
+  // Connection test + config load/save are now REAL and owned by ConnectionTab
+  // (krs-sync P1): it drives the shared `db`/`testing` state via setDb/setTesting
+  // so the header live-status pill stays consistent. The previous simulated
+  // testConnection/insertTestRow timers were removed with that change.
 
   const toggleStockSync = useCallback(() => {
     setStockSync((on) => {
@@ -245,8 +208,7 @@ function DataScreen() {
               db={db}
               setDb={setDb}
               testing={testing}
-              onTestConnection={testConnection}
-              onInsertTestRow={insertTestRow}
+              setTesting={setTesting}
               stockSync={stockSync}
               onToggleStockSync={toggleStockSync}
             />
