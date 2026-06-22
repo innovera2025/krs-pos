@@ -7,7 +7,7 @@ import { useRole } from "@/components/RoleProvider";
 /**
  * CLIENT ADMIN GUARD — UX layer over the real server boundary.
  *
- * Wraps an admin-only screen (/products, /users, and ready for /data, /docs):
+ * Wraps an admin-only screen (/products, /users, /data):
  * if the session-derived role is "seller" it redirects to /pos and renders
  * nothing.
  *

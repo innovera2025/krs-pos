@@ -2,13 +2,13 @@ import { test, expect } from "@playwright/test";
 import { loginAs } from "./helpers/auth";
 
 /**
- * 8-route smoke (Phase 7 regression guard). For each screen: navigate, assert the
+ * 7-route smoke (Phase 7 regression guard). For each screen: navigate, assert the
  * HTTP response is not a 4xx/5xx, then assert a screen-specific marker is visible so
  * a blank/crashed render fails the test.
  *
  * AUTH (production-readiness Phase 1): the (shell) routes are now gated by
  * middleware, so each protected-route test signs in first via `loginAs` (seeded
- * admin → sees all 7 nav screens). The /login route itself is the one exception —
+ * admin → sees all 6 nav screens). The /login route itself is the one exception —
  * it is public and asserts the sign-in form, so it does NOT pre-authenticate.
  *
  * Authored, not run, in Phase 7: the orchestrator starts the server + Postgres and
@@ -81,14 +81,6 @@ const ROUTES: RouteCheck[] = [
       await expect(
         page.getByRole("tab", { name: /เชื่อมต่อ/ })
       ).toBeVisible();
-    },
-  },
-  {
-    path: "/docs",
-    name: "Design spec docs (admin-gated)",
-    marker: async (page) => {
-      // At least one pill tab is present in the docs tablist.
-      await expect(page.getByRole("tab").first()).toBeVisible();
     },
   },
   {

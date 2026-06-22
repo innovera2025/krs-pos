@@ -5,7 +5,7 @@ import type { AppRole } from "@/components/RoleProvider";
  *
  * Which roles may see/visit each nav key. Mirrors Simple POS's navAccess:
  *  - pos / sales / shift  → both seller + admin
- *  - data / products / users / settings / docs → admin only
+ *  - data / products / users / settings → admin only
  *
  * This map is now enforced on BOTH boundaries:
  *  - server: the middleware `authorized` callback (src/auth.config.ts) calls
@@ -23,7 +23,6 @@ export const NAV_ACCESS: Record<string, AppRole[]> = {
   products: ["admin"],
   users: ["admin"],
   settings: ["admin"],
-  docs: ["admin"],
 };
 
 /** True when `role` may access the given nav key (defaults to admin-only). */
