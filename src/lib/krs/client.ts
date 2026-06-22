@@ -35,15 +35,31 @@ const REQUEST_TIMEOUT_MS = 15_000;
 /**
  * Fixed allow-list of KRS tables to introspect (P0 spec §6.2/§6.3). Hardcoded —
  * NEVER user-supplied — so the INFORMATION_SCHEMA query has no injection surface.
+ *
+ * Updated (krs-sync, P1 follow-up) to the REAL KRS schema discovered via live
+ * introspection of `db_ACC_SNP` (a 238-table accounting ERP) — see
+ * `process/features/krs-sync/references/krs-real-schema_discovery_22-06-26.md`.
+ * The old mock names (sales/sale_items/products/...) did NOT exist on the real
+ * server, so `/api/krs/schema` returned empty. These are the actual integration
+ * targets: sales documents (`SalesInvoice*`/`SalesReturn*`/`SalesCN*`), the
+ * inventory item master (`InventoryItem`) + flow/ledgers, the customer master,
+ * units/type lookups, and the document-number table (`RunningNumber`).
  */
 const INTROSPECT_TABLES = [
-  "sales",
-  "sale_items",
-  "stock_movements",
-  "products",
-  "price_list",
-  "stock_balance",
-  "customers",
+  "SalesInvoiceHdr",
+  "SalesInvoiceDtl",
+  "SalesReturnHdr",
+  "SalesReturnDtl",
+  "SalesCNHdr",
+  "SalesCNDtl",
+  "InventoryItem",
+  "InventoryFlowHdr",
+  "InventoryFlowDtl",
+  "InventoryLedgers",
+  "Customer",
+  "MeasurementUnits",
+  "InventoryType",
+  "RunningNumber",
 ] as const;
 
 /** Plaintext connection parameters used to build a one-shot mssql config (the
@@ -103,8 +119,10 @@ function toConfig(input: KrsConnectionInput): sql.config {
 }
 
 /** Narrow an unknown thrown value to a safe `{ code, message }` for logging —
- *  driver-specific keys (which may embed the config/password) are dropped. */
-function safeErrorParts(e: unknown): { code: string; message: string } {
+ *  driver-specific keys (which may embed the config/password) are dropped.
+ *  Exported so sibling KRS modules (e.g. `products.ts`) reuse the SAME sanitization
+ *  instead of re-deriving it (and risk logging the raw driver error/config). */
+export function safeErrorParts(e: unknown): { code: string; message: string } {
   const code =
     typeof e === "object" && e !== null && "code" in e
       ? String((e as { code?: unknown }).code ?? "UNKNOWN")

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SyncJobDTO } from "@/types";
+import type { SyncJobDTO, KrsConnectionSettingsDTO } from "@/types";
 import { AdminOnly } from "@/components/AdminOnly";
 import { useToast } from "@/components/ToastProvider";
 import { ConnectionTab } from "@/components/data/ConnectionTab";
@@ -79,6 +79,109 @@ function DataScreen() {
   // (krs-sync P1): it drives the shared `db`/`testing` state via setDb/setTesting
   // so the header live-status pill stays consistent. The previous simulated
   // testConnection/insertTestRow timers were removed with that change.
+
+  // ---- Page-level auto health-check (krs-sync status UX fix) ----
+  //
+  // KRS connects PER-OPERATION (no persistent socket): the displayed "connected"
+  // means the last health check passed, auto-refreshed. The previous status was
+  // ephemeral client state that reset to `disconnected` on every (re)mount and only
+  // flipped to connected after a MANUAL Test click — so the pill read "offline" even
+  // when KRS was configured and reachable.
+  //
+  // This effect runs at the DATASCREEN level (NOT inside ConnectionTab, which
+  // unmounts on tab switch) so the top LiveStatusPill is correct on ANY tab. On
+  // mount it: (1) GETs the saved config; (2) if KRS is configured (passwordSet +
+  // host), shows "checking" (testing → pill reads "กำลังเชื่อมต่อ…") and POSTs the
+  // saved-config test ({}); (3) sets db.status/latency/host from the result. It then
+  // re-checks on a light ~60s cadence so the status stays live + latency fresh. If
+  // KRS is NOT configured it leaves the status disconnected and does NOT poll.
+  //
+  // Race robustness (mirrors the ConnectionTab H1/FIX-2 lesson): the parent-owned
+  // setters (`setDb`/`setTesting`) run UNCONDITIONALLY in every exit path so the
+  // pill/button never get stuck in "checking"; only `showToast` and the
+  // poll-scheduling are gated by the `mounted` ref. The interval is cleared and
+  // `mounted` flipped false in cleanup so there's no setState-after-unmount.
+  useEffect(() => {
+    let mounted = true;
+    let intervalId: ReturnType<typeof setInterval> | undefined;
+    // In-flight guard so an overlapping interval tick can't double-run a check.
+    let checking = false;
+
+    const runHealthCheck = async (): Promise<void> => {
+      if (checking) return;
+      checking = true;
+      // PARENT setters — always run (never gated on `mounted`) so a mount/unmount
+      // race can't leave the pill stuck on "checking".
+      setTesting(true);
+      setDb({ status: "testing" });
+      try {
+        const res = await fetch("/api/krs/test-connection", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // Empty body → test the SAVED config (mirrors the manual Test path).
+          body: JSON.stringify({}),
+        });
+        const result = (await res.json().catch(() => null)) as
+          | { connected: boolean; latencyMs: number | null; error: string | null }
+          | null;
+        const now = new Date();
+        const pad = (n: number) => String(n).padStart(2, "0");
+        const lastCheck = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(
+          now.getSeconds()
+        )}`;
+        if (result?.connected) {
+          // Mirror the manual Test success shape.
+          setDb({ status: "connected", latency: result.latencyMs ?? 0, lastCheck });
+        } else {
+          setDb({ status: "disconnected", latency: 0, lastCheck });
+        }
+      } catch {
+        // PARENT setter — always run so the pill never gets stuck (mirrors FIX 2).
+        setDb({ status: "disconnected", latency: 0 });
+      } finally {
+        // PARENT setter — always reset `testing` (the stuck-state root cause).
+        setTesting(false);
+        checking = false;
+      }
+    };
+
+    (async () => {
+      try {
+        const res = await fetch("/api/krs/settings");
+        if (!res.ok) throw new Error("load failed");
+        const data = (await res.json()) as { settings: KrsConnectionSettingsDTO | null };
+        // Only the poll-SCHEDULING is gated by `mounted`; the status setters inside
+        // runHealthCheck stay unconditional.
+        if (!mounted) return;
+        const s = data.settings;
+        // Configured = a stored password AND a host (the saved-config test needs both).
+        if (!s || !s.passwordSet || !s.host) return; // Not configured → stay disconnected, no poll.
+        // Seed `host` (+ port) at the PAGE level so the top LiveStatusPill shows the
+        // host suffix on ANY tab — ConnectionTab's own load only runs while that tab
+        // is mounted, so on a non-Connection tab `db.host` would otherwise be empty.
+        setDb({ host: s.host, port: String(s.port) });
+        await runHealthCheck();
+        if (!mounted) return;
+        // Light periodic re-check (~60s) — keeps status live + latency fresh without
+        // hammering the per-operation KRS connection.
+        intervalId = setInterval(() => {
+          void runHealthCheck();
+        }, 60_000);
+      } catch {
+        // GET failed → KRS config unknown; leave status as-is (disconnected default)
+        // and do not poll. No toast (auto-check is silent; manual Test surfaces errors).
+      }
+    })();
+
+    return () => {
+      mounted = false;
+      if (intervalId !== undefined) clearInterval(intervalId);
+    };
+    // setDb/setTesting are stable parent useCallback/useState setters; run once on
+    // mount. The deeper status-setting logic intentionally does not depend on render
+    // state, so an empty dep array is correct (and keeps the poll on a single timer).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const toggleStockSync = useCallback(() => {
     setStockSync((on) => {

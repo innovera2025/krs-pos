@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Database, RefreshCw, Plus, Boxes, Eye, EyeOff, Save } from "lucide-react";
+import { Database, RefreshCw, Plus, Boxes, Eye, EyeOff, Save, PackageSearch } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
 import type { KrsConnectionSettingsDTO } from "@/types";
 import type { DbState, SyncMode } from "./connectionTypes";
@@ -56,6 +56,9 @@ export function ConnectionTab({
   const [showPassword, setShowPassword] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Inbound "pull products from KRS" busy flag (krs-sync). Disables the button +
+  // drives its label while the POST is in flight.
+  const [pulling, setPulling] = useState(false);
 
   // Guard against a deferred setState after unmount (load/save/test are async).
   const mountedRef = useRef(true);
@@ -217,6 +220,50 @@ export function ConnectionTab({
     showToast("ทดลอง INSERT ยังไม่พร้อมใช้ใน P1 · coming in P2");
   }, [showToast]);
 
+  // ---- Pull products from KRS (inbound, POST) ----
+  //
+  // Reads the KRS product master (dbo.InventoryItem) and upserts it into POS
+  // Category/Product via /api/krs/pull-products. Admin-only on the server. Shows a
+  // result summary (created / updated / barcode-skipped / categories) via toast.
+  const onPullProducts = useCallback(async () => {
+    if (pulling) return;
+    setPulling(true);
+    showToast("กำลังดึงสินค้าจาก KRS · Pulling products from KRS...");
+    try {
+      const res = await fetch("/api/krs/pull-products", { method: "POST" });
+      const body = (await res.json().catch(() => null)) as
+        | {
+            ok?: boolean;
+            created?: number;
+            updated?: number;
+            barcodeSkipped?: number;
+            categories?: number;
+            total?: number;
+            error?: string;
+          }
+        | null;
+      if (!res.ok || !body?.ok) {
+        const msg = body?.error ?? "Unknown error";
+        if (mountedRef.current) showToast("ดึงสินค้าไม่สำเร็จ: " + msg);
+        return;
+      }
+      const created = body.created ?? 0;
+      const updated = body.updated ?? 0;
+      const skipped = body.barcodeSkipped ?? 0;
+      const cats = body.categories ?? 0;
+      if (mountedRef.current) {
+        showToast(
+          `ดึงสินค้าจาก KRS สำเร็จ · ใหม่ ${created} · อัปเดต ${updated} · หมวดใหม่ ${cats}` +
+            (skipped > 0 ? ` · ข้ามบาร์โค้ดซ้ำ ${skipped}` : "")
+        );
+      }
+    } catch {
+      if (mountedRef.current) showToast("ดึงสินค้าไม่สำเร็จ · Pull failed");
+    } finally {
+      if (mountedRef.current) setPulling(false);
+    }
+  }, [pulling, showToast]);
+
   // Tri-state status card meta.
   const stMeta = testing
     ? { label: "กำลังทดสอบ · Testing", color: "#b45309", bg: "#fffbeb", dot: "#d97706" }
@@ -293,6 +340,18 @@ export function ConnectionTab({
           >
             <RefreshCw size={16} strokeWidth={2} color="#7dd3fc" />
             {testing ? "กำลังทดสอบ..." : "ทดสอบการเชื่อมต่อ"}
+          </button>
+          {/* Inbound pull: read the KRS product master into POS. Mint pill to
+              distinguish the inbound PULL from the forest-green outbound INSERT. */}
+          <button
+            type="button"
+            onClick={onPullProducts}
+            disabled={pulling}
+            className="flex h-[42px] items-center gap-2 rounded-[11px] px-4 text-[13px] font-semibold transition hover:brightness-105 disabled:opacity-60"
+            style={{ background: "#ecfdf5", color: "#047857", boxShadow: "inset 0 0 0 1px #a7f3d0" }}
+          >
+            <PackageSearch size={16} strokeWidth={2} />
+            {pulling ? "กำลังดึงสินค้า..." : "ดึงสินค้าจาก KRS · Pull products"}
           </button>
           <button
             type="button"
