@@ -1,0 +1,11 @@
+# Caddy reverse proxy for KRS POS (production).
+#
+# Caddy automatically obtains and renews a Let's Encrypt TLS certificate for this
+# domain, so the site is served over HTTPS with HTTP→HTTPS redirect out of the box.
+# Requires: DNS for the domain points at this host, and inbound 80 + 443 are open.
+#
+# Proxies all traffic to the app container over the internal compose network.
+# To deploy a different domain, change the site address below (and the DNS).
+krspos.innoveraappcenter.com {
+	reverse_proxy app:3000
+}

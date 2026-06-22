@@ -70,11 +70,20 @@ services:
       # Behind a reverse proxy without an explicit AUTH_URL, trust the forwarded host
       # header so Auth.js builds correct callback/redirect URLs. Defaults to true here.
       AUTH_TRUST_HOST: ${AUTH_TRUST_HOST:-true}
-      # Optional explicit base-URL override (e.g. http://localhost:3000). Empty = unset
-      # → Auth.js infers it (or relies on AUTH_TRUST_HOST).
+      # Optional explicit base-URL override (e.g. https://krspos.example.com). Empty =
+      # unset → Auth.js infers it (or relies on AUTH_TRUST_HOST). Set this to the
+      # public HTTPS URL in production so Auth.js builds correct callback/redirect URLs.
       AUTH_URL: ${AUTH_URL:-}
+      # KRS connection password encryption key (AES-256-GCM). Optional at boot (the
+      # app lazy-fails only when a KRS feature actually runs), but REQUIRED in prod to
+      # use the KRS integration. Supplied from the git-ignored .env.
+      KRS_CONFIG_ENC_KEY: ${KRS_CONFIG_ENC_KEY:-}
     ports:
-      - "3000:3000"
+      # Bind to localhost only — the public entrypoint is the Caddy reverse proxy
+      # (docker-compose.prod.yml, ports 80/443). Caddy reaches the app over the
+      # compose network (service host `app`), so this host mapping is for local
+      # debugging only and is never internet-reachable.
+      - "127.0.0.1:3000:3000"
     # Cap container resources so a single app can't starve the host. The Compose
     # Spec honors `deploy.resources.limits` under plain `docker compose up`.
     deploy:

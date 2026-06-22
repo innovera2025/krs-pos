@@ -1,0 +1,30 @@
+# Production overlay — adds the Caddy reverse proxy (automatic HTTPS via
+# Let's Encrypt) in front of the app. Compose with the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Requirements:
+#   - DNS for the domain in deploy/Caddyfile must point at this host (A record).
+#   - Inbound 80 + 443 must be open in the cloud firewall (e.g. Lightsail networking).
+# Caddy obtains + auto-renews the TLS certificate and proxies to the app container
+# on the internal compose network (app:3000). The app is not exposed publicly itself
+# (the base file binds it to 127.0.0.1 only).
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: krs-pos-caddy
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
