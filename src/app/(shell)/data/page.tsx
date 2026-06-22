@@ -32,7 +32,9 @@ const TABS: { key: DataTab; label: string; en: string }[] = [
  *
  * As of krs-sync P1 the Connection tab is a REAL admin-only MS SQL Server
  * connection (the `mssql` driver, encrypted config + AES-256-GCM password, real
- * test-connection/introspection routes) — NOT a simulation. The Field Mapping and
+ * test-connection/schema routes) — NOT a simulation. The Live Data tab is now a
+ * REAL read-only browser over the live KRS schema (GET /api/krs/schema lists every
+ * base table; ?table=X returns columns + a TOP 50 sample). The Field Mapping and
  * sync-mode/stock-method state is still pure client React state (decisions B/C/D),
  * and only the Data Flow SyncJob CRUD touches the server; those sync tabs remain
  * SIMULATED (the real outbox/sync pipeline is P2/P3).
@@ -327,9 +329,7 @@ function DataScreen() {
           {tab === "flow" ? (
             <DataFlowTab jobs={jobs} loading={loading} error={jobsError} onRefetch={fetchJobs} />
           ) : null}
-          {tab === "preview" ? (
-            <LiveDataTab jobs={jobs} insertedCount={db.inserted} lastInsert={db.lastInsert} />
-          ) : null}
+          {tab === "preview" ? <LiveDataTab /> : null}
         </div>
       </div>
     </div>

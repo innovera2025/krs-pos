@@ -8,11 +8,16 @@ export {
   buildConnectionConfig,
   testConnection,
   testConnectionWithInput,
-  introspectSchema,
+  listKrsTables,
+  getKrsTableDetail,
 } from "./client";
 export type {
   KrsConnectionInput,
   KrsColumn,
+  KrsTableSummary,
+  KrsTableDetail,
+  KrsTableDetailResult,
+  KrsSampleRow,
   TestConnectionResult,
 } from "./client";
 // Inbound product pull (krs-sync): KRS read + POS upsert. Exported here so the

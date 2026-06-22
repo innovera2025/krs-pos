@@ -1,232 +1,411 @@
 "use client";
 
-import { useState } from "react";
-import type { SyncJobDTO } from "@/types";
-import { jobTypeLabel } from "./syncMeta";
+import { useEffect, useMemo, useState } from "react";
 
 /**
- * Live Data tab (KRS Data Link). A read-only KRS browser: a 6-table selector
- * (sales/sale_items/products/stock_movements/sync_jobs/users), a SQL-preview pill,
- * synthetic per-table rows, a green-highlighted "just inserted" sales row (fed by
- * the Connection tab's insertTestRow counter), and a row-count footer. Static
- * synthetic data (decision D) — there is no real KRS read; sync_jobs mirrors the
- * live fetched jobs so the tab reflects retry/skip/pull actions.
+ * Live Data tab (KRS Data Link) — a REAL read-only browser over the live KRS
+ * database (krs-sync schema browser). On mount it GETs `/api/krs/schema` to list
+ * EVERY base table (the real `db_ACC_SNP` has ~238); a search box filters that list.
+ * Selecting a table GETs `/api/krs/schema?table=X` to show that table's columns
+ * (name / type / nullable) + a capped sample (`SELECT TOP 50 *`) on the right.
+ *
+ * Admin-only: the /data page is AdminOnly-wrapped and the route is requireAdmin
+ * server-side. This component renders nothing sensitive of its own — it only shows
+ * what the admin-gated endpoint returns. "KRS not configured" is handled gracefully
+ * (a prompt to configure on the Connection tab). All values come straight from the
+ * server (already JSON-sanitized — binary columns show a "<binary N bytes>"
+ * placeholder, dates are ISO strings).
+ *
+ * Taste visual language: forest/mint accents, IBM Plex Sans Thai, Thai-first
+ * microcopy, restrained borders. Mirrors the loading/empty/error tri-state used on
+ * /pos /products /sales.
  */
 
-type TableKey =
-  | "sales"
-  | "sale_items"
-  | "products"
-  | "stock_movements"
-  | "sync_jobs"
-  | "users";
+type TableSummary = { schema: string; name: string; columns: number };
 
-type TableMeta = { label: string; cols: string[]; count: number };
-
-const TABLE_META: Record<TableKey, TableMeta> = {
-  sales: { label: "sales", cols: ["id", "pos_no", "total", "vat", "sync_status", "created_at"], count: 1248 },
-  sale_items: { label: "sale_items", cols: ["id", "sale_id", "sku", "qty", "unit_price", "line_total"], count: 3892 },
-  products: { label: "products", cols: ["id", "sku", "name", "price", "vat", "stock"], count: 17 },
-  stock_movements: { label: "stock_movements", cols: ["id", "sku", "type", "qty", "ref", "created_at"], count: 642 },
-  sync_jobs: { label: "sync_jobs", cols: ["id", "type", "ref", "status", "provider", "updated_at"], count: 8 },
-  users: { label: "users", cols: ["id", "name", "email", "role", "status", "last_login"], count: 3 },
+type ColumnMeta = {
+  columnName: string;
+  dataType: string;
+  isNullable: boolean;
+  maxLength: number | null;
+  numericPrecision: number | null;
+  numericScale: number | null;
 };
 
-const TABLE_KEYS: TableKey[] = [
-  "sales",
-  "sale_items",
-  "products",
-  "stock_movements",
-  "sync_jobs",
-  "users",
-];
-
-type Row = { cells: string[]; fresh: boolean };
-
-// Static synthetic rows (transcribed from the Simple POS dbVals builders).
-const STATIC_ROWS: Record<Exclude<TableKey, "sales" | "sync_jobs">, string[][]> = {
-  sale_items: [
-    ["5031", "1041", "BV-002", "2", "65.00", "130.00"],
-    ["5030", "1041", "FD-001", "1", "75.00", "75.00"],
-    ["5029", "1040", "BV-005", "2", "45.00", "90.00"],
-    ["5028", "1040", "DS-001", "1", "65.00", "65.00"],
-    ["5027", "1039", "BV-006", "1", "70.00", "70.00"],
-    ["5026", "1039", "GD-001", "1", "350.00", "350.00"],
-  ],
-  products: [
-    ["p1", "BV-001", "อเมริกาโน่ (ร้อน)", "55.00", "7", "120"],
-    ["p2", "BV-002", "ลาเต้ (ร้อน)", "65.00", "7", "88"],
-    ["p3", "BV-003", "คาปูชิโน่", "65.00", "7", "64"],
-    ["p8", "FD-001", "ครัวซองต์แฮมชีส", "75.00", "7", "14"],
-    ["p12", "DS-001", "บราวนี่", "65.00", "7", "32"],
-    ["p15", "GD-001", "เมล็ดกาแฟคั่ว 250g", "350.00", "7", "9"],
-  ],
-  stock_movements: [
-    ["9043", "BV-001", "sale", "-1", "POS-20260616-0041", "2026-06-16 13:58"],
-    ["9042", "DS-001", "receive", "+40", "GRN-20260616-007", "2026-06-16 10:42"],
-    ["9041", "BV-002", "adjust", "-5", "ADJ-20260616-012", "2026-06-16 09:30"],
-    ["9040", "FD-001", "sale", "-2", "POS-20260616-0040", "2026-06-16 13:42"],
-    ["9039", "GD-001", "sale", "-1", "POS-20260616-0039", "2026-06-16 13:20"],
-  ],
-  users: [
-    ["u1", "Admin", "admin@krs-pos.local", "admin", "active", "2026-06-16 08:30"],
-    ["u2", "อรุณ ขายดี", "seller.aroon@krs-pos.local", "seller", "active", "2026-06-16 09:05"],
-    ["u3", "มาลี พักงาน", "seller.malee@krs-pos.local", "seller", "inactive", "—"],
-  ],
+type TableDetail = {
+  schema: string;
+  name: string;
+  columns: ColumnMeta[];
+  sample: Record<string, unknown>[];
 };
 
-const STATIC_SALES: string[][] = [
-  ["1041", "POS-20260616-0041", "962.30", "62.94", "synced", "2026-06-16 13:58"],
-  ["1040", "POS-20260616-0040", "130.00", "8.50", "daily", "2026-06-16 13:42"],
-  ["1039", "POS-20260616-0039", "240.00", "15.70", "failed", "2026-06-16 13:20"],
-  ["1038", "POS-20260616-0038", "-65.00", "-4.25", "synced", "2026-06-16 12:50"],
-  ["1037", "POS-20260616-0037", "0.00", "0.00", "skipped", "2026-06-16 12:31"],
-  ["1036", "POS-20260616-0036", "185.00", "12.10", "daily", "2026-06-16 11:58"],
-];
+type ListResponse =
+  | { configured: false }
+  | { configured: true; tables: TableSummary[] }
+  | { configured: true; tables: null; error: string };
 
-export function LiveDataTab({
-  jobs,
-  insertedCount,
-  lastInsert,
-}: {
-  jobs: SyncJobDTO[];
-  /** Session test-INSERT count from the Connection tab — feeds the green rows. */
-  insertedCount: number;
-  /** Display timestamp of the last test INSERT (or null). */
-  lastInsert: string | null;
-}) {
-  const [table, setTable] = useState<TableKey>("sales");
-  const meta = TABLE_META[table];
+type DetailResponse =
+  | { configured: true; table: TableDetail }
+  | { configured: false; error: string }
+  | { error: string };
 
-  const rows = buildRows(table, jobs, insertedCount, lastInsert);
+/** Top-level list state (tri-state + "not configured"). */
+type ListState =
+  | { status: "loading" }
+  | { status: "not-configured" }
+  | { status: "error"; message: string }
+  | { status: "ready"; tables: TableSummary[] };
+
+/** Per-table detail state (tri-state). */
+type DetailState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "ready"; detail: TableDetail };
+
+export function LiveDataTab() {
+  const [list, setList] = useState<ListState>({ status: "loading" });
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<string | null>(null);
+  const [detail, setDetail] = useState<DetailState>({ status: "idle" });
+
+  // ---- Load the full table list on mount ----
+  useEffect(() => {
+    let mounted = true;
+    setList({ status: "loading" });
+    fetch("/api/krs/schema")
+      .then(async (res) => {
+        const data = (await res.json().catch(() => null)) as ListResponse | null;
+        if (!mounted) return;
+        if (!res.ok || data === null) {
+          setList({ status: "error", message: "โหลดรายการตารางไม่สำเร็จ · could not load tables" });
+          return;
+        }
+        if (data.configured === false) {
+          setList({ status: "not-configured" });
+          return;
+        }
+        if (data.tables === null) {
+          setList({ status: "error", message: data.error || "อ่านสคีมาไม่สำเร็จ" });
+          return;
+        }
+        setList({ status: "ready", tables: data.tables });
+      })
+      .catch(() => {
+        if (mounted) {
+          setList({ status: "error", message: "โหลดรายการตารางไม่สำเร็จ · could not load tables" });
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // ---- Load one table's detail when selected ----
+  useEffect(() => {
+    if (selected === null) {
+      setDetail({ status: "idle" });
+      return;
+    }
+    let mounted = true;
+    setDetail({ status: "loading" });
+    fetch(`/api/krs/schema?table=${encodeURIComponent(selected)}`)
+      .then(async (res) => {
+        const data = (await res.json().catch(() => null)) as DetailResponse | null;
+        if (!mounted) return;
+        if (!res.ok || data === null || !("table" in data)) {
+          const message =
+            data && "error" in data && data.error
+              ? data.error
+              : "อ่านตารางไม่สำเร็จ · could not read table";
+          setDetail({ status: "error", message });
+          return;
+        }
+        setDetail({ status: "ready", detail: data.table });
+      })
+      .catch(() => {
+        if (mounted) {
+          setDetail({ status: "error", message: "อ่านตารางไม่สำเร็จ · could not read table" });
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [selected]);
+
+  const tables = list.status === "ready" ? list.tables : [];
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (q.length === 0) return tables;
+    return tables.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) || t.schema.toLowerCase().includes(q)
+    );
+  }, [tables, search]);
 
   return (
     <div className="overflow-hidden rounded-2xl border" style={{ background: "#fff", borderColor: "#e8edf3" }}>
+      {/* Header */}
       <div className="flex items-center gap-[10px] border-b px-5 py-4" style={{ borderColor: "#f1f5f9" }}>
-        <div>
+        <div className="min-w-0">
           <div className="text-[14.5px] font-bold">ตรวจข้อมูลที่เชื่อมอยู่ · Live data</div>
           <div className="text-[11.5px]" style={{ color: "#94a3b8" }}>
-            ดึงข้อมูลจริงจาก KRS.krs_pos — อ่านอย่างเดียว (read-only)
+            เรียกดูทุกตารางจาก KRS โดยตรง — อ่านอย่างเดียว (read-only)
           </div>
         </div>
         <div className="flex-1" />
-        <div className="mono rounded-[8px] px-[11px] py-1.5 text-[11.5px]" style={{ background: "#f1f5f9", color: "#64748b" }}>
-          SELECT * FROM {meta.label} LIMIT 50
-        </div>
+        {list.status === "ready" ? (
+          <div
+            className="mono rounded-[8px] px-[11px] py-1.5 text-[11.5px]"
+            style={{ background: "#f1f5f9", color: "#64748b" }}
+          >
+            {tables.length.toLocaleString("en-US")} tables
+          </div>
+        ) : null}
       </div>
 
-      <div className="flex min-h-0">
-        {/* Table selector */}
-        <div className="flex w-[230px] shrink-0 flex-col gap-[7px] border-r p-3" style={{ borderColor: "#f1f5f9" }}>
-          <div className="px-1 pb-1 pt-0.5 text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: "#94a3b8" }}>
-            KRS Tables
+      {/* Not configured */}
+      {list.status === "not-configured" ? (
+        <div className="px-5 py-10 text-center">
+          <div className="text-[13.5px] font-semibold" style={{ color: "#334155" }}>
+            ยังไม่ได้ตั้งค่าการเชื่อมต่อ KRS
           </div>
-          {TABLE_KEYS.map((k) => {
-            const tm = TABLE_META[k];
-            const active = table === k;
-            const liveCount = k === "sync_jobs" ? jobs.length : k === "sales" ? tm.count + insertedCount : tm.count;
-            return (
-              <button
-                key={k}
-                type="button"
-                aria-pressed={active}
-                onClick={() => setTable(k)}
-                className="flex items-center justify-between gap-[10px] rounded-[10px] border px-[13px] py-[10px] transition hover:border-[#cbd5e1]"
-                style={{ background: active ? "#eff6ff" : "#fff", borderColor: active ? "#2563eb" : "#eaeef3" }}
-              >
-                <span className="mono text-[12.5px] font-semibold" style={{ color: "#334155" }}>
-                  {tm.label}
-                </span>
-                <span className="mono text-[11px]" style={{ color: "#94a3b8" }}>
-                  {liveCount.toLocaleString("en-US")}
-                </span>
-              </button>
-            );
-          })}
+          <div className="mt-1 text-[11.5px]" style={{ color: "#94a3b8" }}>
+            ไปที่แท็บ “เชื่อมต่อ · Connection” เพื่อตั้งค่าและทดสอบการเชื่อมต่อก่อน
+          </div>
         </div>
+      ) : null}
 
-        {/* Rows */}
-        <div className="min-w-0 flex-1 overflow-x-auto">
-          <div style={{ minWidth: 640 }}>
-            <div
-              className="sticky top-0 flex border-b px-4 py-[11px]"
-              style={{ borderColor: "#eef2f6", background: "#fafbfc" }}
-            >
-              {meta.cols.map((c) => (
-                <div key={c} className="mono min-w-0 flex-1 text-[11px] font-semibold" style={{ color: "#94a3b8" }}>
-                  {c}
-                </div>
-              ))}
+      {/* Error loading the list */}
+      {list.status === "error" ? (
+        <div className="px-5 py-10 text-center">
+          <div className="text-[13.5px] font-semibold" style={{ color: "#b91c1c" }}>
+            {list.message}
+          </div>
+          <div className="mt-1 text-[11.5px]" style={{ color: "#94a3b8" }}>
+            ลองตรวจการเชื่อมต่อที่แท็บ “เชื่อมต่อ · Connection”
+          </div>
+        </div>
+      ) : null}
+
+      {/* Loading the list */}
+      {list.status === "loading" ? (
+        <div className="px-5 py-10 text-center text-[12.5px]" style={{ color: "#94a3b8" }}>
+          กำลังโหลดรายการตาราง… · loading tables…
+        </div>
+      ) : null}
+
+      {/* Browser (list + detail) */}
+      {list.status === "ready" ? (
+        <div className="flex min-h-0" style={{ minHeight: 420 }}>
+          {/* Table selector (searchable) */}
+          <div className="flex w-[260px] shrink-0 flex-col border-r" style={{ borderColor: "#f1f5f9" }}>
+            <div className="border-b p-3" style={{ borderColor: "#f1f5f9" }}>
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="ค้นหาตาราง… · search tables"
+                aria-label="ค้นหาตาราง · search tables"
+                className="w-full rounded-[10px] border px-3 py-2 text-[12.5px] outline-none"
+                style={{ borderColor: "#e2e8f0", color: "#334155" }}
+              />
             </div>
-            {rows.map((r, i) => (
-              <div
-                key={i}
-                className="flex border-b px-4 py-[10px]"
-                style={{ borderColor: "#f4f7fa", background: r.fresh ? "#f0fdf4" : "transparent" }}
-              >
-                {r.cells.map((cell, ci) => (
-                  <div
-                    key={ci}
-                    className="mono min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap pr-2 text-[11.5px]"
-                    style={{ color: "#334155" }}
-                  >
-                    {cell}
-                  </div>
-                ))}
+            <div className="min-h-0 flex-1 overflow-y-auto p-2">
+              {filtered.length === 0 ? (
+                <div className="px-2 py-6 text-center text-[11.5px]" style={{ color: "#94a3b8" }}>
+                  ไม่พบตารางที่ตรงกับคำค้น
+                </div>
+              ) : (
+                <div className="flex flex-col gap-[5px]">
+                  {filtered.map((t) => {
+                    const active = selected === t.name;
+                    return (
+                      <button
+                        key={`${t.schema}.${t.name}`}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => setSelected(t.name)}
+                        className="flex items-center justify-between gap-[10px] rounded-[10px] border px-[12px] py-[9px] text-left transition hover:border-[#86efac]"
+                        style={{
+                          background: active ? "#ecfdf5" : "#fff",
+                          borderColor: active ? "#16a34a" : "#eaeef3",
+                        }}
+                      >
+                        <span className="min-w-0">
+                          <span
+                            className="mono block truncate text-[12.5px] font-semibold"
+                            style={{ color: "#334155" }}
+                            title={`${t.schema}.${t.name}`}
+                          >
+                            {t.name}
+                          </span>
+                          <span className="mono block text-[10px]" style={{ color: "#94a3b8" }}>
+                            {t.schema}
+                          </span>
+                        </span>
+                        <span className="mono shrink-0 text-[10.5px]" style={{ color: "#94a3b8" }}>
+                          {t.columns} cols
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Detail pane */}
+          <div className="min-w-0 flex-1 overflow-y-auto">
+            {selected === null ? (
+              <div className="flex h-full items-center justify-center px-6 py-10 text-center text-[12.5px]" style={{ color: "#94a3b8" }}>
+                เลือกตารางทางซ้ายเพื่อดูคอลัมน์และตัวอย่างข้อมูล
               </div>
-            ))}
+            ) : detail.status === "loading" ? (
+              <div className="px-6 py-10 text-center text-[12.5px]" style={{ color: "#94a3b8" }}>
+                กำลังโหลดข้อมูลตาราง… · loading table…
+              </div>
+            ) : detail.status === "error" ? (
+              <div className="px-6 py-10 text-center">
+                <div className="text-[13px] font-semibold" style={{ color: "#b91c1c" }}>
+                  {detail.message}
+                </div>
+              </div>
+            ) : detail.status === "ready" ? (
+              <TableDetailView detail={detail.detail} />
+            ) : null}
           </div>
         </div>
-      </div>
+      ) : null}
 
+      {/* Footer */}
       <div className="flex items-center gap-2 border-t px-5 py-[11px] text-[11.5px]" style={{ borderColor: "#f1f5f9", color: "#94a3b8" }}>
         <span style={{ width: 7, height: 7, borderRadius: 99, background: "#16a34a" }} />
-        แสดง {rows.length} แถวจาก KRS · แถวเขียว = เพิ่งถูก INSERT
+        ข้อมูลจริงจาก KRS · read-only · ตัวอย่างจำกัด 50 แถวต่อตาราง
       </div>
     </div>
   );
 }
 
-function buildRows(
-  table: TableKey,
-  jobs: SyncJobDTO[],
-  insertedCount: number,
-  lastInsert: string | null
-): Row[] {
-  if (table === "sales") {
-    const fresh: Row[] = [];
-    // The just-inserted test rows (green) — capped at 3, newest first.
-    for (let i = 0; i < Math.min(insertedCount, 3); i++) {
-      const seq = 43 + insertedCount - i;
-      fresh.push({
-        cells: [
-          String(1248 + insertedCount - i),
-          `POS-20260616-${String(seq).padStart(4, "0")}`,
-          "—",
-          "—",
-          "pending",
-          lastInsert ?? "2026-06-16 14:25",
-        ],
-        fresh: true,
-      });
-    }
-    return [...fresh, ...STATIC_SALES.map((c) => ({ cells: c, fresh: false }))];
+/** The right-side detail: a columns table (name/type/nullable) + a sample-rows grid. */
+function TableDetailView({ detail }: { detail: TableDetail }) {
+  const cols = detail.columns;
+  return (
+    <div className="flex flex-col">
+      {/* Title bar */}
+      <div className="flex items-center gap-2 border-b px-5 py-3" style={{ borderColor: "#f1f5f9" }}>
+        <span className="mono text-[13.5px] font-bold" style={{ color: "#0f5132" }}>
+          {detail.schema}.{detail.name}
+        </span>
+        <span className="text-[11px]" style={{ color: "#94a3b8" }}>
+          {cols.length} คอลัมน์ · {detail.sample.length} แถวตัวอย่าง
+        </span>
+      </div>
+
+      {/* Columns */}
+      <div className="px-5 py-4">
+        <div className="mb-2 text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: "#94a3b8" }}>
+          คอลัมน์ · Columns
+        </div>
+        <div className="overflow-hidden rounded-[10px] border" style={{ borderColor: "#eef2f6" }}>
+          {cols.length === 0 ? (
+            <div className="px-3 py-4 text-center text-[11.5px]" style={{ color: "#94a3b8" }}>
+              ไม่มีคอลัมน์
+            </div>
+          ) : (
+            cols.map((c, i) => (
+              <div
+                key={c.columnName}
+                className="flex items-center gap-3 px-3 py-[7px] text-[11.5px]"
+                style={{ borderTop: i === 0 ? "none" : "1px solid #f4f7fa" }}
+              >
+                <span className="mono min-w-0 flex-1 truncate font-semibold" style={{ color: "#334155" }}>
+                  {c.columnName}
+                </span>
+                <span className="mono shrink-0" style={{ color: "#64748b" }}>
+                  {formatType(c)}
+                </span>
+                <span
+                  className="shrink-0 rounded-[6px] px-[6px] py-px text-[9.5px] font-semibold"
+                  style={
+                    c.isNullable
+                      ? { background: "#f1f5f9", color: "#94a3b8" }
+                      : { background: "#ecfdf5", color: "#0f5132" }
+                  }
+                >
+                  {c.isNullable ? "NULL" : "NOT NULL"}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Sample rows */}
+      <div className="px-5 pb-5">
+        <div className="mb-2 text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: "#94a3b8" }}>
+          ตัวอย่างข้อมูล · Sample (TOP 50)
+        </div>
+        {detail.sample.length === 0 ? (
+          <div className="rounded-[10px] border px-3 py-4 text-center text-[11.5px]" style={{ borderColor: "#eef2f6", color: "#94a3b8" }}>
+            ไม่มีข้อมูลในตารางนี้
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-[10px] border" style={{ borderColor: "#eef2f6" }}>
+            <table className="w-full border-collapse">
+              <thead>
+                <tr style={{ background: "#fafbfc" }}>
+                  {cols.map((c) => (
+                    <th
+                      key={c.columnName}
+                      className="mono whitespace-nowrap border-b px-3 py-[9px] text-left text-[10.5px] font-semibold"
+                      style={{ borderColor: "#eef2f6", color: "#94a3b8" }}
+                    >
+                      {c.columnName}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {detail.sample.map((row, ri) => (
+                  <tr key={ri}>
+                    {cols.map((c) => (
+                      <td
+                        key={c.columnName}
+                        className="mono max-w-[280px] truncate whitespace-nowrap border-b px-3 py-[8px] text-[11px]"
+                        style={{ borderColor: "#f4f7fa", color: "#334155" }}
+                        title={renderCell(row[c.columnName])}
+                      >
+                        {renderCell(row[c.columnName])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Compose a compact type label (e.g. `nvarchar(255)`, `decimal(10,2)`). */
+function formatType(c: ColumnMeta): string {
+  if (c.maxLength !== null && c.maxLength > 0) {
+    return `${c.dataType}(${c.maxLength})`;
   }
-  if (table === "sync_jobs") {
-    return jobs.slice(0, 8).map((j) => ({
-      cells: [
-        j.id,
-        jobTypeLabel(j.type),
-        j.ref,
-        j.status.toLowerCase(),
-        j.provider,
-        new Date(j.updatedAt).toLocaleString("en-CA", {
-          timeZone: "Asia/Bangkok",
-          hour12: false,
-        }).replace(",", ""),
-      ],
-      fresh: false,
-    }));
+  if (c.numericPrecision !== null && c.numericScale !== null) {
+    return `${c.dataType}(${c.numericPrecision},${c.numericScale})`;
   }
-  return STATIC_ROWS[table].map((c) => ({ cells: c, fresh: false }));
+  return c.dataType;
+}
+
+/** Render one sample cell value as display text. The server already sanitized the
+ *  values to JSON primitives (Date→ISO string, binary→placeholder), so we only need
+ *  to stringify null/undefined cleanly. */
+function renderCell(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return String(value);
 }

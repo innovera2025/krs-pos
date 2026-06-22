@@ -32,35 +32,9 @@ const POOL_MAX = 8;
 const CONNECT_TIMEOUT_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 
-/**
- * Fixed allow-list of KRS tables to introspect (P0 spec §6.2/§6.3). Hardcoded —
- * NEVER user-supplied — so the INFORMATION_SCHEMA query has no injection surface.
- *
- * Updated (krs-sync, P1 follow-up) to the REAL KRS schema discovered via live
- * introspection of `db_ACC_SNP` (a 238-table accounting ERP) — see
- * `process/features/krs-sync/references/krs-real-schema_discovery_22-06-26.md`.
- * The old mock names (sales/sale_items/products/...) did NOT exist on the real
- * server, so `/api/krs/schema` returned empty. These are the actual integration
- * targets: sales documents (`SalesInvoice*`/`SalesReturn*`/`SalesCN*`), the
- * inventory item master (`InventoryItem`) + flow/ledgers, the customer master,
- * units/type lookups, and the document-number table (`RunningNumber`).
- */
-const INTROSPECT_TABLES = [
-  "SalesInvoiceHdr",
-  "SalesInvoiceDtl",
-  "SalesReturnHdr",
-  "SalesReturnDtl",
-  "SalesCNHdr",
-  "SalesCNDtl",
-  "InventoryItem",
-  "InventoryFlowHdr",
-  "InventoryFlowDtl",
-  "InventoryLedgers",
-  "Customer",
-  "MeasurementUnits",
-  "InventoryType",
-  "RunningNumber",
-] as const;
+/** Sample-row cap for the table-detail browser. Hardcoded (not user-tunable) so the
+ *  `SELECT TOP (N)` literal is always a constant integer, never user input. */
+const SAMPLE_ROW_CAP = 50;
 
 /** Plaintext connection parameters used to build a one-shot mssql config (the
  *  "test before save" override path) — the password is plaintext here because the
@@ -86,6 +60,28 @@ export type KrsColumn = {
   maxLength: number | null;
   numericPrecision: number | null;
   numericScale: number | null;
+};
+
+/** One row of the all-tables listing (krs-sync schema browser). `columns` is the
+ *  column count for that base table (so the UI can show "238 tables" with a per-row
+ *  column tally without a second query per table). */
+export type KrsTableSummary = {
+  schema: string;
+  name: string;
+  columns: number;
+};
+
+/** A single sample-row value. mssql returns native JS types (number/Date/Buffer/
+ *  boolean/string/null); we keep them `unknown` and let the route serialize. */
+export type KrsSampleRow = Record<string, unknown>;
+
+/** The detail payload for one chosen table: its columns + a small sample. */
+export type KrsTableDetail = {
+  schema: string;
+  name: string;
+  columns: KrsColumn[];
+  /** Up to 50 sample rows (`SELECT TOP (50) *`). */
+  sample: KrsSampleRow[];
 };
 
 /** The result of a connection test (P0 spec §9.2). */
@@ -272,89 +268,217 @@ export async function testConnectionWithInput(
   return runTest(toConfig(input));
 }
 
-/**
- * Introspect the KRS schema via `INFORMATION_SCHEMA.COLUMNS` over the fixed table
- * allow-list (P0 spec §6.3 — parameter-free, no injection surface) using a config
- * the CALLER already built. Groups the rows by table name. On a driver error logs a
- * SANITIZED error and returns `null`. The pool is always closed.
- *
- * The schema route holds an already-built config (to classify "not configured" vs
- * "configured but unreachable"), so it calls THIS variant to avoid a redundant
- * second Prisma read + password decrypt (code-review M2). `introspectSchema()`
- * below is the convenience wrapper that builds the config then delegates here.
- */
-async function introspectSchemaWithConfig(
-  config: sql.config
-): Promise<Record<string, KrsColumn[]> | null> {
-  let pool: sql.ConnectionPool | null = null;
-  try {
-    pool = new sql.ConnectionPool(config);
-    await pool.connect();
-    const tableList = INTROSPECT_TABLES.map((t) => `'${t}'`).join(",");
-    const result = await pool.request().query<{
-      TABLE_NAME: string;
-      COLUMN_NAME: string;
-      DATA_TYPE: string;
-      CHARACTER_MAXIMUM_LENGTH: number | null;
-      NUMERIC_PRECISION: number | null;
-      NUMERIC_SCALE: number | null;
-      IS_NULLABLE: string;
-    }>(
-      `SELECT
-         TABLE_NAME, COLUMN_NAME, DATA_TYPE,
-         CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE
-       FROM INFORMATION_SCHEMA.COLUMNS
-       WHERE TABLE_NAME IN (${tableList})
-       ORDER BY TABLE_NAME, ORDINAL_POSITION;`
-    );
+/** Build a sanitized `{host,port,database,user,code,message}` for logging from a
+ *  config + thrown error — driver keys (which can embed the password) are dropped.
+ *  Centralized so every KRS query path logs the SAME safe shape. */
+function sanitizedKrsErr(config: sql.config, e: unknown) {
+  const parts = safeErrorParts(e);
+  return {
+    host: config.server,
+    port: config.port,
+    database: config.database,
+    user: config.user,
+    code: parts.code,
+    message: parts.message,
+  };
+}
 
-    const tables: Record<string, KrsColumn[]> = {};
-    for (const r of result.recordset) {
-      const col: KrsColumn = {
-        columnName: r.COLUMN_NAME,
-        dataType: r.DATA_TYPE,
-        isNullable: r.IS_NULLABLE === "YES",
-        maxLength: r.CHARACTER_MAXIMUM_LENGTH,
-        numericPrecision: r.NUMERIC_PRECISION,
-        numericScale: r.NUMERIC_SCALE,
-      };
-      (tables[r.TABLE_NAME] ??= []).push(col);
-    }
-    return tables;
-  } catch (e) {
-    const parts = safeErrorParts(e);
-    const sanitized = {
-      host: config.server,
-      port: config.port,
-      database: config.database,
-      user: config.user,
-      code: parts.code,
-      message: parts.message,
-    };
-    logger.error({ krsErr: sanitized }, "KRS schema introspection failed");
-    return null;
-  } finally {
-    if (pool) {
-      try {
-        await pool.close();
-      } catch {
-        // See runTest: swallow a close error after the work is done.
-      }
-    }
+/** Always-close pool helper: a close on a never-fully-opened pool can throw; the
+ *  query result is already determined, so swallow it (mirrors runTest). */
+async function closePoolQuietly(pool: sql.ConnectionPool | null): Promise<void> {
+  if (!pool) return;
+  try {
+    await pool.close();
+  } catch {
+    // Swallow — the query result is already determined.
   }
 }
 
 /**
- * Convenience wrapper: build the live config from the saved singleton then
- * introspect. Returns `null` when KRS is not configured OR introspection fails
- * (the latter already logged a sanitized error). The schema route prefers
- * `buildConnectionConfig()` + `introspectSchemaWithConfig()` so it can classify the
- * two cases AND avoid a double Prisma read/decrypt; other callers can use this.
+ * List EVERY base table in the KRS database (krs-sync schema browser) via
+ * `INFORMATION_SCHEMA.TABLES` joined to a per-table column count from
+ * `INFORMATION_SCHEMA.COLUMNS`. READ-ONLY, parameter-free, NO user input — there is
+ * no injection surface here (the query is a fixed string). Returns ALL base tables
+ * (the real `db_ACC_SNP` has ~238), ordered by name, so the UI can render a
+ * searchable full-schema list. On a driver error logs a SANITIZED error and returns
+ * `null`. The pool is always closed.
  */
-export async function introspectSchema(): Promise<Record<string, KrsColumn[]> | null> {
-  const config = await buildConnectionConfig();
-  if (!config) return null;
-  return introspectSchemaWithConfig(config);
+async function listKrsTablesWithConfig(
+  config: sql.config
+): Promise<KrsTableSummary[] | null> {
+  let pool: sql.ConnectionPool | null = null;
+  try {
+    pool = new sql.ConnectionPool(config);
+    await pool.connect();
+    const result = await pool.request().query<{
+      TABLE_SCHEMA: string;
+      TABLE_NAME: string;
+      COLUMN_COUNT: number;
+    }>(
+      `SELECT
+         t.TABLE_SCHEMA AS TABLE_SCHEMA,
+         t.TABLE_NAME   AS TABLE_NAME,
+         COUNT(c.COLUMN_NAME) AS COLUMN_COUNT
+       FROM INFORMATION_SCHEMA.TABLES t
+       LEFT JOIN INFORMATION_SCHEMA.COLUMNS c
+         ON c.TABLE_SCHEMA = t.TABLE_SCHEMA
+        AND c.TABLE_NAME   = t.TABLE_NAME
+       WHERE t.TABLE_TYPE = 'BASE TABLE'
+       GROUP BY t.TABLE_SCHEMA, t.TABLE_NAME
+       ORDER BY t.TABLE_NAME;`
+    );
+    return result.recordset.map((r) => ({
+      schema: r.TABLE_SCHEMA,
+      name: r.TABLE_NAME,
+      columns: Number(r.COLUMN_COUNT ?? 0),
+    }));
+  } catch (e) {
+    logger.error({ krsErr: sanitizedKrsErr(config, e) }, "KRS list-tables failed");
+    return null;
+  } finally {
+    await closePoolQuietly(pool);
+  }
 }
 
-export { introspectSchemaWithConfig };
+/** Convenience wrapper: build the saved config then list all base tables. Returns
+ *  `null` when KRS is not configured OR the listing failed (already logged). */
+export async function listKrsTables(): Promise<KrsTableSummary[] | null> {
+  const config = await buildConnectionConfig();
+  if (!config) return null;
+  return listKrsTablesWithConfig(config);
+}
+
+/**
+ * The detail-fetch result is a small tagged union so the route can return a clean
+ * 404 (table is not a real base table) vs 502 (driver/query failed) vs the payload.
+ *  - `{ status: "ok", detail }` — found + read.
+ *  - `{ status: "not-found" }` — `tableName` is NOT a real base table.
+ *  - `{ status: "error" }` — a driver/query fault (already logged, sanitized).
+ */
+export type KrsTableDetailResult =
+  | { status: "ok"; detail: KrsTableDetail }
+  | { status: "not-found" }
+  | { status: "error" };
+
+/**
+ * Read ONE chosen table's columns + a capped sample (`SELECT TOP (50) *`).
+ *
+ * SECURITY — this is the ONLY KRS path where the table name is USER-SUPPLIED, so it
+ * is treated as untrusted and is NEVER raw-interpolated into SQL:
+ *
+ *  1. EXISTENCE CHECK (parameterized): we look the name up in
+ *     `INFORMATION_SCHEMA.TABLES` via `request.input("t", sql.NVarChar, tableName)`
+ *     + `WHERE TABLE_NAME = @t AND TABLE_TYPE = 'BASE TABLE'`. The user string only
+ *     ever travels as a BOUND PARAMETER — it can never break out of the query. If no
+ *     row comes back, we return `not-found` and touch nothing else. This both
+ *     authorizes the name against the live table list AND resolves its REAL
+ *     `TABLE_SCHEMA` (we do not trust any client-sent schema).
+ *
+ *  2. COLUMNS (parameterized): the columns query is also bound on `@t` (+ the
+ *     resolved `@s` schema) — no interpolation.
+ *
+ *  3. SAMPLE rows: T-SQL cannot bind an IDENTIFIER (table name) as a parameter, so
+ *     for `SELECT TOP (N) * FROM <table>` we build the identifier SERVER-SIDE with
+ *     `QUOTENAME()` from the schema+name we just VALIDATED, and run it via
+ *     `sp_executesql` whose @stmt is itself assembled inside SQL Server from
+ *     `QUOTENAME(@s) + '.' + QUOTENAME(@t)`. The raw user string is bound to @s/@t
+ *     as NVarChar and `QUOTENAME` escapes it into a safe bracketed identifier, so
+ *     even a name containing `]` or `;` cannot escape. `TOP (50)` is a constant
+ *     literal (SAMPLE_ROW_CAP), never user input.
+ *
+ * Sanitized errors only (never the raw mssql error/config/password). Pool always
+ * closed.
+ */
+async function getKrsTableDetailWithConfig(
+  config: sql.config,
+  tableName: string
+): Promise<KrsTableDetailResult> {
+  let pool: sql.ConnectionPool | null = null;
+  try {
+    pool = new sql.ConnectionPool(config);
+    await pool.connect();
+
+    // (1) PARAMETERIZED existence check — authorize the user-supplied name against
+    // the live base-table list AND resolve its real schema. The name is a BOUND
+    // parameter; it can never break out of the query.
+    const existence = await pool
+      .request()
+      .input("t", sql.NVarChar, tableName)
+      .query<{ TABLE_SCHEMA: string; TABLE_NAME: string }>(
+        `SELECT TABLE_SCHEMA, TABLE_NAME
+         FROM INFORMATION_SCHEMA.TABLES
+         WHERE TABLE_NAME = @t AND TABLE_TYPE = 'BASE TABLE';`
+      );
+    const found = existence.recordset[0];
+    if (!found) {
+      // Not a real base table — reject (never touch the table).
+      return { status: "not-found" };
+    }
+    const schema = found.TABLE_SCHEMA;
+    const name = found.TABLE_NAME;
+
+    // (2) PARAMETERIZED columns query (bound on the resolved schema + name).
+    const colsResult = await pool
+      .request()
+      .input("s", sql.NVarChar, schema)
+      .input("t", sql.NVarChar, name)
+      .query<{
+        COLUMN_NAME: string;
+        DATA_TYPE: string;
+        CHARACTER_MAXIMUM_LENGTH: number | null;
+        NUMERIC_PRECISION: number | null;
+        NUMERIC_SCALE: number | null;
+        IS_NULLABLE: string;
+      }>(
+        `SELECT COLUMN_NAME, DATA_TYPE,
+                CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, IS_NULLABLE
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = @s AND TABLE_NAME = @t
+         ORDER BY ORDINAL_POSITION;`
+      );
+    const columns: KrsColumn[] = colsResult.recordset.map((r) => ({
+      columnName: r.COLUMN_NAME,
+      dataType: r.DATA_TYPE,
+      isNullable: r.IS_NULLABLE === "YES",
+      maxLength: r.CHARACTER_MAXIMUM_LENGTH,
+      numericPrecision: r.NUMERIC_PRECISION,
+      numericScale: r.NUMERIC_SCALE,
+    }));
+
+    // (3) SAMPLE rows. An identifier cannot be a SQL parameter, so we assemble the
+    // statement INSIDE SQL Server with QUOTENAME (which bracket-escapes the
+    // VALIDATED schema+name) and run it via sp_executesql. `TOP (N)` is a constant.
+    // `@s`/`@t` are still bound NVarChar — QUOTENAME turns them into a safe
+    // `[schema].[name]` identifier that cannot break out even if it contains `]`.
+    const sampleResult = await pool
+      .request()
+      .input("s", sql.NVarChar, schema)
+      .input("t", sql.NVarChar, name)
+      .query<KrsSampleRow>(
+        `DECLARE @stmt NVARCHAR(MAX) =
+           N'SELECT TOP (${SAMPLE_ROW_CAP}) * FROM ' + QUOTENAME(@s) + N'.' + QUOTENAME(@t) + N';';
+         EXEC sp_executesql @stmt;`
+      );
+    const sample: KrsSampleRow[] = sampleResult.recordset ?? [];
+
+    return { status: "ok", detail: { schema, name, columns, sample } };
+  } catch (e) {
+    logger.error({ krsErr: sanitizedKrsErr(config, e) }, "KRS table-detail failed");
+    return { status: "error" };
+  } finally {
+    await closePoolQuietly(pool);
+  }
+}
+
+/** Convenience wrapper: build the saved config then read one table's detail.
+ *  Returns `not-configured` when KRS is not set up (no row / no stored password) so
+ *  the route can distinguish that from a not-found table or a driver error. */
+export async function getKrsTableDetail(
+  tableName: string
+): Promise<KrsTableDetailResult | { status: "not-configured" }> {
+  const config = await buildConnectionConfig();
+  if (!config) return { status: "not-configured" };
+  return getKrsTableDetailWithConfig(config, tableName);
+}
+
+export { listKrsTablesWithConfig, getKrsTableDetailWithConfig };
