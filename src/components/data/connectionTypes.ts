@@ -42,8 +42,6 @@ export type DbState = {
   status: DbStatus;
   latency: number; // ms
   lastCheck: string; // HH:MM:SS display string
-  inserted: number; // session INSERT counter (test rows)
-  lastInsert: string | null; // last test-insert timestamp display string
 };
 
 /** The initial connection state — empty + disconnected until GET populates it. */
@@ -60,6 +58,4 @@ export const INITIAL_DB_STATE: DbState = {
   status: "disconnected",
   latency: 0,
   lastCheck: "",
-  inserted: 0,
-  lastInsert: null,
 };

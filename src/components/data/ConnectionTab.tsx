@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Database, RefreshCw, Plus, Boxes, Eye, EyeOff, Save, PackageSearch } from "lucide-react";
+import { Database, RefreshCw, Boxes, Eye, EyeOff, Save, PackageSearch } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
 import type { KrsConnectionSettingsDTO } from "@/types";
 import type { DbState, SyncMode } from "./connectionTypes";
@@ -29,9 +29,6 @@ import type { DbState, SyncMode } from "./connectionTypes";
  * The component receives the shared `db`/`setDb`/`testing`/`setTesting` state from
  * the /data screen (so the header pill + Live Data tab stay consistent) and owns
  * the password / saving / load behavior internally.
- *
- * The "ทดลอง INSERT" button stays visible (layout parity) but is a P1 stub — the
- * real insert path is P2.
  */
 export function ConnectionTab({
   db,
@@ -215,11 +212,6 @@ export function ConnectionTab({
     }
   }, [testing, db.host, setDb, setTesting, showToast]);
 
-  // The real test-row insert path is P2; keep the button for layout parity.
-  const onInsertTestRow = useCallback(() => {
-    showToast("ทดลอง INSERT ยังไม่พร้อมใช้ใน P1 · coming in P2");
-  }, [showToast]);
-
   // ---- Pull products from KRS (inbound, POST) ----
   //
   // Reads the KRS product master (dbo.InventoryItem) and upserts it into POS
@@ -325,7 +317,6 @@ export function ConnectionTab({
         >
           <Stat label="Latency" value={`${db.latency} ms`} valueColor="#a7f3d0" />
           <Stat label="ตรวจล่าสุด" value={db.lastCheck || "—"} valueColor="#cbd5e1" />
-          <Stat label="INSERT (เซสชัน)" value={String(db.inserted)} valueColor="#cbd5e1" />
         </div>
 
         <div className="flex-1" />
@@ -352,15 +343,6 @@ export function ConnectionTab({
           >
             <PackageSearch size={16} strokeWidth={2} />
             {pulling ? "กำลังดึงสินค้า..." : "ดึงสินค้าจาก KRS · Pull products"}
-          </button>
-          <button
-            type="button"
-            onClick={onInsertTestRow}
-            className="flex h-[42px] items-center gap-2 rounded-[11px] px-4 text-[13px] font-semibold text-white transition hover:brightness-110"
-            style={{ background: "#16a34a", boxShadow: "0 4px 12px rgba(22,163,74,.3)" }}
-          >
-            <Plus size={16} strokeWidth={2} />
-            ทดลอง INSERT
           </button>
         </div>
       </div>
@@ -532,11 +514,6 @@ export function ConnectionTab({
               <span style={{ width: 7, height: 7, borderRadius: 99, background: "#16a34a" }} />
               POS backend ↔ KRS · pool 0–8 connections
             </div>
-            {db.lastInsert ? (
-              <div className="mono mt-2 text-[11px]" style={{ color: "#94a3b8" }}>
-                ล่าสุด INSERT: {db.lastInsert}
-              </div>
-            ) : null}
           </div>
 
           {/* Realtime stock-sync toggle */}
