@@ -1,21 +1,25 @@
 "use client";
 
-import { ArrowRight, ArrowLeft, ArrowUp, ArrowDown, Database, AlertTriangle } from "lucide-react";
+import { ArrowRight, ArrowLeft, ArrowUp, Database, AlertTriangle } from "lucide-react";
 import {
   MAP_OUT,
-  MAP_IN,
   MAPPING_INCOMPLETE,
 } from "./mappingData";
+import { ProductImportMappingSection } from "./ProductImportMappingSection";
 import { AccountMappingSection } from "./AccountMappingSection";
 import { SyncModeSection } from "./SyncModeSection";
 import { StockMethodSection } from "./StockMethodSection";
 import type { SyncMode, StockMethod } from "./connectionTypes";
 
 /**
- * Field Mapping tab (KRS Data Link). The POS↔KRS flow diagram + outbound (7-row)
- * and inbound (6-row) field tables, a mapping-incomplete warning banner, then the
- * LATENT account-mapping / sync-mode / stock-method sections. Static display data
- * (decision D); the only interactivity is the sync-mode + stock-method selectors.
+ * Field Mapping tab (KRS Data Link). The POS↔KRS flow diagram + the outbound (7-row)
+ * static field table, then the REAL, persisted inbound PRODUCT_IMPORT mapping editor
+ * (krs-sync inbound import config — source-table + per-field column dropdowns, saved
+ * via /api/krs/mappings; the previously-static inbound diagram is replaced by it).
+ * A mapping-incomplete warning banner + the LATENT account-mapping / sync-mode /
+ * stock-method sections follow. Inbound mapping is now interactive (PRODUCT_IMPORT);
+ * the outbound table + latent sections remain static (the real outbound pipeline is
+ * a later phase).
  */
 export function FieldMappingTab({
   syncMode,
@@ -159,56 +163,11 @@ export function FieldMappingTab({
         ))}
       </div>
 
-      {/* Inbound table */}
-      <div
-        className="rounded-2xl border px-5 py-[18px]"
-        style={{ background: "#fff", borderColor: "#e8edf3" }}
-      >
-        <div className="mb-[13px] flex items-center gap-[9px]">
-          <span
-            className="grid h-[26px] w-[26px] place-items-center rounded-[7px]"
-            style={{ background: "#eff6ff", color: "#1d4ed8" }}
-          >
-            <ArrowDown size={15} strokeWidth={2.2} />
-          </span>
-          <span className="text-[14px] font-bold">ขาเข้า · KRS → POS</span>
-          <span className="text-[11.5px]" style={{ color: "#94a3b8" }}>
-            ดึงฐานข้อมูลมา map เข้าระบบ
-          </span>
-        </div>
-        <div
-          className="grid gap-[10px] border-b py-2 text-[11.5px] font-semibold"
-          style={{ gridTemplateColumns: "1.5fr 1.1fr 1.1fr 1.2fr", borderColor: "#eef2f6", color: "#94a3b8" }}
-        >
-          <div>KRS column</div>
-          <div>POS field</div>
-          <div>ชนิดข้อมูล</div>
-          <div>ความหมาย</div>
-        </div>
-        {MAP_IN.map((m) => (
-          <div
-            key={m.krs}
-            className="grid items-center gap-[10px] border-b py-[11px]"
-            style={{ gridTemplateColumns: "1.5fr 1.1fr 1.1fr 1.2fr", borderColor: "#f4f7fa" }}
-          >
-            <div className="mono text-[12px] font-semibold" style={{ color: "#334155" }}>
-              {m.krs}
-            </div>
-            <div className="flex items-center gap-[7px]">
-              <ArrowRight size={14} strokeWidth={2} color="#cbd5e1" />
-              <span className="mono text-[12px]" style={{ color: "#334155" }}>
-                {m.pos}
-              </span>
-            </div>
-            <div className="mono text-[11.5px]" style={{ color: "#94a3b8" }}>
-              {m.type}
-            </div>
-            <div className="text-[12px]" style={{ color: "#64748b" }}>
-              {m.note}
-            </div>
-          </div>
-        ))}
-      </div>
+      {/* Inbound — REAL, persisted PRODUCT_IMPORT mapping editor (replaces the
+          previously-static inbound KRS → POS diagram). Source-table + per-field
+          column dropdowns saved via /api/krs/mappings; the "ดึงสินค้าจาก KRS" pull
+          uses the saved mapping automatically. */}
+      <ProductImportMappingSection />
 
       {/* Mapping-incomplete warning (state-mapping-incomplete) */}
       {MAPPING_INCOMPLETE ? (

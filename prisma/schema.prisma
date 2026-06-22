@@ -430,3 +430,28 @@ model KrsConnectionSettings {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 }
+
+// Configurable KRS field-mapping (krs-sync inbound import config). One row PER
+// sync function, keyed by the function string (the row IS the singleton for that
+// function). Only "PRODUCT_IMPORT" is wired today; the model is deliberately
+// generic (function + sourceTable + fieldMap Json) so stock/customer/outbound
+// functions can be added later WITHOUT a schema change.
+//
+//  - function    : the function key, e.g. "PRODUCT_IMPORT" (PK → one row/function)
+//  - sourceTable : the KRS base-table name to read from (e.g. "InventoryItem").
+//                  Validated against the LIVE introspection before persist + before
+//                  any read — it feeds a QUOTENAME'd identifier, never raw SQL.
+//  - fieldMap    : Json object { posTargetField -> krsColumnName } (e.g.
+//                  { "sku": "ItemCode", "name": "ItemName", ... }). Keys are the
+//                  known POS target fields; values are KRS column names, also
+//                  validated to exist in `sourceTable` before persist + before read.
+//
+// When absent, the lib falls back to a typed in-code DEFAULT (the previously
+// hardcoded mapping), so the feature is backward-compatible on a fresh deploy.
+model KrsFieldMapping {
+  function    String   @id                  // function key, e.g. "PRODUCT_IMPORT"
+  sourceTable String                        // KRS base-table name (validated, QUOTENAME'd)
+  fieldMap    Json                          // { posTargetField: krsColumnName }
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
