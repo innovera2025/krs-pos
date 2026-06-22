@@ -15,6 +15,7 @@ This group covers:
 - `docker-compose.yml` services: `db` (Postgres) and `app` (the built Next.js app)
 - ports, volumes, healthchecks, and service dependencies
 - how to bring up a local database vs the full stack
+- database **backup & restore / DR** → see `db-backup-restore.md` (deeper doc)
 
 It does not cover:
 
@@ -30,6 +31,8 @@ Read this entrypoint when:
 - standing up a local Postgres or the full app+db stack
 - debugging container ports, env wiring, or build issues
 - planning deployment of the production image
+- backing up, rotating, or restoring the database / doing DR
+  → `db-backup-restore.md`
 
 ## Services (`docker-compose.yml`)
 
@@ -94,6 +97,18 @@ default workflow assumes the app runs inside compose (host `db`).
   in **two** places — the Dockerfile runner (`ENV NODE_ENV=production`) and the compose `app` service —
   so the built image stays in production mode even if the compose value is removed.
 
+## Backup & Restore (DR)
+
+Database backup, rotation, and restore are owned by `scripts/backup.sh` /
+`scripts/restore.sh` (npm: `db:backup` / `db:restore`). Because port 5432 is not
+published, both run the Postgres tools via `docker compose exec` and read creds
+from the git-ignored `.env`. A backup is **two** files: a `pg_dump -Fc` data
+dump **plus** a `pg_dumpall --globals-only` roles dump (the least-priv `krs_app`
+role is NOT in a single-DB dump and must be recreated on restore).
+
+Full procedure, cron line, off-box/5-year-retention guidance, and the manual
+restore runbook: **`db-backup-restore.md`**.
+
 ## Update Triggers
 
 Update this group when:
@@ -101,3 +116,5 @@ Update this group when:
 - the Dockerfile build stages or base images change
 - compose services, ports, volumes, healthchecks, or env wiring change
 - a reverse proxy, additional service (e.g. Redis), or CI/CD deploy is introduced
+- the backup/restore scripts, formats, retention, or DR policy change
+  (also update `db-backup-restore.md`)
