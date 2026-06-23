@@ -10,10 +10,10 @@ import { logger } from "@/lib/logger";
 /**
  * POST /api/krs/sync-stock (krs-sync R1 baseline import, admin-only).
  *
- * The BASELINE import: reads the KRS standard-cost stock ledger
- * (`dbo.tbl_STOCKSTD` current balance per trimmed Itemcode, READ ONLY) and SETS
- * each matching POS `Product.stock` to that balance (rounded to the Int column,
- * floored at 0 so a negative KRS balance never writes a negative POS stock).
+ * The BASELINE import: reads the KRS vendor-authoritative on-hand stored procedure
+ * (`dbo.sp_Onhand`, current Balqty per ItemCode, READ ONLY) and SETS each matching
+ * POS `Product.stock` to that balance (rounded to the Int column, floored at 0 so a
+ * negative KRS balance never writes a negative POS stock).
  *
  * Direction is STRICTLY one-way: it READS from KRS and WRITES ONLY to the POS
  * `Product.stock` column. It NEVER writes to KRS. Outbound write-back (R2) is
@@ -85,7 +85,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // ---- Read KRS stock ledger (read-only) ----
+    // ---- Read KRS on-hand via sp_Onhand (read-only) ----
     let balances;
     try {
       balances = await fetchKrsStockBalances(config);
@@ -117,7 +117,7 @@ export async function POST(req: Request) {
       for (const p of products) {
         const balance = krsByCode.get(p.sku);
         if (balance === undefined) {
-          // POS product with no KRS stock-ledger row — leave its POS stock untouched.
+          // POS product with no KRS on-hand row — leave its POS stock untouched.
           notInKrs += 1;
           continue;
         }

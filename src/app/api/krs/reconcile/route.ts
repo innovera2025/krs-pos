@@ -10,12 +10,12 @@ import { logger } from "@/lib/logger";
 /**
  * GET /api/krs/reconcile (krs-sync R1 stock reconciliation, admin-only).
  *
- * READ-ONLY both ways: reads the KRS standard-cost stock ledger
- * (`dbo.tbl_STOCKSTD`, current balance per trimmed Itemcode) and the POS product
- * table, JOINs them by `sku == itemCode`, and returns a per-item POS-vs-KRS stock
- * comparison plus the only-in-KRS / only-in-POS lists and a summary. It NEVER
- * writes to KRS, and it does NOT write to POS either (the write-side baseline import
- * is POST /api/krs/sync-stock).
+ * READ-ONLY both ways: reads the KRS vendor-authoritative on-hand stored procedure
+ * (`dbo.sp_Onhand`, current Balqty per ItemCode) and the POS product table, JOINs
+ * them by `sku == itemCode`, and returns a per-item POS-vs-KRS stock comparison plus
+ * the only-in-KRS / only-in-POS lists and a summary. It NEVER writes to KRS, and it
+ * does NOT write to POS either (the write-side baseline import is POST
+ * /api/krs/sync-stock).
  *
  * Flow:
  *  1. requireAdmin (the REAL authorization boundary — defense-in-depth).
@@ -78,7 +78,7 @@ export async function GET(req: Request) {
       );
     }
 
-    // ---- Read KRS stock ledger (read-only) ----
+    // ---- Read KRS on-hand via sp_Onhand (read-only) ----
     let balances;
     try {
       balances = await fetchKrsStockBalances(config);
@@ -111,8 +111,6 @@ export async function GET(req: Request) {
         name: string;
         posStock: number;
         krsStock: number;
-        totalIn: number;
-        totalOut: number;
         diff: number;
         isActive: boolean;
         status: "match" | "mismatch";
@@ -123,7 +121,7 @@ export async function GET(req: Request) {
       for (const p of products) {
         const krs = krsByCode.get(p.sku);
         if (krs === undefined) {
-          // POS product with no KRS stock-ledger row (never received/issued in KRS).
+          // POS product with no KRS on-hand row (sp_Onhand reports no balance for it).
           onlyInPos.push({
             sku: p.sku,
             name: p.name,
@@ -140,8 +138,6 @@ export async function GET(req: Request) {
           name: p.name,
           posStock: p.stock,
           krsStock,
-          totalIn: krs.totalIn,
-          totalOut: krs.totalOut,
           diff,
           isActive: p.isActive,
           status: diff === 0 ? "match" : "mismatch",
@@ -149,15 +145,12 @@ export async function GET(req: Request) {
       }
 
       // KRS item codes with no matching POS sku.
-      const onlyInKrs: { itemCode: string; krsStock: number; totalIn: number; totalOut: number }[] =
-        [];
+      const onlyInKrs: { itemCode: string; krsStock: number }[] = [];
       for (const b of balances) {
         if (matchedCodes.has(b.itemCode)) continue;
         onlyInKrs.push({
           itemCode: b.itemCode,
           krsStock: krsBaseline(b.balance),
-          totalIn: b.totalIn,
-          totalOut: b.totalOut,
         });
       }
 

@@ -24,7 +24,7 @@ import { useToast } from "@/components/ToastProvider";
  * This replaces the previous SIMULATED sync-job UI. It is now a REAL, read-mostly
  * POS↔KRS stock reconciliation view:
  *   - On mount + every ~45s it GETs /api/krs/reconcile (READ-ONLY both ways: reads
- *     the KRS standard-cost stock ledger `dbo.tbl_STOCKSTD` and the POS products,
+ *     the KRS vendor-authoritative on-hand proc `dbo.sp_Onhand` and the POS products,
  *     joins by sku == itemCode) and renders summary cards + a searchable table.
  *   - The "ซิงค์สต็อกจาก KRS" button POSTs /api/krs/sync-stock, the BASELINE import
  *     that SETs POS Product.stock = the KRS balance (rounded, floored at 0). It

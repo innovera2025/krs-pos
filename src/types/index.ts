@@ -306,7 +306,7 @@ export type KrsConnectionSettingsDTO = {
 
 /**
  * One reconciled item row from GET /api/krs/reconcile (krs-sync R1 stock
- * reconciliation): a POS product matched to its KRS stock-ledger balance by
+ * reconciliation): a POS product matched to its KRS on-hand balance (sp_Onhand) by
  * sku == itemCode. `krsStock` is the rounded/floored KRS balance (the baseline a
  * sync-stock import would write); `diff` = posStock − krsStock; `status` is "match"
  * when diff is 0, else "mismatch".
@@ -316,22 +316,18 @@ export type KrsReconcileRowDTO = {
   name: string;
   posStock: number;
   krsStock: number;
-  totalIn: number;
-  totalOut: number;
   diff: number;
   isActive: boolean;
   status: "match" | "mismatch";
 };
 
-/** A KRS stock-ledger item with no matching POS sku (มีใน KRS ไม่มีใน POS). */
+/** A KRS on-hand item (from sp_Onhand) with no matching POS sku (มีใน KRS ไม่มีใน POS). */
 export type KrsOnlyInKrsDTO = {
   itemCode: string;
   krsStock: number;
-  totalIn: number;
-  totalOut: number;
 };
 
-/** A POS product with no KRS stock-ledger row (มีใน POS ไม่มีใน KRS). */
+/** A POS product with no KRS on-hand row (มีใน POS ไม่มีใน KRS). */
 export type KrsOnlyInPosDTO = {
   sku: string;
   name: string;
