@@ -362,3 +362,39 @@ export type KrsSyncStockResultDTO = {
   notInKrs: number;
   total: number;
 };
+
+/**
+ * Status of a KRS inbound auto-pull run (krs-sync inbound auto-pull). Mirrors the
+ * `AutoSyncStatus` union in src/lib/krs/autoSync.ts. Declared here (client-safe, no
+ * NODE-only import) so the auto-sync API response + any future UI badge share one
+ * shape.
+ *  - OK / PARTIAL          — run completed (PARTIAL = one or more item writes failed)
+ *  - SKIPPED_LOCKED        — another run holds the single-run lock
+ *  - SKIPPED_MANUAL_MODE   — KrsConnectionSettings.syncMode === "manual"
+ *  - ABORTED_EMPTY_KRS     — empty sp_Onhand while prior snapshots exist (fail-safe)
+ *  - FAILED_PRODUCT_UPSERT — KRS product upsert threw (run aborted, no stock change)
+ *  - FAILED_KRS_FETCH      — sp_Onhand threw (run aborted, no stock change)
+ */
+export type AutoSyncStatus =
+  | "OK"
+  | "PARTIAL"
+  | "SKIPPED_LOCKED"
+  | "SKIPPED_MANUAL_MODE"
+  | "ABORTED_EMPTY_KRS"
+  | "FAILED_PRODUCT_UPSERT"
+  | "FAILED_KRS_FETCH";
+
+/**
+ * Typed result of a KRS inbound auto-pull run (krs-sync inbound auto-pull). Mirrors
+ * the return shape of `runAutoSync` in src/lib/krs/autoSync.ts. `delta` is the net
+ * signed stock change applied; `errors` are sanitized strings (never KRS secrets).
+ */
+export type AutoSyncResult = {
+  status: AutoSyncStatus;
+  runId: string;
+  delta: number;
+  updated: number;
+  skipped: number;
+  newProducts?: number;
+  errors: string[];
+};

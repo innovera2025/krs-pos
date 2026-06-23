@@ -32,4 +32,9 @@ export type { ImportProductsResult } from "./importProducts";
 // SAME read.
 export { fetchKrsStockBalances } from "./stock";
 export type { KrsStockBalance } from "./stock";
+// Inbound auto-pull delta engine (krs-sync inbound auto-pull): the delta-based
+// incremental stock pull used by the scheduled POST /api/krs/auto-sync endpoint.
+// Exported here so the route imports the public surface (not the deep module path).
+export { runAutoSync } from "./autoSync";
+export type { AutoSyncOptions, AutoSyncResult, AutoSyncStatus } from "./autoSync";
 export { encrypt, decrypt, KrsKeyError } from "./crypto";

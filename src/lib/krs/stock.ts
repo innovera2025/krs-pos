@@ -75,11 +75,14 @@ function cleanItemCode(v: unknown): string | null {
  * Fetch the current on-hand balance per item from the KRS vendor-authoritative
  * stored procedure `dbo.sp_Onhand` (READ ONLY).
  *
- * Called as `EXEC dbo.sp_Onhand @ItemCode=NULL, @Date=NULL, @Warehouse=NULL` with
- * the three arguments passed as BOUND parameters (never interpolated) — all-NULL is
- * the proc's own default, returning every item's full current on-hand across all
- * warehouses in a single call. Because nothing is interpolated, there is NO
- * injection surface (no parameters concatenated, no `sp_executesql`).
+ * Called as `EXEC dbo.sp_Onhand @ItemCode=NULL, @Date=NULL, @Warehouse=<warehouse>`
+ * with the three arguments passed as BOUND parameters (never interpolated).
+ * `@ItemCode` and `@Date` are always NULL (the proc's defaults: every item, no
+ * as-of-date cap). `@Warehouse` defaults to NULL (all warehouses summed) but an
+ * OPTIONAL `warehouse` arg restricts the result to a single KRS warehouse code
+ * (krs-sync auto-pull `KRS_AUTO_SYNC_WAREHOUSE`). It is passed as a BOUND NVarChar
+ * parameter — never concatenated — so there is NO injection surface even though it
+ * is config-supplied. An empty string is normalized to NULL (= all warehouses).
  *
  * Returns `KrsStockBalance[]` (numbers coerced; keyless/blank-code rows dropped).
  * An EMPTY array is a valid result (a KRS DB with no approved inventory-flow
@@ -87,23 +90,31 @@ function cleanItemCode(v: unknown): string | null {
  * config) and throws a small, non-sensitive `Error`. The pool is ALWAYS closed.
  */
 export async function fetchKrsStockBalances(
-  config: sql.config
+  config: sql.config,
+  warehouse: string | null = null
 ): Promise<KrsStockBalance[]> {
+  // Normalize an empty/whitespace warehouse to NULL (= all warehouses, the proc's
+  // default). The value travels ONLY as a bound parameter below — never interpolated.
+  const warehouseParam =
+    typeof warehouse === "string" && warehouse.trim().length > 0
+      ? warehouse.trim()
+      : null;
   let pool: sql.ConnectionPool | null = null;
   try {
     pool = new sql.ConnectionPool(config);
     await pool.connect();
 
-    // All three args are NULL (the proc's declared defaults): every item, no as-of
-    // date cap (full current balance), all warehouses. Passed as BOUND parameters —
-    // their types mirror the proc signature (@ItemCode NVARCHAR, @Date DATE,
-    // @Warehouse NVARCHAR). `.execute` invokes the proc by its fixed name; the
-    // values can never break out of the call (no string interpolation).
+    // @ItemCode + @Date are NULL (the proc's declared defaults): every item, no
+    // as-of date cap (full current balance). @Warehouse is NULL (all warehouses) or
+    // the single configured code. Passed as BOUND parameters — their types mirror
+    // the proc signature (@ItemCode NVARCHAR, @Date DATE, @Warehouse NVARCHAR).
+    // `.execute` invokes the proc by its fixed name; the values can never break out
+    // of the call (no string interpolation).
     const result = await pool
       .request()
       .input("ItemCode", sql.NVarChar(50), null)
       .input("Date", sql.Date, null)
-      .input("Warehouse", sql.NVarChar(20), null)
+      .input("Warehouse", sql.NVarChar(20), warehouseParam)
       .execute<{ ItemCode: string | null; Balqty: unknown }>("dbo.sp_Onhand");
 
     const balances: KrsStockBalance[] = [];

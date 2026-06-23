@@ -25,6 +25,47 @@ services:
       - caddy_data:/data
       - caddy_config:/config
 
+  # KRS inbound auto-pull scheduler (krs-sync inbound auto-pull). A tiny sidecar
+  # that POSTs the bearer-protected auto-sync trigger on a cron interval. It lives in
+  # this PROD overlay (not the base file) so a local `docker compose up` does NOT run
+  # the scheduler — it activates only with `-f docker-compose.yml -f docker-compose.prod.yml`.
+  #
+  # It reaches the app over the INTERNAL compose network at app:3000 (the base file
+  # binds the app to 127.0.0.1 on the host only; the service hostname `app` resolves
+  # on the compose network). curlimages/curl ships busybox + curl; we generate a
+  # crontab and run busybox `crond` in the foreground.
+  #
+  # The endpoint itself is the real safety gate: it is bearer-authenticated, opt-in
+  # (KRS_AUTO_SYNC_ENABLED), single-run-locked, and fail-safe. If
+  # KRS_SYNC_TRIGGER_SECRET is unset the endpoint returns 503 and no stock changes —
+  # the sidecar simply logs a failed curl. NEVER bake the secret into the image: it
+  # is passed from the git-ignored .env at runtime.
+  krs-cron:
+    image: curlimages/curl:latest
+    container_name: krs-pos-cron
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      # Bearer secret for the auto-sync endpoint (from the git-ignored .env). Sent as
+      # `Authorization: Bearer <value>`. NEVER committed; NEVER logged by the app.
+      KRS_SYNC_TRIGGER_SECRET: ${KRS_SYNC_TRIGGER_SECRET:-}
+      # Cron schedule (standard 5-field crontab). Default every 5 minutes.
+      KRS_AUTO_SYNC_CRON_SCHEDULE: ${KRS_AUTO_SYNC_CRON_SCHEDULE:-*/5 * * * *}
+    # Generate a per-container crontab that curls the internal endpoint, then run
+    # busybox crond in the foreground (-f) at log level 8 so cron activity is visible
+    # in `docker logs krs-pos-cron`. The curl output goes to the container stdout.
+    # `--fail` makes curl exit non-zero on a >=400 status so a disabled/misconfigured
+    # endpoint shows up clearly in the logs without leaking the response body.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        echo "$${KRS_AUTO_SYNC_CRON_SCHEDULE} curl -s --fail -X POST -H \"Authorization: Bearer $${KRS_SYNC_TRIGGER_SECRET}\" -H \"Content-Type: application/json\" -d '{}' http://app:3000/api/krs/auto-sync" > /tmp/krs-crontab
+        crond -f -l 8 -c /tmp/krs-crontab
+
 volumes:
   caddy_data:
   caddy_config:

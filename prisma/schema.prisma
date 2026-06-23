@@ -372,6 +372,7 @@ enum StockMovementType {
   RECEIVE
   SALE
   ADJUST
+  KRS_SYNC   // auto-pull delta (ERP receipt/adjustment applied to POS stock)
 }
 
 model StockMovement {
@@ -454,4 +455,20 @@ model KrsFieldMapping {
   fieldMap    Json                          // { posTargetField: krsColumnName }
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+// KRS on-hand snapshot per item (krs-sync inbound auto-pull). One row per
+// KRS ItemCode (= POS Product.sku). Stores the last-seen sp_Onhand Balqty
+// so the auto-sync delta engine can compute ERP-originated movements only
+// (delta = currentKrsQty − lastSeenKrsQty). See src/lib/krs/autoSync.ts.
+//
+// The magic row itemCode = "__LOCK__" is the run-lock sentinel (lockedAt field);
+// it is never a real product snapshot and is never included in delta computation.
+//
+// ADDITIVE ONLY — no existing table altered.
+model KrsStockSnapshot {
+  itemCode  String    @id               // KRS ItemCode (trimmed) = POS Product.sku
+  lastQty   Decimal   @db.Decimal(12, 4) // last seen sp_Onhand Balqty (raw fractional)
+  lockedAt  DateTime?                   // run-lock sentinel (only itemCode="__LOCK__")
+  updatedAt DateTime  @updatedAt
 }

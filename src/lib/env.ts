@@ -106,6 +106,32 @@ const EnvSchema = z.object({
   // NOT here. Shape is recorded only so the validated `env` object carries it.
   // When set it must decode to exactly 32 bytes (base64); crypto.ts enforces that.
   KRS_CONFIG_ENC_KEY: z.string().optional(),
+
+  // --- KRS auto-sync (inbound auto-pull, krs-sync). Three knobs for the
+  // scheduled delta-pull endpoint POST /api/krs/auto-sync. ALL OPTIONAL at boot
+  // (a deploy that never enables auto-sync, and CI/e2e, must still boot). SHAPE is
+  // validated when present; the operational gates (missing secret → 503, disabled
+  // → 422) are enforced at the endpoint, not here.
+  //
+  // KRS_SYNC_TRIGGER_SECRET — the shared bearer secret the cron scheduler sends as
+  // `Authorization: Bearer <value>` to the auto-sync endpoint. Min 32 chars when
+  // present (high-entropy: openssl rand -hex 32). When unset, the endpoint returns
+  // 503 (not configured). NEVER logged or returned.
+  KRS_SYNC_TRIGGER_SECRET: z
+    .string()
+    .min(32, "KRS_SYNC_TRIGGER_SECRET must be at least 32 characters")
+    .optional(),
+  // KRS_AUTO_SYNC_ENABLED — kill switch. The auto-sync endpoint runs ONLY when
+  // this is exactly "true"; any other value (including the default) returns 422.
+  // Opt-in by design.
+  KRS_AUTO_SYNC_ENABLED: z.enum(["true", "false"]).default("false"),
+  // KRS_AUTO_SYNC_WAREHOUSE — optional sp_Onhand @Warehouse filter. Empty/unset =
+  // all warehouses (NULL). Passed as a BOUND mssql parameter, never concatenated;
+  // the ≤20 cap mirrors the KRS warehouse-code format (e.g. "WHFG").
+  KRS_AUTO_SYNC_WAREHOUSE: z
+    .string()
+    .max(20, "KRS_AUTO_SYNC_WAREHOUSE must be at most 20 characters")
+    .optional(),
 });
 
 function loadEnv(): z.infer<typeof EnvSchema> {
@@ -137,6 +163,13 @@ function loadEnv(): z.infer<typeof EnvSchema> {
       // build phase (no KRS write/connect happens at build time); the real
       // length validation lives at the crypto.ts callsite at runtime.
       KRS_CONFIG_ENC_KEY: process.env.KRS_CONFIG_ENC_KEY,
+      // KRS auto-sync knobs (krs-sync inbound auto-pull) — passed through
+      // unvalidated during the build phase (the auto-sync endpoint never runs at
+      // build time); real shape validation + the endpoint gates apply at runtime.
+      KRS_SYNC_TRIGGER_SECRET: process.env.KRS_SYNC_TRIGGER_SECRET,
+      KRS_AUTO_SYNC_ENABLED:
+        process.env.KRS_AUTO_SYNC_ENABLED === "true" ? "true" : "false",
+      KRS_AUTO_SYNC_WAREHOUSE: process.env.KRS_AUTO_SYNC_WAREHOUSE,
     };
   }
 

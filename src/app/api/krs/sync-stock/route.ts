@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
 import { buildConnectionConfig } from "@/lib/krs/client";
@@ -117,13 +118,30 @@ export async function POST(req: Request) {
       for (const p of products) {
         const balance = krsByCode.get(p.sku);
         if (balance === undefined) {
-          // POS product with no KRS on-hand row — leave its POS stock untouched.
+          // POS product with no KRS on-hand row — leave its POS stock untouched. No
+          // snapshot is seeded (there is no KRS on-hand value to record).
           notInKrs += 1;
           continue;
         }
+
+        // Seed/update KrsStockSnapshot with the RAW KRS balance (not the rounded POS
+        // stock). This is what makes the FIRST auto-pull after a manual baseline
+        // compute delta = 0 for unchanged items (krs-sync inbound auto-pull §10):
+        // without it the auto-pull would treat the full KRS on-hand as a fresh delta
+        // and double-add it. Seeded even on the SKIPPED path (POS stock already at
+        // baseline) — the snapshot must reflect the current KRS value regardless of
+        // whether POS stock changed. This is the manual absolute-baseline path, not
+        // the auto delta path, so it intentionally tracks the raw KRS value here.
+        await prisma.krsStockSnapshot.upsert({
+          where: { itemCode: p.sku },
+          update: { lastQty: new Prisma.Decimal(balance) },
+          create: { itemCode: p.sku, lastQty: new Prisma.Decimal(balance) },
+        });
+
         const target = toPosStock(balance);
         if (target === p.stock) {
-          // Already at the KRS baseline — no write (keeps the import idempotent).
+          // Already at the KRS baseline — no stock write (keeps the import
+          // idempotent), but the snapshot above is still refreshed.
           skipped += 1;
           continue;
         }
