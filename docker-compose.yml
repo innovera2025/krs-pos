@@ -78,6 +78,16 @@ services:
       # app lazy-fails only when a KRS feature actually runs), but REQUIRED in prod to
       # use the KRS integration. Supplied from the git-ignored .env.
       KRS_CONFIG_ENC_KEY: ${KRS_CONFIG_ENC_KEY:-}
+      # KRS inbound auto-pull (Phase 1). The app reads these at boot via src/lib/env.ts.
+      # Without them here the container never sees them even if they are in .env, so the
+      # /api/krs/auto-sync endpoint would stay disabled/unauthenticated.
+      #  - KRS_SYNC_TRIGGER_SECRET: bearer secret the krs-cron sidecar authenticates with
+      #    (must match the sidecar's value in docker-compose.prod.yml). Empty = endpoint 503.
+      #  - KRS_AUTO_SYNC_ENABLED: kill switch; must be "true" to enable. Default false (opt-in).
+      #  - KRS_AUTO_SYNC_WAREHOUSE: optional sp_Onhand @Warehouse filter; empty = all warehouses.
+      KRS_SYNC_TRIGGER_SECRET: ${KRS_SYNC_TRIGGER_SECRET:-}
+      KRS_AUTO_SYNC_ENABLED: ${KRS_AUTO_SYNC_ENABLED:-false}
+      KRS_AUTO_SYNC_WAREHOUSE: ${KRS_AUTO_SYNC_WAREHOUSE:-}
     ports:
       # Bind to localhost only — the public entrypoint is the Caddy reverse proxy
       # (docker-compose.prod.yml, ports 80/443). Caddy reaches the app over the
