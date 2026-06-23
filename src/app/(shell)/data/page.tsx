@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SyncJobDTO, KrsConnectionSettingsDTO } from "@/types";
+import type { KrsConnectionSettingsDTO } from "@/types";
 import { AdminOnly } from "@/components/AdminOnly";
 import { useToast } from "@/components/ToastProvider";
 import { ConnectionTab } from "@/components/data/ConnectionTab";
@@ -32,12 +32,14 @@ const TABS: { key: DataTab; label: string; en: string }[] = [
  *
  * As of krs-sync P1 the Connection tab is a REAL admin-only MS SQL Server
  * connection (the `mssql` driver, encrypted config + AES-256-GCM password, real
- * test-connection/schema routes) — NOT a simulation. The Live Data tab is now a
- * REAL read-only browser over the live KRS schema (GET /api/krs/schema lists every
- * base table; ?table=X returns columns + a TOP 50 sample). The Field Mapping and
- * sync-mode/stock-method state is still pure client React state (decisions B/C/D),
- * and only the Data Flow SyncJob CRUD touches the server; those sync tabs remain
- * SIMULATED (the real outbox/sync pipeline is P2/P3).
+ * test-connection/schema routes) — NOT a simulation. The Live Data tab is a REAL
+ * read-only browser over the live KRS schema (GET /api/krs/schema lists every base
+ * table; ?table=X returns columns + a TOP 50 sample). As of krs-sync R1 the Data
+ * Flow tab is a REAL POS↔KRS stock RECONCILIATION dashboard (GET /api/krs/reconcile
+ * compares POS Product.stock against the KRS standard-cost ledger balance; POST
+ * /api/krs/sync-stock is the baseline import that SETs POS stock from KRS — it never
+ * writes to KRS). The Field Mapping and sync-mode/stock-method state is still pure
+ * client React state (decisions B/C/D). Outbound write-back to KRS (R2) is deferred.
  */
 export default function DataPage() {
   return (
@@ -217,34 +219,11 @@ function DataScreen() {
     [showToast]
   );
 
-  // ---- Sync jobs (server-backed) ----
-  const [jobs, setJobs] = useState<SyncJobDTO[]>([]);
-  const [loading, setLoading] = useState(true);
-  // Tri-state error flag (matches the loading/empty/error pattern on /pos /products
-  // /sales): a failed GET /api/sync-jobs surfaces a clear message in the Data Flow
-  // table instead of a silent empty state.
-  const [jobsError, setJobsError] = useState(false);
-
-  const fetchJobs = useCallback(async () => {
-    setJobsError(false);
-    try {
-      const res = await fetch("/api/sync-jobs");
-      if (!res.ok) throw new Error("fetch failed");
-      const data = (await res.json()) as SyncJobDTO[];
-      setJobs(data);
-    } catch {
-      // Surface the failure (the Data Flow table renders an error state). Keep any
-      // previously loaded list so a transient refetch error after data already
-      // loaded does not blank the table.
-      setJobsError(true);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void fetchJobs();
-  }, [fetchJobs]);
+  // The Data Flow tab is now SELF-CONTAINED (krs-sync R1): it fetches its own stock
+  // reconciliation from /api/krs/reconcile and runs the baseline import via
+  // /api/krs/sync-stock. The page no longer fetches /api/sync-jobs for it. The
+  // legacy /api/sync-jobs route + the NavRail failed-count badge are left intact;
+  // they are just no longer surfaced in this tab.
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -326,9 +305,7 @@ function DataScreen() {
               onStockMethod={onStockMethod}
             />
           ) : null}
-          {tab === "flow" ? (
-            <DataFlowTab jobs={jobs} loading={loading} error={jobsError} onRefetch={fetchJobs} />
-          ) : null}
+          {tab === "flow" ? <DataFlowTab /> : null}
           {tab === "preview" ? <LiveDataTab /> : null}
         </div>
       </div>

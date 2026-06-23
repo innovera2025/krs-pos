@@ -27,4 +27,9 @@ export { fetchKrsProducts } from "./products";
 export type { KrsProductRecord } from "./products";
 export { importKrsProducts } from "./importProducts";
 export type { ImportProductsResult } from "./importProducts";
+// Inbound stock reconciliation + baseline import (krs-sync R1): KRS read-only
+// current-stock fetch. Exported here so the reconcile + sync-stock routes share the
+// SAME read.
+export { fetchKrsStockBalances } from "./stock";
+export type { KrsStockBalance } from "./stock";
 export { encrypt, decrypt, KrsKeyError } from "./crypto";

@@ -303,3 +303,66 @@ export type KrsConnectionSettingsDTO = {
   engine: string;
   syncMode: string;
 };
+
+/**
+ * One reconciled item row from GET /api/krs/reconcile (krs-sync R1 stock
+ * reconciliation): a POS product matched to its KRS stock-ledger balance by
+ * sku == itemCode. `krsStock` is the rounded/floored KRS balance (the baseline a
+ * sync-stock import would write); `diff` = posStock − krsStock; `status` is "match"
+ * when diff is 0, else "mismatch".
+ */
+export type KrsReconcileRowDTO = {
+  sku: string;
+  name: string;
+  posStock: number;
+  krsStock: number;
+  totalIn: number;
+  totalOut: number;
+  diff: number;
+  isActive: boolean;
+  status: "match" | "mismatch";
+};
+
+/** A KRS stock-ledger item with no matching POS sku (มีใน KRS ไม่มีใน POS). */
+export type KrsOnlyInKrsDTO = {
+  itemCode: string;
+  krsStock: number;
+  totalIn: number;
+  totalOut: number;
+};
+
+/** A POS product with no KRS stock-ledger row (มีใน POS ไม่มีใน KRS). */
+export type KrsOnlyInPosDTO = {
+  sku: string;
+  name: string;
+  posStock: number;
+  isActive: boolean;
+};
+
+/** Roll-up counts for the reconcile dashboard summary cards. */
+export type KrsReconcileSummaryDTO = {
+  total: number;
+  matched: number;
+  mismatched: number;
+  onlyInKrs: number;
+  onlyInPos: number;
+};
+
+/** Full GET /api/krs/reconcile success payload (krs-sync R1). */
+export type KrsReconcileDTO = {
+  ok: true;
+  rows: KrsReconcileRowDTO[];
+  onlyInKrs: KrsOnlyInKrsDTO[];
+  onlyInPos: KrsOnlyInPosDTO[];
+  summary: KrsReconcileSummaryDTO;
+  checkedAt: string;
+};
+
+/** POST /api/krs/sync-stock success payload (krs-sync R1 baseline import). */
+export type KrsSyncStockResultDTO = {
+  ok: true;
+  updated: number;
+  skipped: number;
+  notInKrs: number;
+  total: number;
+};
