@@ -14,8 +14,6 @@ import { AdminOnly } from "@/components/AdminOnly";
 import { money } from "@/lib/money";
 import {
   LOW_STOCK,
-  monogramChar,
-  monogramTint,
   stockStatus,
 } from "@/components/products/productMeta";
 import {
@@ -338,7 +336,6 @@ function ProductsScreen() {
               </thead>
               <tbody>
                 {filtered.map((p) => {
-                  const tint = monogramTint(p.category?.name);
                   const status = stockStatus(p.stock);
                   const priceNum = Number(p.price);
                   return (
@@ -353,16 +350,7 @@ function ProductsScreen() {
                         </span>
                       </Td>
                       <Td>
-                        <div className="flex items-center gap-2.5">
-                          <span
-                            aria-hidden="true"
-                            className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-[12px] text-[15px] font-bold"
-                            style={{ background: tint.bg, color: tint.fg }}
-                          >
-                            {monogramChar(p.name)}
-                          </span>
-                          <span className="font-semibold">{p.name}</span>
-                        </div>
+                        <span className="font-semibold">{p.name}</span>
                       </Td>
                       <Td>
                         <span style={{ color: "var(--muted)" }}>
