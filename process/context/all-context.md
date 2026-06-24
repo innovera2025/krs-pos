@@ -4,7 +4,7 @@
 > both Claude and Codex. Read it first, then open the grouped/source docs it points to.
 > Regenerate or refresh with the `vc-generate-context` skill.
 
-- Last updated: 2026-06-20 (synced to P6b state — P1–6b done, P6c + P7 remaining)
+- Last updated: 2026-06-24 (synced through krs-inbound-auto-pull — live on prod)
 - Repo HEAD: main (committed through P6a; P4/P5/P6b changes committed per git status)
 - Mode: Context sync (context-maintainer)
 - Package manager: npm (`package-lock.json` committed)
@@ -48,8 +48,10 @@ sales history + shift Z-report + refund/void (P5), customer picker + tax invoice
 UI + design spec docs (P6a–6c). Phases 6c (Design Spec docs) and P7 (cross-cutting hardening)
 are the remaining work.
 
-**KRS transport is SIMULATED** — the `/data` KRS Data Link UI mutates `SyncJob` state with
-canned responses; real accounting integration is deferred to the production-readiness program.
+**KRS inbound sync is REAL (live on prod)** — `POST /api/krs/auto-sync` runs a delta engine
+against `sp_Onhand` every 5 minutes via the `krs-cron` Docker sidecar. **KRS outbound (POS→KRS
+write-back) remains deferred** — blocked on the vendor spec from the KRS team. The `/data` KRS
+Data Link UI and `SyncJob` state machine still produce canned responses for outbound jobs only.
 
 **RBAC is a CLIENT DEMO STUB** — `RoleProvider`/`NavRail`/`AdminOnly` enforce role gating
 in the browser only; the server does not check session role. Real auth/RBAC enforcement is
@@ -86,7 +88,7 @@ For most substantial tasks:
 |---|---|---|
 | `planning/` | `process/context/planning/all-planning.md` | plan-shape calibration, SIMPLE vs COMPLEX, PRD examples |
 | `tests/` | `process/context/tests/all-tests.md` | verification strategy, commands, ephemeral-Postgres smoke pattern (no automated tests yet — known gap) |
-| `database/` | `process/context/database/all-database.md` | Prisma schema, 10 models + 10 enums, 4 tracked migrations, seeding, client singleton, integer-satang money, status-scoped aggregates |
+| `database/` | `process/context/database/all-database.md` | Prisma schema, 11 models + 11 enums, 5 tracked migrations, seeding, client singleton, integer-satang money, status-scoped aggregates |
 | `container/` | `process/context/container/all-container.md` | Dockerfile, docker-compose services (db + app), ports, build/run commands |
 
 ## 5. Task Routing Table
@@ -102,6 +104,7 @@ For most substantial tasks:
 | UI/frontend or POS redesign work | `all-context.md` | `design/Simple POS.dc.html`, `design/KRS POS Taste Redesign.html`, then relevant `src/app/(shell)/*/page.tsx` |
 | RBAC / role gates | `all-context.md` | `src/lib/roleAccess.ts`, `src/components/RoleProvider.tsx`, `src/components/AdminOnly.tsx` |
 | KRS sync / SyncJob state | `all-context.md`, `database/all-database.md` | `src/app/api/sync-jobs/route.ts`, `src/app/(shell)/data/page.tsx` |
+| KRS inbound auto-pull / auto-sync | `all-context.md`, `database/all-database.md`, `container/all-container.md` | `src/lib/krs/autoSync.ts`, `src/app/api/krs/auto-sync/route.ts` — `POST /api/krs/auto-sync` uses bearer machine-auth (NOT session); see `KrsStockSnapshot` model |
 | customer / tax invoice | `all-context.md`, `database/all-database.md` | `src/app/api/customers/route.ts`, `src/app/api/orders/route.ts` |
 | testing or verification | `all-context.md`, `tests/all-tests.md` | — |
 | creating a new plan | `all-context.md`, `planning/all-planning.md` | `process/development-protocols/references/example-simple-prd.md` |
@@ -130,6 +133,8 @@ krs-pos/
         sync-jobs/         -- GET job list / POST insert-all-pending/pull
           [id]/            -- PATCH retry/skip a job
           failed-count/    -- GET count of FAILED jobs (drives NavRail badge)
+        krs/
+          auto-sync/       -- POST /api/krs/auto-sync — machine-auth bearer; runs delta engine
       (shell)/             -- route group with shared NavRail layout
         layout.tsx         -- NavRail shell layout
         pos/               -- /pos — Taste checkout + payment modal + receipt
@@ -161,10 +166,13 @@ krs-pos/
       money.ts             -- formatting: money(n) → "฿X.XX", formatSatang(satang) → "฿X.XX"
       datetime.ts          -- Asia/Bangkok helpers: bangkokDateParts, bangkokYyyymmdd, bangkokDayWindow
       roleAccess.ts        -- NAV_ACCESS map + canAccess() — CLIENT DEMO ONLY, not a server auth boundary
+      krs/
+        autoSync.ts        -- inbound delta engine: fetchKrsOnhand → diff vs KrsStockSnapshot → adjust Product.stock; run-lock via __LOCK__ sentinel row
     types/
       index.ts             -- shared TS types
   Dockerfile               -- multi-stage Next.js production image (node:20-alpine)
   docker-compose.yml       -- postgres:16-alpine (db) + app; credentials from env, port 5432 not published
+  docker-compose.prod.yml  -- production overlay: adds krs-cron sidecar (curlimages/curl, 5-min auto-sync poll)
   next.config.mjs
   tailwind.config.ts
   tsconfig.json            -- path alias @/* -> ./src/*
@@ -242,8 +250,11 @@ These are real and worth flagging before touching the relevant code:
   an atomic `updateMany where stock gte qty` guard is a planned production-readiness task.
 - **`POST /api/orders` is the most sensitive file.** It handles money, stock, and payment lines.
   Run the `pricing-tester` agent after touching `src/app/api/orders/route.ts`.
-- **KRS sync is simulated.** `/data` and `SyncJob` mutations produce canned responses — there is
-  no real KRS transport. Do not treat `SyncJob.status` changes as a real accounting event.
+- **KRS inbound sync is REAL (live on prod).** `POST /api/krs/auto-sync` (bearer machine-auth)
+  calls `sp_Onhand`, computes a delta against `KrsStockSnapshot`, and adjusts `Product.stock`.
+  Triggered every 5 min by the `krs-cron` sidecar in `docker-compose.prod.yml`. **KRS outbound
+  (POS → KRS write-back) is still deferred** — the `/data` tab `SyncJob` state machine still
+  produces canned responses for outbound jobs only. Do not treat outbound `SyncJob.status` as real.
 - **`orderNumber = ORD-${Date.now()}`** collision risk under concurrent checkouts within the same
   millisecond (the new POS number scheme `POS-YYYYMMDD-####` is used for POS sales; the `ORD-`
   format remains as a fallback path — see orders route).
@@ -263,6 +274,12 @@ These are real and worth flagging before touching the relevant code:
   Use a non-`postgres` app user (suggest `krs_app`). Values live in a git-ignored `.env`;
   `.env.example` documents the names with placeholders only.
 - Runtime: `NODE_ENV` (set to `production` by `docker-compose.yml` for the app service)
+- KRS auto-sync (app, forwarded in docker-compose.yml):
+  - `KRS_SYNC_TRIGGER_SECRET` — bearer secret; validated by `POST /api/krs/auto-sync` (machine-auth)
+  - `KRS_AUTO_SYNC_ENABLED` — opt-in kill switch (`true`/`false`, default `false`)
+  - `KRS_AUTO_SYNC_WAREHOUSE` — warehouse filter passed to `sp_Onhand` (empty = all)
+- KRS auto-sync (sidecar only, NOT in app `env.ts`):
+  - `KRS_AUTO_SYNC_INTERVAL_SECONDS` — poll interval for the `krs-cron` sidecar (default 300)
 
 ## 10. Current Program State
 
@@ -308,10 +325,12 @@ When durable project knowledge changes: (1) update the smallest relevant context
 ## Scan Metadata
 
 - Generated: 2026-06-20
-- Synced to: P6b state (P1–6b done; P6c + P7 remaining)
+- Last manual update: 2026-06-24 (krs-inbound-auto-pull shipped; 11 models, 11 enums, 5 migrations; krs-cron sidecar live)
+- Synced to: krs-inbound-auto-pull on main (commits 942efa8, c8f4afd, d48de83, 989d88c, 054f291, 6ae8346)
 - Package manager: npm
 - Source files scanned: `prisma/schema.prisma`, `prisma/migrations/`, `prisma/seed.ts`,
   `src/app/api/*/route.ts`, `src/app/(shell)/*/page.tsx`, `src/components/*.tsx`,
-  `src/lib/{prisma,pricing,money,datetime,roleAccess}.ts`, `src/types/index.ts`,
-  `package.json`, `tsconfig.json`, `docker-compose.yml`, `Dockerfile`, `.env.example`,
+  `src/lib/{prisma,pricing,money,datetime,roleAccess}.ts`, `src/lib/krs/autoSync.ts`,
+  `src/types/index.ts`, `package.json`, `tsconfig.json`, `docker-compose.yml`,
+  `docker-compose.prod.yml`, `Dockerfile`, `.env.example`,
   `process/general-plans/active/pos-redesign_PLAN_20-06-26.md`

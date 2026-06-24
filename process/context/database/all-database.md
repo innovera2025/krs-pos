@@ -5,7 +5,7 @@ This file is the canonical database context entrypoint for krs-pos.
 Use it after `process/context/all-context.md` when the task needs schema changes, Prisma model
 work, migrations, seeding, or money/Decimal handling.
 
-Last updated: 2026-06-20 (synced to P6b state)
+Last updated: 2026-06-24 (synced through krs-inbound-auto-pull — 11 models, 11 enums, 5 migrations)
 
 ---
 
@@ -13,7 +13,7 @@ Last updated: 2026-06-20 (synced to P6b state)
 
 This group covers:
 
-- the Prisma schema (`prisma/schema.prisma`): 10 models + 10 enums (as of P6a)
+- the Prisma schema (`prisma/schema.prisma`): 11 models + 11 enums (as of krs-inbound-auto-pull)
 - model relationships and key constraints (unique fields, cascade deletes)
 - migration workflow (`prisma migrate` — tracked migrations only; `db push` is dev-convenience only)
 - seeding (`prisma/seed.ts` via tsx)
@@ -39,7 +39,7 @@ Read this entrypoint when:
 
 Provider: **PostgreSQL** (`datasource db`, `url = env("DATABASE_URL")`). Generator: `prisma-client-js`.
 
-**Models (`prisma/schema.prisma`) — 10 models as of Phase 6a:**
+**Models (`prisma/schema.prisma`) — 11 models as of krs-inbound-auto-pull:**
 
 | Model | Key fields & constraints | Relations |
 |---|---|---|
@@ -53,11 +53,14 @@ Provider: **PostgreSQL** (`datasource db`, `url = env("DATABASE_URL")`). Generat
 | `Shift` | `shiftNumber` unique, `status ShiftStatus @default(OPEN)`, `openedAt/closedAt?`, `openingFloat Decimal(10,2) @default(0)`, `countedCash Decimal(10,2)?`, `cashierId?`, `branchId @default("BR-01")` (P5) | `cashier User?`, `orders Order[]` |
 | `Customer` | `name`, `taxId? @unique`, `phone?`, `address?`, `branchId @default("BR-01")` (P6a) | `orders Order[]` |
 | `SyncJob` | `type SyncJobType`, `direction SyncDirection @default(INSERT)`, `ref String`, `amount Decimal(12,2) @default(0)`, `status SyncJobStatus @default(PENDING)`, `provider String @default("KRS")`, `error?`, `response?`, `branchId @default("BR-01")` (P6a) | — |
+| `KrsStockSnapshot` | `itemCode String @id`, `lastQty Decimal(12,4)`, `lockedAt DateTime?`, `updatedAt @updatedAt` — KRS on-hand snapshot for the inbound auto-pull delta engine. The row with `itemCode = "__LOCK__"` is the run-lock sentinel (prevents concurrent sync runs). | — |
 
-All models have `createdAt @default(now())`; all except `OrderItem`, `PaymentLine`, and `StockMovement`
-also have `updatedAt @updatedAt`. IDs are `cuid()` strings.
+All models have `createdAt @default(now())`; all except `OrderItem`, `PaymentLine`, `StockMovement`,
+and `KrsStockSnapshot` also have `updatedAt @updatedAt` (KrsStockSnapshot has `updatedAt` but no
+`createdAt` — it is a keyed snapshot store, not an audit log). IDs are `cuid()` strings for most models;
+`KrsStockSnapshot` uses `itemCode String @id` as a natural key.
 
-**Enums — 10 enums as of Phase 6a:**
+**Enums — 11 enums as of krs-inbound-auto-pull:**
 
 | Enum | Values |
 |---|---|
@@ -66,7 +69,7 @@ also have `updatedAt @updatedAt`. IDs are `cuid()` strings.
 | `PaymentType` | `CASH`, `CARD`, `QR`, `TRANSFER`, `EWALLET` (P3), `OTHER` (P3) |
 | `SyncStatus` | `PENDING`, `DAILY`, `SYNCED`, `FAILED`, `SKIPPED` (P5) |
 | `ShiftStatus` | `OPEN`, `CLOSED` (P5) |
-| `StockMovementType` | `RECEIVE`, `SALE`, `ADJUST` (P4) |
+| `StockMovementType` | `RECEIVE`, `SALE`, `ADJUST` (P4), `KRS_SYNC` (krs-inbound-auto-pull — auto-pull delta audit) |
 | `SyncJobType` | `SALE`, `REFUND`, `STOCK`, `PULL`, `TAX_INVOICE`, `STOCK_ADJ`, `RECEIVE` (P6a) |
 | `SyncDirection` | `INSERT`, `PULL` (P6a) |
 | `SyncJobStatus` | `PENDING`, `SYNCED`, `FAILED`, `RETRYING`, `SKIPPED` (P6a) |
@@ -76,7 +79,7 @@ also have `updatedAt @updatedAt`. IDs are `cuid()` strings.
 The repo uses **`prisma migrate`** (tracked migration history) — NOT `db push` for production.
 `db push` is available as `npm run db:push` for dev/scratch use only.
 
-Four migrations exist under `prisma/migrations/`:
+Five migrations exist under `prisma/migrations/`:
 
 | Migration folder | Phase | Contents |
 |---|---|---|
@@ -84,6 +87,7 @@ Four migrations exist under `prisma/migrations/`:
 | `20260620124520_phase4_catalog_stock_users` | P4 | `User.isActive`, `branchId` on User/Product/Order; `StockMovement` model + `StockMovementType` enum |
 | `20260620134846_phase5_shift_sales_status` | P5 | `VOIDED` on OrderStatus; `Shift` model + `ShiftStatus` enum; `SyncStatus` enum; `Order.shiftId`/`syncStatus`/`accountingDocNo`/`taxRequested`; `User.shifts` back-relation |
 | `20260620144152_phase6a_customer_syncjob` | P6a | `Customer` model; `SyncJob` model; enums SyncJobType/SyncDirection/SyncJobStatus; `Order.customerId` |
+| `20260623105939_krs_auto_sync_snapshot` | krs-inbound-auto-pull | `KrsStockSnapshot` model (`itemCode @id`, `lastQty Decimal(12,4)`, `lockedAt`, `updatedAt`); `KRS_SYNC` value added to `StockMovementType` enum |
 
 Apply to a fresh DB with `prisma migrate deploy` (CI/production) or `prisma migrate dev` (dev).
 
@@ -135,8 +139,13 @@ npm run prisma:seed       # run prisma/seed.ts (tsx) — sample data (categories
 - **`branchId` is present on User/Product/Order/StockMovement/Shift/Customer/SyncJob** as a
   multi-branch-ready placeholder — all default to `"BR-01"`. Single-branch deployments can ignore it.
   Full multi-branch enforcement is deferred to a future program.
-- **KRS sync is SIMULATED.** `/data` tab and `SyncJob` state machine mutate status with canned
-  responses; there is no real KRS transport. Real integration = production-readiness program.
+- **KRS inbound sync is REAL (live on prod).** The auto-pull engine (`src/lib/krs/autoSync.ts`,
+  `POST /api/krs/auto-sync`) calls vendor `sp_Onhand` to read live KRS on-hand quantities and
+  applies a delta against `KrsStockSnapshot` to adjust `Product.stock` without overwriting POS
+  sales. Triggered every 5 minutes by the `krs-cron` Docker sidecar in `docker-compose.prod.yml`.
+  **OUTBOUND (POS → KRS write-back) remains deferred** — blocked on the vendor spec from the KRS
+  team. The `/data` tab `SyncJob` state machine still produces canned responses for outbound jobs;
+  do not treat outbound `SyncJob.status` changes as real accounting events.
 
 ## Update Triggers
 

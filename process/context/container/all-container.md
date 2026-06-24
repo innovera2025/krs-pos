@@ -41,6 +41,23 @@ Read this entrypoint when:
 | `db` | `postgres:16-alpine` | **not published** | `POSTGRES_USER/PASSWORD/DB` come from env (`${POSTGRES_USER}` / `${POSTGRES_PASSWORD}` / `${POSTGRES_DB:-krs_pos}`); default user is non-`postgres` (suggest `krs_app`); named volume `pgdata`; healthcheck via `pg_isready -U ${POSTGRES_USER}` |
 | `app` | built from `./Dockerfile` | `3000:3000` | `depends_on: db (service_healthy)`; `NODE_ENV=production`; `DATABASE_URL` from env, points at `db:5432` (in-network host `db`) |
 
+## Production Compose Overlay (`docker-compose.prod.yml`)
+
+The production overlay adds the `krs-cron` sidecar to the base compose. It is **separate from
+`docker-compose.yml`** so local `docker compose up` does not run the scheduler. On the VPS:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+| Service | Image | Notes |
+|---|---|---|
+| `krs-cron` | `curlimages/curl` | sh poll-loop: `while true; do curl -s -X POST -H "Authorization: Bearer $KRS_SYNC_TRIGGER_SECRET" http://app:3000/api/krs/auto-sync; sleep $KRS_AUTO_SYNC_INTERVAL_SECONDS; done`. Reaches the `app` service over the internal compose network. **NOT crond** — `crond` crash-loops as non-root in curl image; use the `sleep` loop instead. |
+
+The sidecar reads `KRS_SYNC_TRIGGER_SECRET` (required) and `KRS_AUTO_SYNC_INTERVAL_SECONDS`
+(optional, default 300 = 5 minutes) from env. These are sidecar-only; the Next.js app does not
+consume `KRS_AUTO_SYNC_INTERVAL_SECONDS`.
+
 - **Phase 0 hardening (2026-06-20):** the `db` service no longer hardcodes credentials and no
   longer publishes port 5432 to the host. Credentials are read from env vars at compose time, and
   Postgres is reachable only over the internal compose network (host `db`), not from the host/LAN.
@@ -50,6 +67,14 @@ Read this entrypoint when:
 - Required env vars (names only; values live in a git-ignored `.env`, never committed):
   `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`. See `.env.example` for
   placeholder-only documentation.
+- **KRS auto-sync env vars (app service, forwarded in docker-compose.yml):**
+  - `KRS_SYNC_TRIGGER_SECRET` — bearer secret the cron sidecar sends; validated by `POST /api/krs/auto-sync` (machine-auth, NOT session)
+  - `KRS_AUTO_SYNC_ENABLED` — opt-in kill switch (`true`/`false`, default `false`); app aborts the sync if falsy
+  - `KRS_AUTO_SYNC_WAREHOUSE` — warehouse filter for `sp_Onhand` (`NULL` = all warehouses; default empty/unset)
+- **Sidecar-only env var (krs-cron service, NOT in app env.ts):**
+  - `KRS_AUTO_SYNC_INTERVAL_SECONDS` — poll interval in seconds (default 300 = every 5 min)
+- **`next.config.mjs`** has an env-gated `distDir`: `process.env.NEXT_DIST_DIR || ".next"` —
+  allows overriding the output directory at build time without changing the config file.
 - The image's `POSTGRES_USER` is still the Postgres cluster owner. A true least-privilege app role
   (an app role distinct from the cluster owner, with superuser reserved for migrations) is
   **deferred to Phase 3** — Phase 0 only stops using the literal `postgres:postgres` default and

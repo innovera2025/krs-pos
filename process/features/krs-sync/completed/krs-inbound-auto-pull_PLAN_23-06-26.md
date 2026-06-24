@@ -1,3 +1,5 @@
+Status: COMPLETE — deployed (commits c8f4afd, 989d88c, 054f291; live on prod 2026-06-23/24)
+
 # KRS Phase 1: Inbound Auto-Pull (ERP → POS) — Implementation Plan
 
 - Feature: krs-sync
