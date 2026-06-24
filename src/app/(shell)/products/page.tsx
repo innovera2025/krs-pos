@@ -7,7 +7,6 @@ import {
   PackagePlus,
   AlertTriangle,
   Pencil,
-  Boxes,
 } from "lucide-react";
 import type { Category, Product } from "@/types";
 import { useToast } from "@/components/ToastProvider";
@@ -332,7 +331,7 @@ function ProductsScreen() {
                   <Th>หมวดหมู่</Th>
                   <Th className="text-right">ราคา</Th>
                   <Th className="text-right">VAT 7%</Th>
-                  <Th className="text-right">คงเหลือ</Th>
+                  <Th>บาร์โค้ด</Th>
                   <Th>สถานะ</Th>
                   <Th className="text-right">จัดการ</Th>
                 </tr>
@@ -378,10 +377,9 @@ function ProductsScreen() {
                           {money(inclusiveVat(priceNum))}
                         </span>
                       </Td>
-                      <Td className="text-right">
-                        <span className="mono inline-flex items-center justify-end gap-1 font-semibold">
-                          <Boxes size={13} strokeWidth={2} color="#98a2b3" />
-                          {p.stock}
+                      <Td>
+                        <span className="mono text-[12px]" style={{ color: "var(--muted)" }}>
+                          {p.barcode ?? "—"}
                         </span>
                       </Td>
                       <Td>
