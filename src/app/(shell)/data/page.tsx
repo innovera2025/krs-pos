@@ -12,8 +12,6 @@ import { LiveStatusPill } from "@/components/data/LiveStatusPill";
 import {
   INITIAL_DB_STATE,
   type DbState,
-  type SyncMode,
-  type StockMethod,
 } from "@/components/data/connectionTypes";
 
 type DataTab = "connection" | "mapping" | "flow" | "preview";
@@ -71,8 +69,6 @@ function DataScreen() {
   const [db, setDbState] = useState<DbState>(INITIAL_DB_STATE);
   const [testing, setTesting] = useState(false);
   const [stockSync, setStockSync] = useState(true);
-  const [syncMode, setSyncMode] = useState<SyncMode>("daily");
-  const [stockMethod, setStockMethod] = useState<StockMethod>("perpetual");
 
   const setDb = useCallback(
     (patch: Partial<DbState>) => setDbState((s) => ({ ...s, ...patch })),
@@ -194,31 +190,6 @@ function DataScreen() {
     });
   }, [showToast]);
 
-  const onSyncMode = useCallback(
-    (m: SyncMode) => {
-      setSyncMode(m);
-      const labels: Record<SyncMode, string> = {
-        realtime: "รายบิลทันที",
-        daily: "สรุปรายวัน",
-        manual: "แมนนวล",
-      };
-      showToast(`เปลี่ยนโหมดซิงค์เป็น ${labels[m]}`);
-    },
-    [showToast]
-  );
-
-  const onStockMethod = useCallback(
-    (m: StockMethod) => {
-      setStockMethod(m);
-      showToast(
-        `วิธีลงบัญชีสต็อก: ${
-          m === "perpetual" ? "ต่อเนื่อง (ลง COGS ทุกบิล)" : "เป็นงวด (ปรับมูลค่าตอนปิดรอบ)"
-        }`
-      );
-    },
-    [showToast]
-  );
-
   // The Data Flow tab is now SELF-CONTAINED (krs-sync R1): it fetches its own stock
   // reconciliation from /api/krs/reconcile and runs the baseline import via
   // /api/krs/sync-stock. The page no longer fetches /api/sync-jobs for it. The
@@ -297,14 +268,7 @@ function DataScreen() {
               onToggleStockSync={toggleStockSync}
             />
           ) : null}
-          {tab === "mapping" ? (
-            <FieldMappingTab
-              syncMode={syncMode}
-              onSyncMode={onSyncMode}
-              stockMethod={stockMethod}
-              onStockMethod={onStockMethod}
-            />
-          ) : null}
+          {tab === "mapping" ? <FieldMappingTab /> : null}
           {tab === "flow" ? <DataFlowTab /> : null}
           {tab === "preview" ? <LiveDataTab /> : null}
         </div>
