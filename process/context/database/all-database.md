@@ -5,7 +5,7 @@ This file is the canonical database context entrypoint for krs-pos.
 Use it after `process/context/all-context.md` when the task needs schema changes, Prisma model
 work, migrations, seeding, or money/Decimal handling.
 
-Last updated: 2026-06-24 (synced through krs-inbound-auto-pull — 11 models, 11 enums, 5 migrations)
+Last updated: 2026-06-24 (seller-company-settings shipped — 12 models, 11 enums, 6 migrations)
 
 ---
 
@@ -13,7 +13,7 @@ Last updated: 2026-06-24 (synced through krs-inbound-auto-pull — 11 models, 11
 
 This group covers:
 
-- the Prisma schema (`prisma/schema.prisma`): 11 models + 11 enums (as of krs-inbound-auto-pull)
+- the Prisma schema (`prisma/schema.prisma`): 12 models + 11 enums (as of seller-company-settings)
 - model relationships and key constraints (unique fields, cascade deletes)
 - migration workflow (`prisma migrate` — tracked migrations only; `db push` is dev-convenience only)
 - seeding (`prisma/seed.ts` via tsx)
@@ -39,7 +39,7 @@ Read this entrypoint when:
 
 Provider: **PostgreSQL** (`datasource db`, `url = env("DATABASE_URL")`). Generator: `prisma-client-js`.
 
-**Models (`prisma/schema.prisma`) — 11 models as of krs-inbound-auto-pull:**
+**Models (`prisma/schema.prisma`) — 12 models as of seller-company-settings:**
 
 | Model | Key fields & constraints | Relations |
 |---|---|---|
@@ -54,6 +54,7 @@ Provider: **PostgreSQL** (`datasource db`, `url = env("DATABASE_URL")`). Generat
 | `Customer` | `name`, `taxId? @unique`, `phone?`, `address?`, `branchId @default("BR-01")` (P6a) | `orders Order[]` |
 | `SyncJob` | `type SyncJobType`, `direction SyncDirection @default(INSERT)`, `ref String`, `amount Decimal(12,2) @default(0)`, `status SyncJobStatus @default(PENDING)`, `provider String @default("KRS")`, `error?`, `response?`, `branchId @default("BR-01")` (P6a) | — |
 | `KrsStockSnapshot` | `itemCode String @id`, `lastQty Decimal(12,4)`, `lockedAt DateTime?`, `updatedAt @updatedAt` — KRS on-hand snapshot for the inbound auto-pull delta engine. The row with `itemCode = "__LOCK__"` is the run-lock sentinel (prevents concurrent sync runs). | — |
+| `ShopSettings` | Singleton row (`id = "singleton"`). Receipt layout: `receiptWidthMm Int @default(80)`, `receiptHeightAuto Boolean @default(true)`, `receiptHeightMm Int?`. Seller identity (DB-primary, ENV fallback via `getSellerConfig()`): `sellerName String?`, `sellerTaxId String?`, `sellerAddress String?`, `sellerPhone String?`, `sellerPosId String?`, `sellerBranchCode String?`, `sellerBranchLabel String?`. The 7 seller fields replaced the former `SELLER_*`-env-only design (migration `20260624120424_seller_settings`); `getSellerConfig()` is now async, reads DB first, falls back to `SELLER_*` env vars per field. Editable by admin via `/settings` Seller Info card. | — |
 
 All models have `createdAt @default(now())`; all except `OrderItem`, `PaymentLine`, `StockMovement`,
 and `KrsStockSnapshot` also have `updatedAt @updatedAt` (KrsStockSnapshot has `updatedAt` but no
@@ -79,7 +80,7 @@ and `KrsStockSnapshot` also have `updatedAt @updatedAt` (KrsStockSnapshot has `u
 The repo uses **`prisma migrate`** (tracked migration history) — NOT `db push` for production.
 `db push` is available as `npm run db:push` for dev/scratch use only.
 
-Five migrations exist under `prisma/migrations/`:
+Six migrations exist under `prisma/migrations/`:
 
 | Migration folder | Phase | Contents |
 |---|---|---|
@@ -88,6 +89,7 @@ Five migrations exist under `prisma/migrations/`:
 | `20260620134846_phase5_shift_sales_status` | P5 | `VOIDED` on OrderStatus; `Shift` model + `ShiftStatus` enum; `SyncStatus` enum; `Order.shiftId`/`syncStatus`/`accountingDocNo`/`taxRequested`; `User.shifts` back-relation |
 | `20260620144152_phase6a_customer_syncjob` | P6a | `Customer` model; `SyncJob` model; enums SyncJobType/SyncDirection/SyncJobStatus; `Order.customerId` |
 | `20260623105939_krs_auto_sync_snapshot` | krs-inbound-auto-pull | `KrsStockSnapshot` model (`itemCode @id`, `lastQty Decimal(12,4)`, `lockedAt`, `updatedAt`); `KRS_SYNC` value added to `StockMovementType` enum |
+| `20260624120424_seller_settings` | seller-company-settings | 7 nullable `TEXT` columns added to `ShopSettings` (`sellerName`, `sellerTaxId`, `sellerAddress`, `sellerPhone`, `sellerPosId`, `sellerBranchCode`, `sellerBranchLabel`); additive only — no drops, no alters to existing columns |
 
 Apply to a fresh DB with `prisma migrate deploy` (CI/production) or `prisma migrate dev` (dev).
 

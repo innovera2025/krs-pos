@@ -4,8 +4,8 @@
 > both Claude and Codex. Read it first, then open the grouped/source docs it points to.
 > Regenerate or refresh with the `vc-generate-context` skill.
 
-- Last updated: 2026-06-24 (synced through krs-inbound-auto-pull — live on prod)
-- Repo HEAD: main (committed through P6a; P4/P5/P6b changes committed per git status)
+- Last updated: 2026-06-24 (seller-company-settings shipped — 12 models, 11 enums, 6 migrations; live on prod)
+- Repo HEAD: main (committed through seller-company-settings; commits 27153c1 feat + c7ab7f9 docs)
 - Mode: Context sync (context-maintainer)
 - Package manager: npm (`package-lock.json` committed)
 
@@ -88,7 +88,7 @@ For most substantial tasks:
 |---|---|---|
 | `planning/` | `process/context/planning/all-planning.md` | plan-shape calibration, SIMPLE vs COMPLEX, PRD examples |
 | `tests/` | `process/context/tests/all-tests.md` | verification strategy, commands, ephemeral-Postgres smoke pattern (no automated tests yet — known gap) |
-| `database/` | `process/context/database/all-database.md` | Prisma schema, 11 models + 11 enums, 5 tracked migrations, seeding, client singleton, integer-satang money, status-scoped aggregates |
+| `database/` | `process/context/database/all-database.md` | Prisma schema, 12 models + 11 enums, 6 tracked migrations, seeding, client singleton, integer-satang money, status-scoped aggregates |
 | `container/` | `process/context/container/all-container.md` | Dockerfile, docker-compose services (db + app), ports, build/run commands |
 
 ## 5. Task Routing Table
@@ -106,6 +106,7 @@ For most substantial tasks:
 | KRS sync / SyncJob state | `all-context.md`, `database/all-database.md` | `src/app/api/sync-jobs/route.ts`, `src/app/(shell)/data/page.tsx` |
 | KRS inbound auto-pull / auto-sync | `all-context.md`, `database/all-database.md`, `container/all-container.md` | `src/lib/krs/autoSync.ts`, `src/app/api/krs/auto-sync/route.ts` — `POST /api/krs/auto-sync` uses bearer machine-auth (NOT session); see `KrsStockSnapshot` model |
 | customer / tax invoice | `all-context.md`, `database/all-database.md` | `src/app/api/customers/route.ts`, `src/app/api/orders/route.ts` |
+| seller config / shop settings / receipt header | `all-context.md`, `database/all-database.md` | `src/lib/sellerConfig.ts` (async DB-first + ENV fallback), `src/app/api/settings/route.ts`, `src/app/(shell)/settings/page.tsx` |
 | testing or verification | `all-context.md`, `tests/all-tests.md` | — |
 | creating a new plan | `all-context.md`, `planning/all-planning.md` | `process/development-protocols/references/example-simple-prd.md` |
 | context maintenance | `all-context.md` | run the `vc-audit-context` skill after edits |
@@ -115,9 +116,9 @@ For most substantial tasks:
 ```
 krs-pos/
   prisma/
-    schema.prisma          -- DB schema: 10 models + 10 enums (see §8 and database/all-database.md)
+    schema.prisma          -- DB schema: 12 models + 11 enums (see §8 and database/all-database.md)
     seed.ts                -- sample data: categories, products, admin user, shift, orders, customers, sync jobs
-    migrations/            -- 4 tracked migrations (init_with_payments, phase4, phase5, phase6a)
+    migrations/            -- 6 tracked migrations (init_with_payments, phase4, phase5, phase6a, krs_auto_sync_snapshot, seller_settings)
   src/
     app/
       api/
@@ -135,6 +136,8 @@ krs-pos/
           failed-count/    -- GET count of FAILED jobs (drives NavRail badge)
         krs/
           auto-sync/       -- POST /api/krs/auto-sync — machine-auth bearer; runs delta engine
+        settings/          -- GET shop settings (requireUser) / PATCH update settings (requireAdmin); includes receipt layout + 7 seller identity fields (sellerName, sellerTaxId, sellerAddress, sellerPhone, sellerPosId, sellerBranchCode, sellerBranchLabel)
+        seller-config/     -- GET resolved seller config (DB-first + SELLER_* env fallback); async getSellerConfig() — returns null if mandatory §86/4 particulars (name/taxId/address) absent
       (shell)/             -- route group with shared NavRail layout
         layout.tsx         -- NavRail shell layout
         pos/               -- /pos — Taste checkout + payment modal + receipt
@@ -144,6 +147,7 @@ krs-pos/
         shift/             -- /shift — Shift open/close + Z-report
         data/              -- /data — KRS Data Link (4 tabs: Connection/Mapping/Data Flow/Live Data)
         docs/              -- /docs — Design Spec docs (placeholder; P6c next)
+        settings/          -- /settings — Shop Settings (admin-only); receipt layout + Seller Info card (7 seller fields; editable without server restart)
       login/               -- /login — UI stub (no real auth yet)
       layout.tsx           -- root layout
       page.tsx             -- root → redirects to /pos
@@ -274,6 +278,12 @@ These are real and worth flagging before touching the relevant code:
   Use a non-`postgres` app user (suggest `krs_app`). Values live in a git-ignored `.env`;
   `.env.example` documents the names with placeholders only.
 - Runtime: `NODE_ENV` (set to `production` by `docker-compose.yml` for the app service)
+- Seller identity (app, **FALLBACK ONLY** as of 2026-06-24 — seller-company-settings feature):
+  `SELLER_NAME`, `SELLER_TAX_ID`, `SELLER_ADDRESS`, `SELLER_BRANCH_CODE`, `SELLER_BRANCH_LABEL` —
+  these env vars are now **per-field fallbacks** when the corresponding `ShopSettings` DB column is
+  null/empty. DB values (editable by admin at `/settings`) take precedence. Existing deploys that
+  use only env vars continue to work without any change. See `src/lib/sellerConfig.ts` for the
+  DB-first + env fallback resolution chain. `getSellerConfig()` is async (DB query on every call).
 - KRS auto-sync (app, forwarded in docker-compose.yml):
   - `KRS_SYNC_TRIGGER_SECRET` — bearer secret; validated by `POST /api/krs/auto-sync` (machine-auth)
   - `KRS_AUTO_SYNC_ENABLED` — opt-in kill switch (`true`/`false`, default `false`)
@@ -325,8 +335,8 @@ When durable project knowledge changes: (1) update the smallest relevant context
 ## Scan Metadata
 
 - Generated: 2026-06-20
-- Last manual update: 2026-06-24 (krs-inbound-auto-pull shipped; 11 models, 11 enums, 5 migrations; krs-cron sidecar live)
-- Synced to: krs-inbound-auto-pull on main (commits 942efa8, c8f4afd, d48de83, 989d88c, 054f291, 6ae8346)
+- Last manual update: 2026-06-24 (seller-company-settings shipped; 12 models, 11 enums, 6 migrations; krs-cron sidecar live; SELLER_* env now fallback-only)
+- Synced to: seller-company-settings on main (commits 27153c1, c7ab7f9; prior: 942efa8, c8f4afd, d48de83, 989d88c, 054f291, 6ae8346)
 - Package manager: npm
 - Source files scanned: `prisma/schema.prisma`, `prisma/migrations/`, `prisma/seed.ts`,
   `src/app/api/*/route.ts`, `src/app/(shell)/*/page.tsx`, `src/components/*.tsx`,

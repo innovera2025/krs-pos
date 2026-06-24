@@ -1,3 +1,5 @@
+Status: COMPLETE — deployed (commit 27153c1; live on prod 2026-06-24; migration 20260624120424_seller_settings applied)
+
 # Seller / Company Settings — Implementation Plan
 **Plan file:** `process/general-plans/active/seller-company-settings_PLAN_24-06-26.md`
 **Created:** 2026-06-24
