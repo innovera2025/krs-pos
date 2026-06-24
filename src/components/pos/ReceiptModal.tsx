@@ -1,8 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Check, Printer, Mail } from "lucide-react";
 import { Modal } from "@/components/Modal";
-import type { OrderDTO } from "@/types";
+import type { OrderDTO, ShopSettingsDTO } from "@/types";
 import { money } from "@/lib/money";
 import { methodLabel } from "./paymentMeta";
 import { FauxQR } from "./FauxQR";
@@ -20,8 +21,8 @@ type ReceiptModalProps = {
   onNewSale: () => void;
 };
 
-const BRANCH = "สาขาสีลม · Silom (BR-01)";
-const PHONE = "โทร 02-123-4567";
+/** Fallback branch line when no seller branch label is configured (DB or ENV). */
+const BRANCH_FALLBACK = "สำนักงานใหญ่ · Head Office";
 
 /** Format an ISO string to a compact Thai-ish datetime for the receipt. */
 function formatDateTime(iso: string): string {
@@ -53,7 +54,32 @@ export function ReceiptModal({
   onEmail,
   onNewSale,
 }: ReceiptModalProps) {
+  // Seller identity for the receipt header (seller-company-settings). Fetched
+  // once when the modal opens; fire-and-catch so a failed fetch just leaves the
+  // header on its safe fallbacks ("KRS", default branch, no phone/POS). Hooks must
+  // run before the early `return null` below to satisfy the rules of hooks.
+  const [sellerInfo, setSellerInfo] = useState<Partial<ShopSettingsDTO>>({});
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    fetch("/api/settings")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.settings) setSellerInfo(data.settings);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
   if (!open || !order) return null;
+
+  // Resolved header values (DB-sourced via /api/settings; safe fallbacks).
+  const sellerName = sellerInfo.sellerName?.trim() || "KRS";
+  const branchLine = sellerInfo.sellerBranchLabel?.trim() || BRANCH_FALLBACK;
+  const sellerPhone = sellerInfo.sellerPhone?.trim() || "";
+  const sellerPosId = sellerInfo.sellerPosId?.trim() || "";
 
   const posNo = order.orderNumber;
   const shortId = posNo.slice(-6); // domain-receipt-shortid
@@ -111,14 +137,23 @@ export function ReceiptModal({
               className="text-[18px] font-bold"
               style={{ fontFamily: "var(--font-sans)", letterSpacing: ".04em" }}
             >
-              KRS
+              {sellerName}
             </div>
             <div className="mt-0.5 text-[11px]" style={{ color: "#64748b" }}>
-              {BRANCH}
+              {branchLine}
             </div>
-            <div className="text-[11px]" style={{ color: "#64748b" }}>
-              {PHONE}
-            </div>
+            {/* Phone + POS ID render only when configured (KRS reference receipt
+                parity) — never show an empty/placeholder line. */}
+            {sellerPhone && (
+              <div className="text-[11px]" style={{ color: "#64748b" }}>
+                โทร {sellerPhone}
+              </div>
+            )}
+            {sellerPosId && (
+              <div className="text-[11px]" style={{ color: "#64748b" }}>
+                POS: {sellerPosId}
+              </div>
+            )}
           </div>
 
           {/* Meta */}

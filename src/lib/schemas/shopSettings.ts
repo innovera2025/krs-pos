@@ -48,15 +48,49 @@ const heightSchema = z
   .nullable();
 
 /**
- * PATCH /api/settings body. All three fields are required so the admin Save sends
- * a complete, self-consistent receipt-size definition; the route then normalizes
- * `receiptHeightMm` to null when `receiptHeightAuto` is true before the upsert.
+ * Seller-identity field schemas (seller-company-settings). All are OPTIONAL in the
+ * PATCH body: `undefined` = "not sent, leave unchanged"; an empty string "" is
+ * ALLOWED and means "clear this field" (the ROUTE normalizes "" → null before the
+ * upsert so storage stays consistent — null = not set). The shape/length bounds
+ * here mirror the legacy `SELLER_*` ENV validation in src/lib/env.ts so DB-sourced
+ * values are held to the same §86/4 rigor as ENV-sourced ones.
+ */
+// 13-digit TIN when provided; "" allowed (clears the value).
+const sellerTaxIdSchema = z
+  .string()
+  .regex(/^\d{13}$/, "เลขประจำตัวผู้เสียภาษีต้องมี 13 หลัก")
+  .or(z.literal(""))
+  .optional();
+// 5-digit RD branch code when provided; "" allowed (clears the value).
+const sellerBranchCodeSchema = z
+  .string()
+  .regex(/^\d{5}$/, "รหัสสาขาต้องมี 5 หลัก")
+  .or(z.literal(""))
+  .optional();
+
+/**
+ * PATCH /api/settings body. The three receipt-size fields are REQUIRED so the
+ * admin Save sends a complete, self-consistent receipt-size definition; the route
+ * then normalizes `receiptHeightMm` to null when `receiptHeightAuto` is true before
+ * the upsert. The seven seller-identity fields are OPTIONAL (see schemas above) so
+ * a partial PATCH leaves unsent seller fields unchanged.
  */
 export const ShopSettingsPatchBodySchema = z
   .object({
     receiptWidthMm: widthSchema,
     receiptHeightAuto: z.boolean(),
     receiptHeightMm: heightSchema,
+    // Seller identity (all optional; route trims + nulls empty strings).
+    sellerName: z.string().max(200, "ชื่อกิจการต้องไม่เกิน 200 ตัวอักษร").optional(),
+    sellerTaxId: sellerTaxIdSchema,
+    sellerAddress: z.string().max(300, "ที่อยู่ต้องไม่เกิน 300 ตัวอักษร").optional(),
+    sellerPhone: z.string().max(50, "เบอร์โทรต้องไม่เกิน 50 ตัวอักษร").optional(),
+    sellerPosId: z.string().max(50, "รหัส POS ต้องไม่เกิน 50 ตัวอักษร").optional(),
+    sellerBranchCode: sellerBranchCodeSchema,
+    sellerBranchLabel: z
+      .string()
+      .max(100, "ชื่อสาขาต้องไม่เกิน 100 ตัวอักษร")
+      .optional(),
   })
   // Fixed height (auto=false) must carry a concrete in-bounds mm value. Without
   // this, `{ receiptHeightAuto:false, receiptHeightMm:null }` passes (heightMm is

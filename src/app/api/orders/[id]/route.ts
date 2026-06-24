@@ -252,12 +252,13 @@ export async function PATCH(
         );
       }
 
-      // Seller identity gate (Phase 4b, owner decision D2: issue-time
-      // enforcement). A full §86/4 invoice MUST carry the seller's name, address,
-      // and 13-digit TIN. If those env vars are unset, refuse to mint a number —
-      // BEFORE consuming a sequence — with a clear 422 so the operator configures
-      // the seller instead of issuing a non-compliant (or gap-creating) invoice.
-      const seller = getSellerConfig();
+      // Seller identity gate (Phase 4b; seller-company-settings: issue-time
+      // enforcement, DB-primary with ENV fallback). A full §86/4 invoice MUST carry
+      // the seller's name, address, and 13-digit TIN. If those resolve empty (DB
+      // then ENV), refuse to mint a number — BEFORE consuming a sequence — with a
+      // clear 422 so the operator configures the seller (now editable from
+      // /settings) instead of issuing a non-compliant (or gap-creating) invoice.
+      const seller = await getSellerConfig();
       if (!seller) {
         return NextResponse.json(
           {

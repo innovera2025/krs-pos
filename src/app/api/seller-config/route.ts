@@ -5,12 +5,13 @@ import { getSellerConfig } from "@/lib/sellerConfig";
 import { runWithRequestId } from "@/lib/requestContext";
 import { logger } from "@/lib/logger";
 
-// Seller identity is read from env at request time (D2). Force-dynamic so a
-// build-time prerender never bakes a stale/empty seller block into the response.
+// Seller identity is resolved at request time (seller-company-settings: DB-primary
+// via getSellerConfig, ENV fallback). Force-dynamic so a build-time prerender never
+// bakes a stale/empty seller block into the response (it also reads the DB now).
 export const dynamic = "force-dynamic";
 
 // GET /api/seller-config — the seller identity block for the A4 tax-invoice
-// document (Phase 4, owner decision D2: ENV-based seller config).
+// document (Phase 4; seller-company-settings: DB-primary with ENV fallback).
 //
 // AUTH: requires an authenticated active session (requireUser). The seller TIN +
 // registered address are business-identity data and the print flow is staff-only;
@@ -27,7 +28,7 @@ export async function GET(req: Request) {
     if ("response" in gate) return gate.response;
 
     try {
-      const seller = getSellerConfig();
+      const seller = await getSellerConfig();
       return NextResponse.json({ seller });
     } catch (err) {
       logger.error({ err }, "GET /api/seller-config failed");

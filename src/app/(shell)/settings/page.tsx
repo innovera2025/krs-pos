@@ -6,6 +6,7 @@ import {
   SlidersHorizontal,
   AlertTriangle,
   Check,
+  Building2,
 } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
 import { AdminOnly } from "@/components/AdminOnly";
@@ -62,6 +63,18 @@ function SettingsScreen() {
   const [heightAuto, setHeightAuto] = useState(true);
   const [heightDraft, setHeightDraft] = useState(String(DEFAULT_FIXED_HEIGHT));
 
+  // Seller-identity drafts (seller-company-settings) — string drafts mirroring the
+  // DB nullable fields ("" = empty/clear). NOTE: the form does NOT pre-fill from
+  // ENV — a DB-null field shows blank, so saving blank leaves it null (ENV fallback
+  // still applies in getSellerConfig). The owner must actively type to set DB values.
+  const [sellerName, setSellerName] = useState("");
+  const [sellerTaxId, setSellerTaxId] = useState("");
+  const [sellerAddress, setSellerAddress] = useState("");
+  const [sellerPhone, setSellerPhone] = useState("");
+  const [sellerPosId, setSellerPosId] = useState("");
+  const [sellerBranchCode, setSellerBranchCode] = useState("");
+  const [sellerBranchLabel, setSellerBranchLabel] = useState("");
+
   async function loadSettings() {
     setLoadState("loading");
     try {
@@ -76,6 +89,14 @@ function SettingsScreen() {
           s.receiptHeightMm != null ? s.receiptHeightMm : DEFAULT_FIXED_HEIGHT
         )
       );
+      // Seller drafts — null DB value → blank input.
+      setSellerName(s.sellerName ?? "");
+      setSellerTaxId(s.sellerTaxId ?? "");
+      setSellerAddress(s.sellerAddress ?? "");
+      setSellerPhone(s.sellerPhone ?? "");
+      setSellerPosId(s.sellerPosId ?? "");
+      setSellerBranchCode(s.sellerBranchCode ?? "");
+      setSellerBranchLabel(s.sellerBranchLabel ?? "");
       setLoadState("ready");
     } catch {
       setLoadState("error");
@@ -119,6 +140,15 @@ function SettingsScreen() {
     return `กว้าง ${w} × ${h}`;
   }, [widthValid, widthNum, heightAuto, heightValid, heightNum]);
 
+  // §86/4 completeness for the status line — name + TIN + address must all be
+  // non-empty (in the FORM). NOTE this reflects the DB-edit state only; an empty
+  // form may still resolve via ENV fallback at issue time, so the copy is framed as
+  // "ข้อมูลในระบบ" guidance, not an absolute block.
+  const sellerComplete =
+    sellerName.trim() !== "" &&
+    sellerTaxId.trim() !== "" &&
+    sellerAddress.trim() !== "";
+
   function selectPreset(mm: number) {
     setWidthDraft(String(mm));
   }
@@ -143,6 +173,15 @@ function SettingsScreen() {
           receiptHeightAuto: heightAuto,
           // Auto height ⇒ null (the server also forces this); fixed ⇒ the mm value.
           receiptHeightMm: heightAuto ? null : heightNum,
+          // Seller identity — sent as raw strings (incl. ""); the server trims and
+          // converts "" → null. One PATCH carries both receipt-size + seller fields.
+          sellerName,
+          sellerTaxId,
+          sellerAddress,
+          sellerPhone,
+          sellerPosId,
+          sellerBranchCode,
+          sellerBranchLabel,
         }),
       });
       if (!res.ok) {
@@ -162,6 +201,14 @@ function SettingsScreen() {
       setWidthDraft(String(s.receiptWidthMm));
       setHeightAuto(s.receiptHeightAuto);
       if (s.receiptHeightMm != null) setHeightDraft(String(s.receiptHeightMm));
+      // Seller drafts reflect the normalized row ("" cleared → null → blank).
+      setSellerName(s.sellerName ?? "");
+      setSellerTaxId(s.sellerTaxId ?? "");
+      setSellerAddress(s.sellerAddress ?? "");
+      setSellerPhone(s.sellerPhone ?? "");
+      setSellerPosId(s.sellerPosId ?? "");
+      setSellerBranchCode(s.sellerBranchCode ?? "");
+      setSellerBranchLabel(s.sellerBranchLabel ?? "");
       showToast("บันทึกการตั้งค่าแล้ว");
     } catch {
       showToast("บันทึกการตั้งค่าไม่สำเร็จ");
@@ -404,6 +451,182 @@ function SettingsScreen() {
                   {preview}
                 </strong>
               </div>
+            </div>
+          </section>
+
+          {/* Seller Info card (seller-company-settings) — admin-editable company
+              identity that feeds the thermal receipt + the §86/4 tax invoice. */}
+          <section
+            className="flex flex-col gap-5 rounded-[18px] border bg-white p-5"
+            style={{ borderColor: "var(--line)", boxShadow: "var(--shadow-sm)" }}
+          >
+            <div className="flex items-center gap-2.5">
+              <span
+                aria-hidden="true"
+                className="grid h-9 w-9 place-items-center rounded-[12px]"
+                style={{ background: "var(--mint)", color: "var(--brand-2)" }}
+              >
+                <Building2 size={18} strokeWidth={2} />
+              </span>
+              <div>
+                <strong className="block text-[14.5px]">
+                  ข้อมูลกิจการ · Seller Info
+                </strong>
+                <span
+                  className="block text-[11.5px]"
+                  style={{ color: "var(--muted)" }}
+                >
+                  ข้อมูลแสดงบนใบเสร็จและใบกำกับภาษี
+                </span>
+              </div>
+            </div>
+
+            {/* Name */}
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[12.5px] font-semibold">
+                ชื่อกิจการ · Name
+              </span>
+              <input
+                type="text"
+                maxLength={200}
+                value={sellerName}
+                onChange={(e) => setSellerName(e.target.value)}
+                placeholder="เช่น บริษัท เค.อาร์.เอส. จำกัด"
+                className="h-10 rounded-[10px] border px-3 text-[13px]"
+                style={{ borderColor: "var(--line)" }}
+              />
+            </label>
+
+            {/* TIN */}
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[12.5px] font-semibold">
+                เลขประจำตัวผู้เสียภาษี · TIN
+              </span>
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={13}
+                value={sellerTaxId}
+                onChange={(e) => setSellerTaxId(e.target.value)}
+                placeholder="13 หลัก"
+                className="h-10 rounded-[10px] border px-3 text-[13px]"
+                style={{ borderColor: "var(--line)" }}
+              />
+              <span className="text-[11px]" style={{ color: "var(--muted)" }}>
+                ต้องมี 13 หลัก (เว้นว่างได้หากยังไม่ออกใบกำกับภาษี)
+              </span>
+            </label>
+
+            {/* Address */}
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[12.5px] font-semibold">
+                ที่อยู่ · Address
+              </span>
+              <textarea
+                rows={3}
+                maxLength={300}
+                value={sellerAddress}
+                onChange={(e) => setSellerAddress(e.target.value)}
+                placeholder="ที่อยู่จดทะเบียนของกิจการ"
+                className="rounded-[10px] border px-3 py-2 text-[13px] leading-[1.6]"
+                style={{ borderColor: "var(--line)" }}
+              />
+            </label>
+
+            {/* Phone + POS ID (two columns) */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[12.5px] font-semibold">
+                  โทรศัพท์ · Phone
+                </span>
+                <input
+                  type="text"
+                  maxLength={50}
+                  value={sellerPhone}
+                  onChange={(e) => setSellerPhone(e.target.value)}
+                  placeholder="เช่น 02-123-4567"
+                  className="h-10 rounded-[10px] border px-3 text-[13px]"
+                  style={{ borderColor: "var(--line)" }}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[12.5px] font-semibold">
+                  รหัส POS Terminal · POS ID
+                </span>
+                <input
+                  type="text"
+                  maxLength={50}
+                  value={sellerPosId}
+                  onChange={(e) => setSellerPosId(e.target.value)}
+                  placeholder="เช่น POS-001"
+                  className="h-10 rounded-[10px] border px-3 text-[13px]"
+                  style={{ borderColor: "var(--line)" }}
+                />
+              </label>
+            </div>
+
+            {/* Branch code + label (two columns) */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[12.5px] font-semibold">
+                  รหัสสาขา · Branch Code
+                </span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={5}
+                  value={sellerBranchCode}
+                  onChange={(e) => setSellerBranchCode(e.target.value)}
+                  placeholder="00000 (สำนักงานใหญ่)"
+                  className="h-10 rounded-[10px] border px-3 text-[13px]"
+                  style={{ borderColor: "var(--line)" }}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[12.5px] font-semibold">
+                  ชื่อสาขา · Branch Label
+                </span>
+                <input
+                  type="text"
+                  maxLength={100}
+                  value={sellerBranchLabel}
+                  onChange={(e) => setSellerBranchLabel(e.target.value)}
+                  placeholder="เช่น สำนักงานใหญ่"
+                  className="h-10 rounded-[10px] border px-3 text-[13px]"
+                  style={{ borderColor: "var(--line)" }}
+                />
+              </label>
+            </div>
+
+            {/* §86/4 completeness status line */}
+            <div
+              className="flex items-center gap-2.5 rounded-[12px] px-3.5 py-3"
+              style={{
+                background: sellerComplete ? "var(--mint)" : "var(--amber-soft, #fef3c7)",
+              }}
+            >
+              <span
+                aria-hidden="true"
+                className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-[10px]"
+                style={{
+                  background: sellerComplete ? "#fff" : "#fff",
+                  color: sellerComplete ? "var(--brand-2)" : "#b45309",
+                }}
+              >
+                {sellerComplete ? (
+                  <Check size={15} strokeWidth={2.5} />
+                ) : (
+                  <AlertTriangle size={15} strokeWidth={2} />
+                )}
+              </span>
+              <strong
+                className="text-[12.5px]"
+                style={{ color: sellerComplete ? "var(--brand-2)" : "#92400e" }}
+              >
+                {sellerComplete
+                  ? "ข้อมูลครบถ้วน — พร้อมออกใบกำกับภาษี"
+                  : "ยังไม่ครบ — จะไม่สามารถออกใบกำกับภาษีได้ (เว้นแต่ตั้งค่าผ่าน ENV)"}
+              </strong>
             </div>
           </section>
 

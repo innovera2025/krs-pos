@@ -136,6 +136,10 @@ export type SellerConfigDTO = {
   taxId: string;
   branchCode: string;
   branchLabel: string;
+  // Receipt-only optional fields (seller-company-settings). NOT §86/4 mandatory —
+  // the A4 TaxInvoiceDocument does not render them; the thermal receipt does.
+  phone?: string;
+  posId?: string;
 };
 
 /** The order object returned by the orders API — drives the receipt + history. */
@@ -282,6 +286,16 @@ export type ShopSettingsDTO = {
   receiptWidthMm: number;
   receiptHeightAuto: boolean;
   receiptHeightMm: number | null;
+  // Seller identity (seller-company-settings) — editable via /settings, DB-primary
+  // with ENV fallback resolved in getSellerConfig(). Null = "not set in DB". These
+  // appear in GET /api/settings so the Settings form + ReceiptModal can render them.
+  sellerName: string | null;
+  sellerTaxId: string | null;
+  sellerAddress: string | null;
+  sellerPhone: string | null;
+  sellerPosId: string | null;
+  sellerBranchCode: string | null;
+  sellerBranchLabel: string | null;
 };
 
 /**

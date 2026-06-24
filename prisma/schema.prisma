@@ -87,15 +87,32 @@ enum SyncJobStatus {
 // size: `receiptWidthMm` (40–120, preset 58/80 + free input), and the height
 // either AUTO (`receiptHeightAuto = true`, the today/default behavior matching
 // `@page { size: 80mm auto }`) or a FIXED `receiptHeightMm` (50–400). When
-// `receiptHeightAuto` is true `receiptHeightMm` is forced NULL by the API. Seller
-// identity stays in ENV (sellerConfig.ts) and is intentionally NOT migrated here;
-// the nullable slots keep the model extensible for future store settings without
-// touching seller config.
+// `receiptHeightAuto` is true `receiptHeightMm` is forced NULL by the API.
+//
+// Seller identity (seller-company-settings) is now DB-PRIMARY here: the admin
+// edits these from /settings and getSellerConfig() (sellerConfig.ts) reads them
+// DB-first, falling back PER FIELD to the legacy `SELLER_*` ENV vars when a DB
+// value is null/empty (zero-downtime upgrade for existing ENV-based deploys). All
+// seller columns are nullable — null = "not set here, use ENV fallback". The
+// §86/4 mandatory particulars (sellerName / sellerTaxId / sellerAddress) gate
+// tax-invoice minting; sellerPhone / sellerPosId are receipt-only (never block
+// minting); sellerBranchCode / sellerBranchLabel default to HQ "00000" /
+// "สำนักงานใหญ่" when unset everywhere.
 model ShopSettings {
   id                String   @id @default("singleton")
   receiptWidthMm    Int      @default(80)
   receiptHeightAuto Boolean  @default(true)
   receiptHeightMm   Int?
+  // Seller identity (DB-primary, ENV fallback). §86/4 mandatory particulars:
+  sellerName        String?  // registered legal name (≤200 chars)
+  sellerTaxId       String?  // 13-digit Revenue-Department TIN
+  sellerAddress     String?  // registered address (≤300 chars)
+  // Receipt-only (optional, NOT §86/4 mandatory — never block minting):
+  sellerPhone       String?  // contact phone for the thermal receipt (≤50 chars)
+  sellerPosId       String?  // POS terminal ID for the thermal receipt (≤50 chars)
+  // Branch designation (defaults to HQ in getSellerConfig when unset):
+  sellerBranchCode  String?  // 5-digit RD branch code ("00000" = head office)
+  sellerBranchLabel String?  // human branch label (≤100 chars)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 }

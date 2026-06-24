@@ -26,12 +26,22 @@ import type { ShopSettingsDTO } from "@/types";
 /** The single ShopSettings row id (singleton). */
 const SINGLETON_ID = "singleton";
 
-/** Project only the receipt-size fields the DTO exposes (singleton metadata —
- *  createdAt/updatedAt — is internal and not returned to the client). */
+/** Project the receipt-size + seller-identity fields the DTO exposes (singleton
+ *  metadata — createdAt/updatedAt — is internal and not returned to the client).
+ *  The seller fields (seller-company-settings) feed the Settings form + the
+ *  thermal-receipt header; null = "not set in DB" (getSellerConfig falls back to
+ *  ENV for the resolved tax-invoice block). */
 const SETTINGS_SELECT = {
   receiptWidthMm: true,
   receiptHeightAuto: true,
   receiptHeightMm: true,
+  sellerName: true,
+  sellerTaxId: true,
+  sellerAddress: true,
+  sellerPhone: true,
+  sellerPosId: true,
+  sellerBranchCode: true,
+  sellerBranchLabel: true,
 } as const;
 
 /** Wrap the projected row in the `{ settings }` response envelope. */
@@ -97,15 +107,53 @@ export async function PATCH(req: Request) {
     // client may have sent alongside auto=true.
     const receiptHeightMm = receiptHeightAuto ? null : parsed.data.receiptHeightMm;
 
+    // Seller-identity normalization (seller-company-settings). `undefined` = field
+    // not sent in this PATCH → Prisma SKIPS it (value unchanged). An empty/blank
+    // string = "clear this field" → stored as `null` so storage stays consistent
+    // (null = not set; empty string is never persisted), mirroring how
+    // `receiptHeightMm` is normalized. A trimmed non-empty string is stored as-is.
+    const toNullOrTrimmed = (
+      v: string | undefined
+    ): string | null | undefined =>
+      v === undefined ? undefined : v.trim() === "" ? null : v.trim();
+
+    const sellerName = toNullOrTrimmed(parsed.data.sellerName);
+    const sellerTaxId = toNullOrTrimmed(parsed.data.sellerTaxId);
+    const sellerAddress = toNullOrTrimmed(parsed.data.sellerAddress);
+    const sellerPhone = toNullOrTrimmed(parsed.data.sellerPhone);
+    const sellerPosId = toNullOrTrimmed(parsed.data.sellerPosId);
+    const sellerBranchCode = toNullOrTrimmed(parsed.data.sellerBranchCode);
+    const sellerBranchLabel = toNullOrTrimmed(parsed.data.sellerBranchLabel);
+
     try {
       const settings = await prisma.shopSettings.upsert({
         where: { id: SINGLETON_ID },
-        update: { receiptWidthMm, receiptHeightAuto, receiptHeightMm },
+        update: {
+          receiptWidthMm,
+          receiptHeightAuto,
+          receiptHeightMm,
+          // Prisma treats `undefined` as "do not touch" — so unsent seller fields
+          // stay unchanged; `null` clears the field.
+          sellerName,
+          sellerTaxId,
+          sellerAddress,
+          sellerPhone,
+          sellerPosId,
+          sellerBranchCode,
+          sellerBranchLabel,
+        },
         create: {
           id: SINGLETON_ID,
           receiptWidthMm,
           receiptHeightAuto,
           receiptHeightMm,
+          sellerName,
+          sellerTaxId,
+          sellerAddress,
+          sellerPhone,
+          sellerPosId,
+          sellerBranchCode,
+          sellerBranchLabel,
         },
         select: SETTINGS_SELECT,
       });
