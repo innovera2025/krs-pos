@@ -167,3 +167,43 @@ SELECT ACC_CODE FROM AccountHead WITH (NOLOCK) WHERE ACC_GRPNAME = '<group>' ORD
 - `CompanyCode` value; `JnlName`, `JnlDate` (=sale date?), `Description` format, `Amount` vs `AmountBht` (THB → equal).
 - The SalesInvoice/InventoryFlow INSERT constants (InvoiceType, SaleType, ItemType, DocuType, SourceType-for-Dtl, ReasonIndex/Name, inventory TransactionType) — this snippet was the JOURNAL, not those two docs.
 - Idempotency anchor, Warehouse (WHFG?), MainUnits + UnitPrice incl/ex VAT, **sandbox** (all still open).
+
+---
+
+## 6. UPDATE 2026-06-25 — full requirement files + sample workbook received
+
+Vendor delivered the authoritative files (Downloads): `Insertขายสด.txt` (the EXACT insert field list — simpler than the 70-col schema), `ขายสด-gl.txt`/`-gl 2.txt` (the 3-row TheJournal, identical to §5), `osl.txt` (RunningNumber + InventoryFlowHdr/Dtl column list), and `ขายสด.xlsx` (a REAL sample: cash sale of `F01-0001 ×10 = 100 THB`).
+
+**SalesInvoiceHdr — insert ONLY these (no `*Jnl` fields at all):** TransactionNo, InvoiceType, SaleType, ItemType, TransactionTypeI, TransactionTypeT, CompanyCode, VoucherNo, VoucherDate, DocuType, CustOrSuppCode, CustOrSuppName, Address, DeliveryAddress, DueDate, IsVAT, IsClosed, IsPaid, Currency, ExchangeRate, AccountsDescription, TotalAmount, SubTotalAmnt, DepositAmount, VATForValue, VATPercent, VATAmount, AmountDue, AmountDueBht, TotalDR, CashValue, TotalCR, BranchCode, BranchName, EntryBy, EntryDate. (No Department/DeptCode/AccountCode/ARAPJnl/etc. — the earlier 70-col list was the full schema; the real insert is this subset.)
+
+**SalesInvoiceDtl — insert ONLY:** TransactionNo, ItemOrder, ItemCode, Description, MainQuantity, MainUnits, AccountCode, Currency, UnitPrice, DiscountPercent, DiscountAmount, Amount. (No InventoryJnl/RevenueJnl/CostOfSaleJnl/FlowNo/SourceType/OrderNo — KRS computes COGS/journals itself.)
+
+**CONFIRMED sample values** (now in `src/lib/krs/writebackConfig.ts`):
+| Field | Value |
+|---|---|
+| InvoiceType / SaleType / ItemType | `Local` / `Invoice` / `Item` |
+| DocuType / CompanyCode | `SC` / `SNP` |
+| **IsVAT** | **2** (was wrongly 1 — likely "VAT inclusive") |
+| IsClosed / IsPaid / ExchangeRate | 0 / 1 / 1 |
+| CustOrSuppCode / Name | `C0001` / `เงินสด` |
+| AccountsDescription | `ขายเงินสดสินค้า-เงินสด` |
+| BranchCode / BranchName | `00000` / `สำนักงานใหญ่` |
+| EntryBy | the cashier (`ADMIN` in sample) |
+| Money (sample) | Total 100 = SubTotal 93.46 + VAT 6.54 (= 100×7/107) → **VAT-inclusive, matches POS** |
+| Dtl AccountCode | `4110-00` (line revenue account) |
+| Dtl UnitPrice / Amount | VAT-INCLUSIVE (10 × qty 10 = 100 gross) → `UNIT_PRICE_INCL_VAT=true` |
+| Dtl MainUnits | per-product unit, sample `ซอง` (← still need the KRS source column) |
+| VoucherNo format | `SC-{YYMM}-{NNNN}` (e.g. `SC-2606-0001`) |
+| RunningNumber keys | `SaleInvoiceTrNo` (Hdr TransactionNo), `SC`+YYMM (voucher), `InventoryFlow` (flow TxnNo), `IBG`+YYMM (flow voucher), `Receipt` (journal JnlCode) |
+
+**Concurrency (vendor):** wrap the inserts in `BEGIN TRAN … COMMIT`; multiple POS write concurrently and an in-progress txn must finish or it blocks → matches our one-mssql-transaction + atomic RunningNumber claim design.
+
+**Sandbox:** the connected `db_ACC_SNP` IS the test DB (owner-confirmed earlier) and the vendor approved test write-backs → the existing connection is the test target (point `KRS_SANDBOX_*` at it; no separate sandbox needed).
+
+**STILL OPEN (the only hard gates left — the xlsx had no InventoryFlow rows):**
+1. `InventoryFlowHdr/Dtl` constants: `TransactionType`, `ReasonIndex`, `ReasonName` (exact), `IncludeVat`, `DeptCode` for a sale stock-out.
+2. `Warehouse` code for the cut (`WHFG`?).
+3. `MainUnits` source — which KRS `InventoryItem` column holds the unit (`ซอง`); POS Product has no unit field → pull it during product import or query at write-time.
+4. (minor) `IBG`+YYMM flow-voucher format + `JnlName` exact value.
+
+Everything else for the cash-sale write is now resolved; Track B is buildable once items 1–3 land.

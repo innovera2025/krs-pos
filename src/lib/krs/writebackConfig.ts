@@ -24,14 +24,20 @@ export const TODO_FROM_VENDOR = "TODO_FROM_VENDOR" as const;
 /** The full KRS cash-sale write constant set. CONFIRMED values are filled; every
  *  unresolved value is `TODO_FROM_VENDOR`. Keep ALL vendor constants in this one
  *  object so a future vendor handoff is a single-file change + a single TODO grep. */
+// Most values below were CONFIRMED from the vendor's sample workbook ขายสด.xlsx
+// (2026-06-25): a real cash sale of F01-0001 ×10 = 100 THB. Only the InventoryFlow
+// (stock-cut) constants + the per-product unit source remain TODO_FROM_VENDOR (the
+// xlsx sample did not include the InventoryFlow rows).
 export const KRS_WRITE_CONFIG = {
-  // === RunningNumber ===
-  RUNNING_NUMBER_NAME_INVOICE: TODO_FROM_VENDOR, // invoice running-number key
-  RUNNING_NUMBER_NAME_RECEIPT: "Receipt", // CONFIRMED — TheJournal uses this
-  RUNNING_NUMBER_NAME_INVFLOW: TODO_FROM_VENDOR, // InventoryFlow key (if separate)
+  // === RunningNumber keys (sheet3 of the sample) ===
+  RUNNING_NUMBER_NAME_INVOICE: "SaleInvoiceTrNo", // CONFIRMED — Hdr TransactionNo seq
+  RUNNING_NUMBER_NAME_RECEIPT: "Receipt", // CONFIRMED — TheJournal JnlCode seq
+  RUNNING_NUMBER_NAME_INVFLOW: "InventoryFlow", // CONFIRMED — InventoryFlow TransactionNo seq
+  RUNNING_NUMBER_VOUCHER_PREFIX: "SC", // CONFIRMED — voucher key = 'SC'+YYMM (e.g. 'SC2606')
+  RUNNING_NUMBER_INVFLOW_VOUCHER_PREFIX: "IBG", // CONFIRMED — flow voucher key 'IBG'+YYMM
 
   // === Document format / journal ===
-  DOC_NO_FORMAT: "SC-XXXX-XXXX", // CONFIRMED — journal doc-no format
+  DOC_NO_FORMAT: "SC-{YYMM}-{NNNN}", // CONFIRMED — VoucherNo e.g. SC-2606-0001
   JOURNAL_SOURCE_TYPE: "SC", // CONFIRMED
   JOURNAL_TRANSACTION_TYPE_I: 1, // CONFIRMED
   JOURNAL_TRANSACTION_TYPE_T: 1, // CONFIRMED
@@ -39,52 +45,53 @@ export const KRS_WRITE_CONFIG = {
   JOURNAL_DEPARTMENT: "SAL", // CONFIRMED
   JOURNAL_BRANCH_CODE: "00000", // CONFIRMED
   JOURNAL_BRANCH_NAME: "สำนักงานใหญ่", // CONFIRMED
-  JOURNAL_JNL_NAME: TODO_FROM_VENDOR, // JnlName field value
-  JOURNAL_DESCRIPTION_FORMAT: TODO_FROM_VENDOR, // per-line Description format
+  JOURNAL_JNL_NAME: "Receipt", // ASSUMED = the running-number name (label, not GL-critical)
+  JOURNAL_DESCRIPTION: "ขายเงินสดสินค้า-เงินสด", // CONFIRMED (= AccountsDescription)
 
   // === AccountHead group names (account-code resolution) ===
   ACCOUNT_HEAD_CASH_GROUP: "Assets3", // CONFIRMED
   ACCOUNT_HEAD_REVENUE_GROUP: "Revenues2", // CONFIRMED
   ACCOUNT_HEAD_VAT_GROUP: "Liabilities4", // CONFIRMED
 
-  // === SalesInvoice constants ===
-  INVOICE_TYPE: TODO_FROM_VENDOR,
-  SALE_TYPE: TODO_FROM_VENDOR,
-  ITEM_TYPE: TODO_FROM_VENDOR,
-  TRANSACTION_TYPE_I: TODO_FROM_VENDOR,
-  TRANSACTION_TYPE_T: TODO_FROM_VENDOR,
-  DOCU_TYPE: TODO_FROM_VENDOR,
-  SOURCE_TYPE_DTL: TODO_FROM_VENDOR,
-  IS_VAT: 1, // DERIVED — cash sale always has VAT
-  IS_PAID: 1, // DERIVED — cash = paid immediately
-  IS_CLOSED: TODO_FROM_VENDOR, // IsClosed for a paid cash invoice (0 or 1?)
-  IS_UNDUE_VAT: 0, // ASSUMED 0 (standard VAT) — confirm
+  // === SalesInvoiceHdr constants (CONFIRMED from xlsx sample) ===
+  INVOICE_TYPE: "Local", // CONFIRMED
+  SALE_TYPE: "Invoice", // CONFIRMED
+  ITEM_TYPE: "Item", // CONFIRMED
+  TRANSACTION_TYPE_I: 1, // CONFIRMED
+  TRANSACTION_TYPE_T: 1, // CONFIRMED
+  DOCU_TYPE: "SC", // CONFIRMED
+  IS_VAT: 2, // CONFIRMED (sample shows 2 — was wrongly 1; likely "VAT inclusive")
+  IS_PAID: 1, // CONFIRMED — cash = paid
+  IS_CLOSED: 0, // CONFIRMED
+  ACCOUNTS_DESCRIPTION: "ขายเงินสดสินค้า-เงินสด", // CONFIRMED (Hdr)
 
   // === Org constants ===
-  COMPANY_CODE: TODO_FROM_VENDOR,
-  DEPT_CODE: TODO_FROM_VENDOR,
-  DEPARTMENT: TODO_FROM_VENDOR, // invoice-side Department
-  ACCOUNT_CODE: TODO_FROM_VENDOR, // header default
+  COMPANY_CODE: "SNP", // CONFIRMED
+  DEPARTMENT: "SAL", // CONFIRMED (journal + InventoryFlow Department)
+  DTL_ACCOUNT_CODE: "4110-00", // CONFIRMED — SalesInvoiceDtl line revenue account
 
-  // === Walk-in customer ===
-  WALK_IN_CUST_CODE: TODO_FROM_VENDOR,
-  WALK_IN_CUST_NAME: "เงินสด", // DERIVED — Thai "cash" label
+  // === Walk-in customer (cash) ===
+  WALK_IN_CUST_CODE: "C0001", // CONFIRMED
+  WALK_IN_CUST_NAME: "เงินสด", // CONFIRMED
 
-  // === InventoryFlow constants ===
-  INV_TRANSACTION_TYPE: TODO_FROM_VENDOR,
-  INV_REASON_INDEX: TODO_FROM_VENDOR,
+  // === VAT / price basis ===
+  VAT_PERCENT: 7, // CONFIRMED
+  UNIT_PRICE_INCL_VAT: true, // CONFIRMED — sample line: UnitPrice 10 × qty 10 = Amount 100 (incl VAT)
+
+  // === InventoryFlow (stock-cut) constants — STILL TODO (not in the xlsx sample) ===
+  INV_TRANSACTION_TYPE: TODO_FROM_VENDOR, // InventoryFlow TransactionType for a sale-out
+  INV_REASON_INDEX: TODO_FROM_VENDOR, // ReasonIndex for "ตัดออกจากการขาย"
   INV_REASON_NAME: "ตัดออกจากการขาย", // ASSUMED — confirm exact string
   WAREHOUSE: TODO_FROM_VENDOR, // WHFG? confirm
+  INV_DEPT_CODE: TODO_FROM_VENDOR, // InventoryFlowHdr DeptCode (minor)
   IN_OUT: -1, // CONFIRMED — stock out
   INV_APPROVED: 1, // CONFIRMED — sp_Onhand gate
   INV_IS_CLOSED: 0, // CONFIRMED — sp_Onhand gate
 
-  // === VAT ===
-  VAT_PERCENT: 7, // CONFIRMED — Thai standard VAT
-
-  // === MainUnits / unit-price basis ===
-  MAIN_UNITS_COLUMN: TODO_FROM_VENDOR, // KRS InventoryItem unit-of-measure column
-  UNIT_PRICE_INCL_VAT: TODO_FROM_VENDOR, // true = incl VAT, false = excl (confirm)
+  // === Per-product unit (sample line MainUnits = "ซอง") — STILL TODO ===
+  // POS Product has no unit field; needs the KRS InventoryItem unit column (or a
+  // product-import mapping) so the Dtl MainUnits is correct per item.
+  MAIN_UNITS_SOURCE: TODO_FROM_VENDOR, // KRS InventoryItem unit-of-measure column name
 } as const;
 
 export type KrsWriteConfig = typeof KRS_WRITE_CONFIG;
@@ -97,29 +104,14 @@ export type KrsWriteConfig = typeof KRS_WRITE_CONFIG;
  * Kept as a typed key list (not "scan every field") so a future field that is
  * intentionally optional/derived doesn't accidentally block the write.
  */
+// After the 2026-06-25 xlsx sample, the SalesInvoice + journal constants are all
+// CONFIRMED. Only the InventoryFlow (stock-cut) constants + the per-product unit
+// source remain unresolved — those are the genuine hard gates for a live write.
 const REQUIRED_VENDOR_KEYS: ReadonlyArray<keyof KrsWriteConfig> = [
-  "RUNNING_NUMBER_NAME_INVOICE",
-  "RUNNING_NUMBER_NAME_INVFLOW",
-  "JOURNAL_JNL_NAME",
-  "JOURNAL_DESCRIPTION_FORMAT",
-  "INVOICE_TYPE",
-  "SALE_TYPE",
-  "ITEM_TYPE",
-  "TRANSACTION_TYPE_I",
-  "TRANSACTION_TYPE_T",
-  "DOCU_TYPE",
-  "SOURCE_TYPE_DTL",
-  "IS_CLOSED",
-  "COMPANY_CODE",
-  "DEPT_CODE",
-  "DEPARTMENT",
-  "ACCOUNT_CODE",
-  "WALK_IN_CUST_CODE",
   "INV_TRANSACTION_TYPE",
   "INV_REASON_INDEX",
   "WAREHOUSE",
-  "MAIN_UNITS_COLUMN",
-  "UNIT_PRICE_INCL_VAT",
+  "MAIN_UNITS_SOURCE",
 ];
 
 /** Thrown when a required vendor constant is still `TODO_FROM_VENDOR`. The write
