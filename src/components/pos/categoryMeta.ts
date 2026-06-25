@@ -12,10 +12,14 @@ import type { CategorySlug } from "@/types";
 /**
  * Visual metadata per category slug (icon + Taste thumb gradient + EN label).
  *
- * The DB Category model only carries `name`, so the POS derives a stable slug
- * from the seed's 4 Thai category names and looks up icon/gradient here. Any
- * unmapped name falls back to "other" (generic Package icon, neutral gradient)
- * so chips/cards never break.
+ * NOTE: the POS category SIDEBAR no longer uses this slug taxonomy — it groups by
+ * the real product category (id + name) data-driven (see CategoryPanel + pos/page).
+ * This slug machinery now serves ONLY the aesthetic icon/gradient/tint lookup for
+ * product cards (ProductCard), cart lines (CartLine), and the products-table
+ * monogram tint (components/products/productMeta). The DB Category model only
+ * carries `name`, so those consumers derive a stable slug from the seed's 4 Thai
+ * category names and look up icon/gradient here; any unmapped name falls back to
+ * "other" (generic Package icon, neutral gradient) so cards/lines never break.
  */
 export type CategoryMeta = {
   slug: CategorySlug;

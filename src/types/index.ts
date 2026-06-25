@@ -31,10 +31,13 @@ export type Category = {
 };
 
 /**
- * Stable category slug used to attach a Taste icon/gradient to a fetched
+ * Stable category slug used to attach a Taste icon/gradient/tint to a fetched
  * Category by name. The DB Category model only carries `name`, so the UI maps
- * name -> { slug, icon } (see components/pos/CategoryPanel). "all" is the
- * synthetic "show everything" chip; "other" is the fallback for unmapped names.
+ * name -> { slug, icon } for product-card / cart-line icons and the products-table
+ * monogram tint (see components/pos/categoryMeta, ProductCard, CartLine, and
+ * components/products/productMeta). It is NOT the POS sidebar taxonomy — the
+ * CategoryPanel now groups by real category id/name. "all" is the synthetic
+ * "show everything" slot; "other" is the fallback for unmapped names.
  */
 export type CategorySlug =
   | "all"

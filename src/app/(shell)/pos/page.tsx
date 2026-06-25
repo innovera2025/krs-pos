@@ -5,7 +5,6 @@ import { ScanBarcode, ShoppingCart, UserRound, AlertCircle, ChevronRight } from 
 import type {
   Product,
   CartItem,
-  CategorySlug,
   CustomerDTO,
   DiscountType,
   PayLine,
@@ -21,7 +20,6 @@ import {
   remainingPaySatang,
   type PricingItem,
 } from "@/lib/pricing";
-import { slugForCategoryName } from "@/components/pos/categoryMeta";
 import { CategoryPanel, type CategoryChip } from "@/components/pos/CategoryPanel";
 import { ProductCard } from "@/components/pos/ProductCard";
 import { CartLine } from "@/components/pos/CartLine";
@@ -57,9 +55,6 @@ function nextPayLineId(): string {
   return `pl-${payLineSeq}`;
 }
 
-/** Chip order for the category panel (slug -> position). */
-const CHIP_ORDER: CategorySlug[] = ["all", "drink", "food", "dessert", "goods", "other"];
-
 type LoadState = "loading" | "ready" | "error";
 
 export default function POSPage() {
@@ -70,7 +65,8 @@ export default function POSPage() {
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState("");
-  const [activeCat, setActiveCat] = useState<CategorySlug>("all");
+  // Selection key: "all" (synthetic all-chip) or a real product category id.
+  const [activeCat, setActiveCat] = useState<string>("all");
 
   // Bill discount: text draft + ฿/% mode.
   const [discountDraft, setDiscountDraft] = useState("");
@@ -176,38 +172,51 @@ export default function POSPage() {
     return () => ctrl.abort();
   }, []);
 
-  // Category chips derived from fetched products (+ synthetic all-chip).
+  // Category chips derived data-driven from the fetched products' REAL categories
+  // (KRS ItemTypename). One chip per distinct category keyed by category id,
+  // ordered by product count descending (biggest categories first), preceded by a
+  // synthetic "ทั้งหมด / All" chip. Products with no category are ignored for the
+  // per-category chips (they still appear under "ทั้งหมด").
   const chips: CategoryChip[] = useMemo(() => {
-    const bySlug = new Map<CategorySlug, string>();
+    // id -> { name, count } accumulated over every product with a category.
+    const byId = new Map<string, { name: string; count: number }>();
     for (const p of products) {
-      const slug = slugForCategoryName(p.category?.name);
-      if (!bySlug.has(slug)) {
-        bySlug.set(slug, p.category?.name ?? "อื่นๆ");
+      const cat = p.category;
+      if (!cat) continue;
+      const existing = byId.get(cat.id);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        byId.set(cat.id, { name: cat.name, count: 1 });
       }
     }
-    const result: CategoryChip[] = [{ slug: "all", label: "ทั้งหมด" }];
-    for (const slug of CHIP_ORDER) {
-      if (slug === "all") continue;
-      if (bySlug.has(slug)) {
-        result.push({ slug, label: bySlug.get(slug)! });
-      }
-    }
-    return result;
+    const realChips: CategoryChip[] = Array.from(byId.entries())
+      // Biggest categories first; ties broken by Thai-aware name order for stability.
+      .sort((a, b) => b[1].count - a[1].count || a[1].name.localeCompare(b[1].name, "th"))
+      .map(([id, { name, count }]) => ({
+        key: id,
+        label: name,
+        sublabel: `${count} รายการ`,
+      }));
+    return [
+      { key: "all", label: "ทั้งหมด", sublabel: `All items · ${products.length} รายการ` },
+      ...realChips,
+    ];
   }, [products]);
 
   // If the active category disappears (e.g. after a reload), fall back to all.
   useEffect(() => {
-    if (activeCat !== "all" && !chips.some((c) => c.slug === activeCat)) {
+    if (activeCat !== "all" && !chips.some((c) => c.key === activeCat)) {
       setActiveCat("all");
     }
   }, [chips, activeCat]);
 
-  // Filter: category + case-insensitive search across name + sku + category name.
+  // Filter: category (by real category id) + case-insensitive search across name +
+  // sku + category name.
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return products.filter((p) => {
-      const slug = slugForCategoryName(p.category?.name);
-      const catOk = activeCat === "all" || slug === activeCat;
+      const catOk = activeCat === "all" || p.category?.id === activeCat;
       if (!catOk) return false;
       if (!q) return true;
       return (
@@ -726,7 +735,7 @@ export default function POSPage() {
   const productTitle =
     activeCat === "all"
       ? "สินค้าทั้งหมด"
-      : chips.find((c) => c.slug === activeCat)?.label ?? "สินค้า";
+      : chips.find((c) => c.key === activeCat)?.label ?? "สินค้า";
 
   return (
     <div
