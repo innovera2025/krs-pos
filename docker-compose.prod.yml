@@ -74,6 +74,50 @@ services:
           sleep "$${KRS_AUTO_SYNC_INTERVAL_SECONDS}"
         done
 
+  # KRS OUTBOUND dispatch scheduler (krs-sync P2). Twin of krs-cron, but it drains the
+  # SALE SyncJob outbox to KRS (POST /api/krs/dispatch) instead of pulling stock. Same
+  # design: a plain unprivileged sh curl+sleep loop, NOT a cron daemon. Interval =
+  # KRS_DISPATCH_INTERVAL_SECONDS (default 30s — outbound is more latency-sensitive
+  # than the inbound pull).
+  #
+  # The endpoint is the real safety gate: bearer-authenticated, opt-in
+  # (KRS_OUTBOUND_ENABLED — returns 503 OUTBOUND_DISABLED when off, so NO write happens
+  # and jobs simply accumulate), atomic-claim + dedup + retry/backoff. With Track B not
+  # yet built the write module is a stub: claimed jobs are left PENDING (no insert). If
+  # KRS_DISPATCH_SECRET is unset the endpoint 401s and nothing is dispatched — the
+  # sidecar just logs the HTTP status. NEVER bake the secret into the image: it comes
+  # from the git-ignored .env at runtime, and only the HTTP status (not the secret or
+  # response body) is logged.
+  krs-dispatch-cron:
+    image: curlimages/curl:latest
+    container_name: krs-pos-dispatch-cron
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      # Bearer secret for the dispatch endpoint (from the git-ignored .env). Sent as
+      # `Authorization: Bearer <value>`. NEVER committed; NEVER logged by the app.
+      KRS_DISPATCH_SECRET: ${KRS_DISPATCH_SECRET:-}
+      # Poll interval in SECONDS. Default 30 (every 30 seconds).
+      KRS_DISPATCH_INTERVAL_SECONDS: ${KRS_DISPATCH_INTERVAL_SECONDS:-30}
+    # Poll loop: every interval, POST the internal dispatch endpoint (the app claims +
+    # writes pending SALE jobs, idempotently). Only the HTTP status is logged — never
+    # the secret or response body. No `set -e`: a transient curl failure must not kill
+    # the loop.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "krs-dispatch-cron: polling http://app:3000/api/krs/dispatch every $${KRS_DISPATCH_INTERVAL_SECONDS}s"
+        while true; do
+          curl -s -o /dev/null -w "krs-dispatch: HTTP %{http_code}\n" -X POST \
+            -H "Authorization: Bearer $${KRS_DISPATCH_SECRET}" \
+            -H "Content-Type: application/json" -d '{}' \
+            http://app:3000/api/krs/dispatch || echo "krs-dispatch: request failed"
+          sleep "$${KRS_DISPATCH_INTERVAL_SECONDS}"
+        done
+
 volumes:
   caddy_data:
   caddy_config:

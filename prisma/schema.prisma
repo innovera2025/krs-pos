@@ -51,8 +51,32 @@ model SyncJob {
   error     String?
   response  String?
   branchId  String        @default("BR-01")
+  // krs-sync P2 outbox extension — additive; all nullable/defaulted for back-compat.
+  // These fields turn SyncJob into a durable outbox the dispatcher drains:
+  //  - payload        : JSON snapshot of the POS sale captured at enqueue time. The
+  //                     dispatcher reads THIS, never the live DB, so a later order/
+  //                     product edit can't change what is written to KRS (no stale read).
+  //  - idempotencyKey : "<orderNumber>_<jobType>" (e.g. "POS-20260625-0012_SALE").
+  //                     @unique gives dedup protection; Postgres allows multiple NULLs
+  //                     under a unique index so legacy seed rows are unaffected.
+  //  - attempts       : count of dispatch attempts (terminal FAILED at maxAttempts).
+  //  - lastError      : last attempt's sanitized error (distinct from `error`, the
+  //                     terminal reason); never the raw mssql driver error.
+  //  - nextAttemptAt  : retry gate — null = immediately eligible; future = backing off.
+  //  - lockedAt       : dispatch lock — set on atomic claim, cleared on complete/fail;
+  //                     a stale lock (older than the reclaim window) is re-claimable.
+  payload        Json?
+  idempotencyKey String?   @unique
+  attempts       Int       @default(0)
+  lastError      String?
+  nextAttemptAt  DateTime?
+  lockedAt       DateTime?
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
+
+  // Dispatcher claim query filters PENDING/RETRYING jobs ordered by createdAt with a
+  // lock + retry-gate predicate. Index the status to serve the claim scan efficiently.
+  @@index([status, nextAttemptAt])
 }
 
 // Sync job kinds mirroring the Simple POS jobTypeLabel set (sale/refund/stock/

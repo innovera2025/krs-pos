@@ -5,9 +5,24 @@ import {
   OrderStatus,
   SyncStatus,
   StockMovementType,
+  SyncJobType,
+  SyncDirection,
+  SyncJobStatus,
   AuditAction,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+// Seller branch identity for the KRS outbox snapshot (krs-sync P2). Loaded BEFORE the
+// checkout $transaction (it hits Prisma — never inside a tx) so the SALE SyncJob can
+// carry branchCode/branchName. A null result defaults to HQ in the snapshot below.
+import { getSellerConfig } from "@/lib/sellerConfig";
+// KRS outbox SALE-payload contract (krs-sync P2). TYPE-ONLY + the HQ-branch defaults —
+// this module imports NO mssql driver, so the checkout route's module graph stays
+// driver-free. The dispatcher (a separate module) consumes the snapshot at dispatch.
+import {
+  type SalePayload,
+  SALE_PAYLOAD_HQ_BRANCH_CODE,
+  SALE_PAYLOAD_HQ_BRANCH_NAME,
+} from "@/lib/krs/salePayload";
 // FIX B — only formatOrderNumber is used here now; the Bangkok day is derived
 // from the Postgres transaction clock inside nextOrderNumber (no JS day stamp).
 import { formatOrderNumber } from "@/lib/datetime";
@@ -644,6 +659,17 @@ export async function POST(req: Request) {
     });
     const shiftId = openShift?.id ?? null;
 
+    // KRS outbox (krs-sync P2): resolve the seller branch BEFORE the $transaction —
+    // getSellerConfig() hits Prisma and MUST NOT run inside the tx. It is best-effort
+    // for the outbox snapshot: a null result (seller not configured) falls back to the
+    // HQ branch defaults so the SALE SyncJob is still well-formed and the future KRS
+    // write does not fail on a missing branch. A DB error here surfaces as the route's
+    // sanitized INTERNAL 500 (same as any other pre-tx Prisma read) — acceptable, since
+    // it only fires when the DB itself is unhealthy.
+    const sellerConfig = await getSellerConfig();
+    const outboxBranchCode = sellerConfig?.branchCode ?? SALE_PAYLOAD_HQ_BRANCH_CODE;
+    const outboxBranchName = sellerConfig?.branchLabel ?? SALE_PAYLOAD_HQ_BRANCH_NAME;
+
     const order = await prisma.$transaction(async (tx) => {
       // Collision-safe orderNumber from the atomic daily counter (Sub-phase C),
       // minted INSIDE the tx so a rolled-back order also rolls back the seq bump.
@@ -706,6 +732,86 @@ export async function POST(req: Request) {
           },
         });
       }
+
+      // === KRS outbox enqueue (krs-sync P2 — the ONLY new write in this tx) ===
+      // Atomic with the sale: the SALE SyncJob row commits in the SAME $transaction as
+      // the Order/stock/StockMovement, so a confirmed sale ALWAYS has a traceable sync
+      // row (and a rolled-back sale has none). The dispatcher (a separate process)
+      // reads this row's `payload` snapshot and performs the KRS write OUTSIDE any
+      // Prisma tx — no mssql call lives here (cross-engine separation). The feature
+      // flag gates the WRITE, not the enqueue, so jobs accumulate and drain once
+      // KRS_OUTBOUND_ENABLED=true. None of the money/stock logic above is touched.
+      //
+      // Non-null idempotencyKey invariant (P0 spec §8.1): the key MUST be non-empty —
+      // a null key gives zero dedup protection, so we throw INSIDE the tx (rolling back
+      // the whole sale) rather than enqueue an untraceable job. orderNumber is already
+      // asserted non-empty by nextOrderNumber, so this is a belt-and-braces guard.
+      const idempotencyKey = `${orderNumber}_SALE`;
+      if (orderNumber.length === 0) {
+        // Defensive: nextOrderNumber already throws on an empty day/seq, so this is
+        // unreachable in practice — but an empty idempotencyKey must never be written.
+        throw new Error("Cannot enqueue SALE SyncJob with an empty idempotency key");
+      }
+
+      // Map productId → its created OrderItem product (sku/name) so the snapshot
+      // attaches item code/description by PRODUCT, not by relation position: Prisma does
+      // NOT guarantee `created.items` order matches `lineItems`, so a positional
+      // `created.items[i]` could mis-attach sku/name to the wrong line in the KRS write
+      // (Track B). sku/name are product attributes, so a productId lookup is correct
+      // even when a product repeats across lines.
+      const snapshotProductById = new Map(
+        created.items.map((it) => [it.productId, it.product])
+      );
+
+      // Build the snapshot from the SERVER-RECOMPUTED money (the same Decimal-safe baht
+      // strings written onto the Order) — never client values, never a float round-trip.
+      const salePayload: SalePayload = {
+        orderNumber,
+        createdAt: created.createdAt.toISOString(),
+        total: totalBaht,
+        subtotal: subtotalBaht,
+        tax: taxBaht,
+        discount: discountBaht,
+        amountPaid: amountPaidBaht,
+        cashierId,
+        cashierName: created.cashier?.name ?? "",
+        customerId: created.customer?.id ?? null,
+        customerCode: created.customer?.taxId ?? null,
+        customerName: created.customer?.name ?? null,
+        customerAddress: created.customer?.address ?? null,
+        branchCode: outboxBranchCode,
+        branchName: outboxBranchName,
+        items: lineItems.map((l) => {
+          const prod = snapshotProductById.get(l.productId);
+          return {
+            itemCode: prod?.sku ?? "",
+            description: prod?.name ?? "",
+            quantity: l.quantity,
+            unitPrice: l.unitPrice,
+            lineTotal: l.lineTotal,
+            // Per-line discount is already folded into the server lineTotal; the cart's
+            // per-line discount input is not separately persisted on OrderItem, so the
+            // snapshot records "0.00" here (the bill-level discount lives in `discount`).
+            lineDiscount: "0.00",
+          };
+        }),
+      };
+
+      await tx.syncJob.create({
+        data: {
+          type: SyncJobType.SALE,
+          direction: SyncDirection.INSERT,
+          ref: orderNumber,
+          // Pass the Order's own Decimal total straight through (no Number() round-trip).
+          amount: created.total,
+          status: SyncJobStatus.PENDING,
+          provider: "KRS",
+          idempotencyKey,
+          payload: salePayload as unknown as Prisma.InputJsonValue,
+          attempts: 0,
+          branchId: created.branchId,
+        },
+      });
 
       return created;
     });

@@ -132,6 +132,53 @@ const EnvSchema = z.object({
     .string()
     .max(20, "KRS_AUTO_SYNC_WAREHOUSE must be at most 20 characters")
     .optional(),
+
+  // --- KRS outbound write-back (krs-sync P2 — POS → KRS cash-sale outbox/dispatcher).
+  // ALL OPTIONAL at boot (a deploy that never enables outbound, and CI/e2e, must still
+  // boot). The feature is OFF by default; the SyncJob outbox row is still enqueued at
+  // checkout regardless of the flag, but the dispatcher only performs the KRS write
+  // when KRS_OUTBOUND_ENABLED === "true". Track A ships safely with everything unset.
+  //
+  // KRS_OUTBOUND_ENABLED — kill switch for the actual KRS write. The dispatcher
+  // skips the write (re-queues the claimed job) for any value other than "true".
+  // Opt-in by design (mirrors KRS_AUTO_SYNC_ENABLED).
+  KRS_OUTBOUND_ENABLED: z.enum(["true", "false"]).default("false"),
+  // KRS_DISPATCH_SECRET — the shared bearer secret the dispatch cron sidecar sends as
+  // `Authorization: Bearer <value>` to POST /api/krs/dispatch. Min 32 chars when
+  // present (high-entropy: openssl rand -hex 32). When unset, the endpoint returns
+  // 503 (not configured). NEVER logged, echoed, or returned (mirrors the auto-sync
+  // trigger secret).
+  KRS_DISPATCH_SECRET: z
+    .string()
+    .min(32, "KRS_DISPATCH_SECRET must be at least 32 characters")
+    .optional(),
+  // KRS_SANDBOX_* — the SEPARATE sandbox MS SQL Server connection the outbound write
+  // targets. Deliberately NOT the production KrsConnectionSettings DB row used by
+  // inbound sync (P0 spec mandate: the write target must be a separate sandbox so a
+  // verification run can never touch production KRS). The sandbox client reads these
+  // env vars directly; sandboxClient.buildSandboxConfig() returns null when the
+  // required ones (host/db/user/pass) are unset, so the write refuses cleanly. SHAPE
+  // is validated when present; the password is plaintext (sandbox, not prod) — NEVER
+  // logged. Track A plumbs these through; no live connection is made.
+  KRS_SANDBOX_HOST: z
+    .string()
+    .max(255, "KRS_SANDBOX_HOST must be at most 255 characters")
+    .optional(),
+  KRS_SANDBOX_PORT: z
+    .string()
+    .regex(/^\d{1,5}$/, "KRS_SANDBOX_PORT must be a numeric port")
+    .optional(),
+  KRS_SANDBOX_DB: z
+    .string()
+    .max(255, "KRS_SANDBOX_DB must be at most 255 characters")
+    .optional(),
+  KRS_SANDBOX_USER: z
+    .string()
+    .max(255, "KRS_SANDBOX_USER must be at most 255 characters")
+    .optional(),
+  KRS_SANDBOX_PASS: z.string().optional(),
+  KRS_SANDBOX_SSL: z.enum(["true", "false"]).default("true"),
+  KRS_SANDBOX_TRUST_CERT: z.enum(["true", "false"]).default("true"),
 });
 
 function loadEnv(): z.infer<typeof EnvSchema> {
@@ -170,6 +217,23 @@ function loadEnv(): z.infer<typeof EnvSchema> {
       KRS_AUTO_SYNC_ENABLED:
         process.env.KRS_AUTO_SYNC_ENABLED === "true" ? "true" : "false",
       KRS_AUTO_SYNC_WAREHOUSE: process.env.KRS_AUTO_SYNC_WAREHOUSE,
+      // KRS outbound write-back knobs (krs-sync P2) — passed through unvalidated
+      // during the build phase (the dispatcher/checkout outbox never runs at build
+      // time); real shape validation + the endpoint/dispatcher gates apply at
+      // runtime. Enum fields normalize to the "true"/"false" string so the build
+      // object matches the parsed type exactly.
+      KRS_OUTBOUND_ENABLED:
+        process.env.KRS_OUTBOUND_ENABLED === "true" ? "true" : "false",
+      KRS_DISPATCH_SECRET: process.env.KRS_DISPATCH_SECRET,
+      KRS_SANDBOX_HOST: process.env.KRS_SANDBOX_HOST,
+      KRS_SANDBOX_PORT: process.env.KRS_SANDBOX_PORT,
+      KRS_SANDBOX_DB: process.env.KRS_SANDBOX_DB,
+      KRS_SANDBOX_USER: process.env.KRS_SANDBOX_USER,
+      KRS_SANDBOX_PASS: process.env.KRS_SANDBOX_PASS,
+      KRS_SANDBOX_SSL:
+        process.env.KRS_SANDBOX_SSL === "false" ? "false" : "true",
+      KRS_SANDBOX_TRUST_CERT:
+        process.env.KRS_SANDBOX_TRUST_CERT === "false" ? "false" : "true",
     };
   }
 

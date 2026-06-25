@@ -88,6 +88,25 @@ services:
       KRS_SYNC_TRIGGER_SECRET: ${KRS_SYNC_TRIGGER_SECRET:-}
       KRS_AUTO_SYNC_ENABLED: ${KRS_AUTO_SYNC_ENABLED:-false}
       KRS_AUTO_SYNC_WAREHOUSE: ${KRS_AUTO_SYNC_WAREHOUSE:-}
+      # KRS outbound write-back (krs-sync P2). The app reads these at boot via
+      # src/lib/env.ts; without them here the container never sees them even if they
+      # are in .env, so the dispatch endpoint would stay disabled/unauthenticated and
+      # the sandbox would read as unconfigured.
+      #  - KRS_OUTBOUND_ENABLED: kill switch for the KRS write; must be "true" to write.
+      #    Default false (opt-in) — the SALE outbox is still populated, the write is gated.
+      #  - KRS_DISPATCH_SECRET: bearer secret the krs-dispatch-cron sidecar authenticates
+      #    with (must match the sidecar value in docker-compose.prod.yml). Empty = 503.
+      #  - KRS_SANDBOX_*: the SEPARATE sandbox write target (NOT the prod inbound KRS).
+      #    Empty host/db/user/pass = sandbox unconfigured → the write refuses cleanly.
+      KRS_OUTBOUND_ENABLED: ${KRS_OUTBOUND_ENABLED:-false}
+      KRS_DISPATCH_SECRET: ${KRS_DISPATCH_SECRET:-}
+      KRS_SANDBOX_HOST: ${KRS_SANDBOX_HOST:-}
+      KRS_SANDBOX_PORT: ${KRS_SANDBOX_PORT:-1433}
+      KRS_SANDBOX_DB: ${KRS_SANDBOX_DB:-}
+      KRS_SANDBOX_USER: ${KRS_SANDBOX_USER:-}
+      KRS_SANDBOX_PASS: ${KRS_SANDBOX_PASS:-}
+      KRS_SANDBOX_SSL: ${KRS_SANDBOX_SSL:-true}
+      KRS_SANDBOX_TRUST_CERT: ${KRS_SANDBOX_TRUST_CERT:-true}
     ports:
       # Bind to localhost only — the public entrypoint is the Caddy reverse proxy
       # (docker-compose.prod.yml, ports 80/443). Caddy reaches the app over the

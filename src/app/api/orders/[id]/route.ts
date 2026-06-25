@@ -474,6 +474,15 @@ export async function PATCH(
             reference: `${action}:${existing.id}`,
           },
         });
+        // TODO(krs-sync-P2): enqueue a STOCK_REVERSAL SyncJob here (idempotencyKey =
+        // `${orderNumber}_STOCK_REVERSAL`) once the owner confirms reversal ownership
+        // (plan §10 item 12 / §12). If KRS self-reverses on its void document, POS
+        // sends NO reversal and this stays a comment. If POS must send a compensating
+        // positive InventoryFlow row, the enqueue goes OUTSIDE this $transaction
+        // (best-effort — the Postgres stock is already restored; the KRS reversal is
+        // async, unlike the checkout outbox which IS in-tx because sale+outbox
+        // atomicity is the invariant). Left as a documented gap — not implemented in
+        // Track A (no guessed reversal).
       }
 
       // Re-read with relations for the response (the updateMany returns a count).
