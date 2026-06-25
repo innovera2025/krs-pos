@@ -7,6 +7,7 @@ import { useToast } from "@/components/ToastProvider";
 import { ConnectionTab } from "@/components/data/ConnectionTab";
 import { FieldMappingTab } from "@/components/data/FieldMappingTab";
 import { DataFlowTab } from "@/components/data/DataFlowTab";
+import { SyncActivityTab } from "@/components/data/SyncActivityTab";
 import { LiveDataTab } from "@/components/data/LiveDataTab";
 import { LiveStatusPill } from "@/components/data/LiveStatusPill";
 import {
@@ -14,12 +15,13 @@ import {
   type DbState,
 } from "@/components/data/connectionTypes";
 
-type DataTab = "connection" | "mapping" | "flow" | "preview";
+type DataTab = "connection" | "mapping" | "flow" | "sync" | "preview";
 
 const TABS: { key: DataTab; label: string; en: string }[] = [
   { key: "connection", label: "เชื่อมต่อ", en: "Connection" },
   { key: "mapping", label: "จับคู่ฟิลด์", en: "Field Mapping" },
   { key: "flow", label: "การไหลของข้อมูล", en: "Data Flow" },
+  { key: "sync", label: "บันทึกการซิงค์", en: "Sync Activity" },
   { key: "preview", label: "ตรวจข้อมูล", en: "Live Data" },
 ];
 
@@ -270,6 +272,7 @@ function DataScreen() {
           ) : null}
           {tab === "mapping" ? <FieldMappingTab /> : null}
           {tab === "flow" ? <DataFlowTab /> : null}
+          {tab === "sync" ? <SyncActivityTab /> : null}
           {tab === "preview" ? <LiveDataTab /> : null}
         </div>
       </div>

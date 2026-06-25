@@ -14,6 +14,13 @@ type SyncDetailDrawerProps = {
   onRetry: (job: SyncJobDTO) => void;
   /** Skip with a user-supplied reason (inline panel — decision I, no window.prompt). */
   onSkip: (job: SyncJobDTO, reason: string) => void;
+  /**
+   * READ-ONLY mode (Sync Activity tab). When true the Retry/Skip action footer +
+   * skip-reason panel are suppressed entirely — the drawer becomes a pure detail
+   * view. The legacy retry/skip POST actions are SIMULATED, so the read-only Sync
+   * Activity view never wires them. Defaults to false (the legacy interactive mode).
+   */
+  readOnly?: boolean;
 };
 
 /**
@@ -34,6 +41,7 @@ export function SyncDetailDrawer({
   onClose,
   onRetry,
   onSkip,
+  readOnly = false,
 }: SyncDetailDrawerProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
@@ -211,8 +219,8 @@ export function SyncDetailDrawer({
             </div>
           ) : null}
 
-          {/* Inline skip-reason panel (decision I) */}
-          {skipOpen ? (
+          {/* Inline skip-reason panel (decision I) — suppressed in read-only mode */}
+          {!readOnly && skipOpen ? (
             <div
               className="mt-4 rounded-[11px] border px-[13px] py-[12px]"
               style={{ background: "#faf5ff", borderColor: "#e9d5ff" }}
@@ -256,8 +264,9 @@ export function SyncDetailDrawer({
           ) : null}
         </div>
 
-        {/* Actions */}
-        {(canRetry || canSkip) && !skipOpen ? (
+        {/* Actions — suppressed entirely in read-only mode (the legacy retry/skip
+            POST actions are simulated and must not be wired from Sync Activity). */}
+        {!readOnly && (canRetry || canSkip) && !skipOpen ? (
           <div
             className="flex flex-col gap-[9px] border-t px-[22px] py-4"
             style={{ borderColor: "#f1f5f9" }}
