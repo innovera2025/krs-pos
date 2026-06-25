@@ -15,7 +15,7 @@
 ขอบคุณสำหรับสเปก `TheJournal` + `AccountHead` — **ตอบข้อ 1 (ฝั่งเงินสด/รายได้/VAT) ได้แล้ว:** ลง 3 บรรทัด (DR เงินสด=`Assets3` / CR รายได้=`Revenues2` / CR ภาษีขาย=`Liabilities4`), ดึงรหัสบัญชีจาก `AccountHead` ตามกลุ่ม, ค่าคงที่ `SourceType='SC'`, `TransactionTypeI/T=1`, `Currency='THB'`, `Department='SAL'`, `BranchCode='00000'`, RunningNumber `Name='Receipt'`, เลขเอกสาร `SC-XXXX-XXXX` · **POS มียอดครบ** (เงินสด=ยอดรวม, รายได้=ก่อน VAT, VAT=ภาษี)
 
 **ยังเหลือที่ต้องตอบ:**
-- **(ข้อ 2) ต้นทุน/COGS** — สเปกที่ให้มาเป็นฝั่งเงินสด/รายได้/VAT เท่านั้น · **ยังขาดบรรทัด DR ต้นทุนขาย / CR สินค้าคงคลัง** → KRS คำนวณ COGS เองใช่ไหม (POS ไม่มีต้นทุน) หรือมี `TheJournal` อีกชุด?
+- ✅ **(ข้อ 2) ต้นทุน/COGS — ตอบแล้ว 25/06: KRS จัดการเอง** · POS ไม่ส่งต้นทุน · POS เขียนแค่บิลขาย + journal เงินสด/รายได้/VAT + ตัดสต็อก (InventoryFlow) → KRS คำนวณ COGS + ตัดสินค้าคงคลังเองจากการ post InventoryFlow
 - **(ข้อ 1 ต่อ)** ฟิลด์ `*Jnl` ใน `SalesInvoiceHdr/Dtl` สัมพันธ์กับ `TheJournal` ยังไง (เป็น JnlCode อ้างอิง / KRS เติม / POS เติม)? · `CompanyCode`, `JnlName`, `JnlDate`(=วันที่ขาย?), `Description`, `Amount` vs `AmountBht`
 - **(ข้อ 3)** ค่าคงที่ของ **`SalesInvoice` + `InventoryFlow` inserts** (คนละชุดกับ journal): `InvoiceType, SaleType, ItemType, DocuType` · `SourceType`(Dtl) · `TransactionType, ReasonIndex/Name`(InventoryFlow)
 - **(ข้อ 4)** การ run number ให้ **ไม่ชนกันเมื่อขายพร้อมกัน** — `MAX(Number)+1` เสี่ยง race → ขอ pattern ที่ปลอดภัย (lock/transaction)

@@ -162,7 +162,7 @@ SELECT ACC_CODE FROM AccountHead WITH (NOLOCK) WHERE ACC_GRPNAME = '<group>' ORD
 **⚠️ Concurrency:** `MAX(Number)` then insert is RACE-PRONE (two concurrent sales get the same number). The dispatcher must claim the next number atomically (UPDATE…OUTPUT / serializable tx / lock) — confirm the vendor's safe pattern.
 
 **STILL OPEN after this:**
-- **COGS / inventory journal** — this spec covered only Cash/Revenue/VAT. The **Dr COGS / Cr Inventory** posting is NOT shown → does KRS compute COGS itself (POS has no cost), or is there another `TheJournal` block? (gap #2 remains)
+- ✅ **RESOLVED (2026-06-25): COGS / inventory journal — KRS computes it ITSELF.** POS sends NO cost (it has none). POS writes the sale + cash/revenue/VAT journal + the InventoryFlow stock cut; KRS derives the Dr COGS / Cr Inventory posting from its own costing when the InventoryFlow is posted. → POS leaves cost-related journal fields (`CostOfSaleJnl`, and likely `InventoryJnl`) for KRS. (gap #2 closed)
 - Relationship between the `SalesInvoiceHdr/Dtl.*Jnl` fields (§2) and these `TheJournal` rows — are the `*Jnl` fields = `JnlCode` refs, KRS-filled, or POS-filled?
 - `CompanyCode` value; `JnlName`, `JnlDate` (=sale date?), `Description` format, `Amount` vs `AmountBht` (THB → equal).
 - The SalesInvoice/InventoryFlow INSERT constants (InvoiceType, SaleType, ItemType, DocuType, SourceType-for-Dtl, ReasonIndex/Name, inventory TransactionType) — this snippet was the JOURNAL, not those two docs.
