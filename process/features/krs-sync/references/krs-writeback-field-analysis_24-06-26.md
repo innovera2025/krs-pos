@@ -136,3 +136,34 @@ Linking: all rows share `TransactionNo`; the inventory side cross-refs the sale 
 - A dispatcher executes the **5 INSERTs in ONE KRS mssql transaction** (parameterized, the vendor's `?` placeholders bind directly), idempotent on `orderNumber`.
 - The `InventoryFlowDtl` write cuts stock → `sp_Onhand` reflects it → the existing inbound reconcile auto-verifies the outbound succeeded.
 - **Do NOT write to the live ERP until verified on a vendor sandbox.**
+
+---
+
+## 5. UPDATE 2026-06-25 — GL journal spec received (`TheJournal` + `AccountHead`)
+
+Vendor provided the GL posting for a cash sale. It answers most of gap #1 (the cash/revenue/VAT side). The full cash-sale write therefore ALSO includes GL journal rows in `TheJournal`, on top of the 5 inserts in §1.
+
+**Account codes are resolved at write-time** from the chart of accounts `AccountHead` by group name (NOT hardcoded) — take the first by `Roworder`:
+```sql
+SELECT ACC_CODE FROM AccountHead WITH (NOLOCK) WHERE ACC_GRPNAME = '<group>' ORDER BY Roworder
+```
+| Posting | DrCr | AccountHead group | Amount (from POS) |
+|---|---|---|---|
+| เงินสด (Cash) | **D** | `Assets3` | `Order.total` (รวม VAT) |
+| รายได้ขายสด (Cash-sale revenue) | **C** | `Revenues2` | `Order.subtotal` (ก่อน VAT) |
+| ภาษีขาย (Output VAT) | **C** | `Liabilities4` | `Order.tax` |
+
+→ Double-entry balances: DR total = CR (subtotal + VAT). **POS has all 3 amounts already.** ✅
+
+**`TheJournal` row** = (JnlName, JnlCode, TransactionTypeI, TransactionTypeT, CompanyCode, Department, GLAccount, JnlDate, Description, DrCr, Currency, Amount, AmountBht, SourceType, SourceNo, VoucherNo, JournalNo, ActualInvoiceNo, BranchCode, BranchName).
+
+**Constants confirmed (journal):** `SourceType='SC'`, `TransactionTypeI=1`, `TransactionTypeT=1`, `Currency='THB'`, `Department='SAL'`, `BranchCode='00000'`, `BranchName='สำนักงานใหญ่'`. `pTransName='Receipt'` is the **RunningNumber `Name` key**; `JnlCode = MAX(Number) FROM RunningNumber WHERE Name='Receipt'` (+1, see race note). Document no format `SC-XXXX-XXXX` → fills `VoucherNo/JournalNo/ActualInvoiceNo`; `SourceNo` = the document `TransactionNo` (links journal → sale).
+
+**⚠️ Concurrency:** `MAX(Number)` then insert is RACE-PRONE (two concurrent sales get the same number). The dispatcher must claim the next number atomically (UPDATE…OUTPUT / serializable tx / lock) — confirm the vendor's safe pattern.
+
+**STILL OPEN after this:**
+- **COGS / inventory journal** — this spec covered only Cash/Revenue/VAT. The **Dr COGS / Cr Inventory** posting is NOT shown → does KRS compute COGS itself (POS has no cost), or is there another `TheJournal` block? (gap #2 remains)
+- Relationship between the `SalesInvoiceHdr/Dtl.*Jnl` fields (§2) and these `TheJournal` rows — are the `*Jnl` fields = `JnlCode` refs, KRS-filled, or POS-filled?
+- `CompanyCode` value; `JnlName`, `JnlDate` (=sale date?), `Description` format, `Amount` vs `AmountBht` (THB → equal).
+- The SalesInvoice/InventoryFlow INSERT constants (InvoiceType, SaleType, ItemType, DocuType, SourceType-for-Dtl, ReasonIndex/Name, inventory TransactionType) — this snippet was the JOURNAL, not those two docs.
+- Idempotency anchor, Warehouse (WHFG?), MainUnits + UnitPrice incl/ex VAT, **sandbox** (all still open).

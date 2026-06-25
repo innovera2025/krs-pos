@@ -11,6 +11,20 @@
 
 ---
 
+## ✅ อัปเดต 25/06/2026 — ได้รับสเปก GL journal แล้ว (ตอบบางส่วน)
+ขอบคุณสำหรับสเปก `TheJournal` + `AccountHead` — **ตอบข้อ 1 (ฝั่งเงินสด/รายได้/VAT) ได้แล้ว:** ลง 3 บรรทัด (DR เงินสด=`Assets3` / CR รายได้=`Revenues2` / CR ภาษีขาย=`Liabilities4`), ดึงรหัสบัญชีจาก `AccountHead` ตามกลุ่ม, ค่าคงที่ `SourceType='SC'`, `TransactionTypeI/T=1`, `Currency='THB'`, `Department='SAL'`, `BranchCode='00000'`, RunningNumber `Name='Receipt'`, เลขเอกสาร `SC-XXXX-XXXX` · **POS มียอดครบ** (เงินสด=ยอดรวม, รายได้=ก่อน VAT, VAT=ภาษี)
+
+**ยังเหลือที่ต้องตอบ:**
+- **(ข้อ 2) ต้นทุน/COGS** — สเปกที่ให้มาเป็นฝั่งเงินสด/รายได้/VAT เท่านั้น · **ยังขาดบรรทัด DR ต้นทุนขาย / CR สินค้าคงคลัง** → KRS คำนวณ COGS เองใช่ไหม (POS ไม่มีต้นทุน) หรือมี `TheJournal` อีกชุด?
+- **(ข้อ 1 ต่อ)** ฟิลด์ `*Jnl` ใน `SalesInvoiceHdr/Dtl` สัมพันธ์กับ `TheJournal` ยังไง (เป็น JnlCode อ้างอิง / KRS เติม / POS เติม)? · `CompanyCode`, `JnlName`, `JnlDate`(=วันที่ขาย?), `Description`, `Amount` vs `AmountBht`
+- **(ข้อ 3)** ค่าคงที่ของ **`SalesInvoice` + `InventoryFlow` inserts** (คนละชุดกับ journal): `InvoiceType, SaleType, ItemType, DocuType` · `SourceType`(Dtl) · `TransactionType, ReasonIndex/Name`(InventoryFlow)
+- **(ข้อ 4)** การ run number ให้ **ไม่ชนกันเมื่อขายพร้อมกัน** — `MAX(Number)+1` เสี่ยง race → ขอ pattern ที่ปลอดภัย (lock/transaction)
+- **(ข้อ 5-11)** TransactionNo, ฟิลด์ลิงก์ SalesInvoice↔InventoryFlow, **กันซ้ำ (idempotency)**, Warehouse=`WHFG`?, MainUnits + UnitPrice รวม/ก่อน VAT, และ **Sandbox (บังคับ)**
+
+ด้านล่างคือรายการเต็ม 11 ข้อเดิมไว้อ้างอิง 👇
+
+---
+
 ## ส่วนบัญชี (สำคัญสุด)
 **1. GL Journals (`*Jnl`)** — `ARAPJnl, RevenueJnl, CostOfSaleJnl, InventoryJnl, VATJnl, DiscountJnl, AccountsDescription, ChargeOrDiscountAccount`
 - รูปแบบสตริง/โครงสร้างของแต่ละ journal เป็นอย่างไร (ขอ **ตัวอย่างจริง 1 บิล**)?
