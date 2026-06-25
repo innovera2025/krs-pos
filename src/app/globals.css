@@ -129,9 +129,10 @@ textarea:focus-visible,
   width: 408px;
 }
 
-/* POS category + grid — 168px category column desktop default. */
+/* POS category + grid — 196px category column desktop default (fits the real KRS
+   category names, which wrap up to 2 lines in each chip). */
 .pos-grid {
-  grid-template-columns: 168px minmax(0, 1fr);
+  grid-template-columns: 196px minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -149,9 +150,9 @@ textarea:focus-visible,
     width: 340px;
   }
 
-  /* Collapse the category column; the search bar above it still works. */
+  /* Narrow the category column on tablet (names still wrap to 2 lines). */
   .pos-grid {
-    grid-template-columns: 132px minmax(0, 1fr);
+    grid-template-columns: 150px minmax(0, 1fr);
     gap: 10px;
   }
 }

@@ -64,7 +64,7 @@ export function CategoryPanel({ chips, active, onSelect }: CategoryPanelProps) {
               <Icon size={18} strokeWidth={2} />
             </span>
             <span className="min-w-0">
-              <strong className="block truncate text-[13px] leading-none">
+              <strong className="line-clamp-2 block text-[13px] leading-tight">
                 {chip.label}
               </strong>
               {chip.sublabel ? (
