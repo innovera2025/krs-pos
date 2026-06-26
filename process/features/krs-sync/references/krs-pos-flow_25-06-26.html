@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>KRS POS — Flow การทำงาน (25/06/2026)</title>
+<style>
+  body { font-family: "IBM Plex Sans Thai", -apple-system, system-ui, sans-serif;
+         margin: 0; padding: 28px 20px 60px; background: #f6f8f7; color: #0f3b2e; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: #5a6b64; font-size: 13px; margin-bottom: 18px; }
+  .legend { display:flex; gap:18px; flex-wrap:wrap; font-size:13px; margin: 0 0 18px; }
+  .legend span { display:inline-flex; align-items:center; gap:7px; }
+  .dot { width:14px; height:14px; border-radius:4px; display:inline-block; }
+  .live { background:#16a34a; } .dorm { background:#e6a700; } .ext { background:#2563eb; }
+  .card { background:#fff; border:1px solid #e3eae7; border-radius:16px; padding:14px;
+          box-shadow:0 2px 10px rgba(14,59,46,.06); overflow:auto; }
+  .mermaid { font-size: 15px; }
+  .note { font-size:12.5px; color:#5a6b64; margin-top:14px; line-height:1.6; }
+  code { background:#eef2f0; padding:1px 5px; border-radius:5px; }
+</style>
+</head>
+<body>
+  <h1>KRS POS — Flow การทำงานตอนนี้</h1>
+  <div class="sub">prod: krspos.innoveraappcenter.com · อัปเดต 25/06/2026</div>
+  <div class="legend">
+    <span><i class="dot live"></i> ทำงานจริงแล้ว (live)</span>
+    <span><i class="dot dorm"></i> สร้างแล้วแต่ปิดอยู่ / รอ vendor (dormant)</span>
+    <span><i class="dot ext"></i> ระบบ KRS ภายนอก (MS SQL Server)</span>
+    <span>— เส้นทึบ = ทำงาน · เส้นประ = ยังไม่เปิด</span>
+  </div>
+  <div class="card">
+    <pre class="mermaid">
+flowchart TB
+  classDef live  fill:#dcfce7,stroke:#16a34a,stroke-width:1.5px,color:#14532d;
+  classDef dorm  fill:#fef3c7,stroke:#e6a700,stroke-width:1.5px,color:#7c5e00;
+  classDef ext   fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#1e3a8a;
+
+  subgraph KRS["🏢 KRS ERP — MS SQL Server (db_ACC_SNP / ฐานทดสอบ)"]
+    direction TB
+    InvItem[(InventoryItem<br/>สินค้า 2,020)]:::ext
+    spOnhand[/"sp_Onhand<br/>สต็อกคงเหลือ"/]:::ext
+    SalesInv[(SalesInvoiceHdr/Dtl)]:::ext
+    Journal[(TheJournal — บัญชี GL)]:::ext
+    InvFlow[(InventoryFlowHdr/Dtl)]:::ext
+  end
+
+  subgraph POS["🛒 KRS POS — Next.js + Postgres (Lightsail + Caddy)"]
+    direction TB
+    Cashier([👤 แคชเชียร์ /pos]):::live
+    Checkout[Checkout API<br/>คิดเงิน/ตัดสต็อก]:::live
+    PosDB[(Postgres<br/>Product · Order · SyncJob)]:::live
+    Receipt[/ใบเสร็จ + ใบกำกับภาษี<br/>← ข้อมูลร้าน /settings/]:::live
+    Admin([👤 Admin /data /products]):::live
+  end
+
+  subgraph CRON["⏱️ Sidecars (Docker)"]
+    direction TB
+    PullCron[krs-cron · ทุก 5 นาที]:::live
+    DispCron[krs-dispatch-cron · ทุก 30 วิ]:::dorm
+  end
+
+  %% ---- INBOUND (KRS -> POS) : live ----
+  Admin -- "ดึงสินค้าจาก KRS" --> InvItem
+  InvItem == "import → Product" ==> PosDB
+  PullCron == "POST /api/krs/auto-sync" ==> spOnhand
+  spOnhand == "delta → Product.stock" ==> PosDB
+  Admin -- "Data Flow: reconcile" --> spOnhand
+
+  %% ---- POS CORE : live ----
+  Cashier ==> Checkout
+  Checkout == "Postgres tx: Order + ตัดสต็อก + outbox SyncJob(SALE)" ==> PosDB
+  Checkout -.-> Receipt
+
+  %% ---- OUTBOUND (POS -> KRS) : dormant / Track B รอ vendor ----
+  PosDB -. "SALE queue (PENDING)" .-> DispCron
+  DispCron -. "POST /api/krs/dispatch" .-> Gate{{"KRS_OUTBOUND_ENABLED?"}}:::dorm
+  Gate -. "OFF → 503 (ตอนนี้)" .-> Stub[/"write STUB<br/>รอ vendor 4 จุด"/]:::dorm
+  Gate -. "ON = Track B" .-> SalesInv
+  SalesInv -. "+ GL" .-> Journal
+  SalesInv -. "+ ตัดสต็อก" .-> InvFlow
+    </pre>
+  </div>
+  <div class="note">
+    <b>อ่านแผนภาพ:</b><br/>
+    • <b>ขาเข้า (เขียวทึบ):</b> ดึงสินค้า + ดึงสต็อกอัตโนมัติทุก 5 นาที (<code>sp_Onhand</code> → delta → POS) + หน้า reconcile — <b>ทำงานจริงแล้ว</b><br/>
+    • <b>หน้าขาย (เขียวทึบ):</b> แคชเชียร์ขาย → คิดเงิน/ตัดสต็อก + จดคิว <code>SyncJob(SALE)</code> ใน transaction เดียว + ออกใบเสร็จ/ใบกำกับภาษี — <b>ทำงานจริงแล้ว</b><br/>
+    • <b>ขาออก (เหลืองเส้นประ):</b> คิวบิลขายถูกสร้างไว้ แต่ตัวส่งกลับ KRS <b>ยังปิด</b> (flag OFF → 503, ตัวเขียนเป็น stub) — รอ vendor ตอบ 4 จุด (ค่าคงที่ InventoryFlow, คลัง, หน่วยนับ) แล้วจะเปิด Track B เขียน SalesInvoice + TheJournal + InventoryFlow<br/>
+    • <b>วงปิด:</b> เมื่อขาออกเขียน <code>InventoryFlowDtl</code> → <code>sp_Onhand</code> เปลี่ยน → หน้า reconcile ขาเข้ายืนยันให้อัตโนมัติ
+  </div>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: true, theme: "base",
+      themeVariables: { fontFamily: "IBM Plex Sans Thai, system-ui, sans-serif" } });
+  </script>
+</body>
+</html>
