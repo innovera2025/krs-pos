@@ -4,7 +4,7 @@
 > both Claude and Codex. Read it first, then open the grouped/source docs it points to.
 > Regenerate or refresh with the `vc-generate-context` skill.
 
-- Last updated: 2026-06-24 (seller-company-settings shipped — 12 models, 11 enums, 6 migrations; live on prod)
+- Last updated: 2026-06-27 (krs-writeback-idempotency shipped — 7 migrations; SyncJob.krsClaimedTxnNo; SyncJobStatus.NEEDS_RECONCILE Prisma enum; module remains dormant)
 - Repo HEAD: main (committed through seller-company-settings; commits 27153c1 feat + c7ab7f9 docs)
 - Mode: Context sync (context-maintainer)
 - Package manager: npm (`package-lock.json` committed)
@@ -88,7 +88,7 @@ For most substantial tasks:
 |---|---|---|
 | `planning/` | `process/context/planning/all-planning.md` | plan-shape calibration, SIMPLE vs COMPLEX, PRD examples |
 | `tests/` | `process/context/tests/all-tests.md` | verification strategy, commands, ephemeral-Postgres smoke pattern (no automated tests yet — known gap) |
-| `database/` | `process/context/database/all-database.md` | Prisma schema, 12 models + 11 enums, 6 tracked migrations, seeding, client singleton, integer-satang money, status-scoped aggregates |
+| `database/` | `process/context/database/all-database.md` | Prisma schema, 12 models + 11 enums, 7 tracked migrations, seeding, client singleton, integer-satang money, status-scoped aggregates |
 | `container/` | `process/context/container/all-container.md` | Dockerfile, docker-compose services (db + app), ports, build/run commands |
 
 ## 5. Task Routing Table
@@ -118,7 +118,7 @@ krs-pos/
   prisma/
     schema.prisma          -- DB schema: 12 models + 11 enums (see §8 and database/all-database.md)
     seed.ts                -- sample data: categories, products, admin user, shift, orders, customers, sync jobs
-    migrations/            -- 6 tracked migrations (init_with_payments, phase4, phase5, phase6a, krs_auto_sync_snapshot, seller_settings)
+    migrations/            -- 7 tracked migrations (init_with_payments, phase4, phase5, phase6a, krs_auto_sync_snapshot, seller_settings, add_syncjob_krs_claimed_txn_v2)
   src/
     app/
       api/
@@ -335,7 +335,7 @@ When durable project knowledge changes: (1) update the smallest relevant context
 ## Scan Metadata
 
 - Generated: 2026-06-20
-- Last manual update: 2026-06-24 (seller-company-settings shipped; 12 models, 11 enums, 6 migrations; krs-cron sidecar live; SELLER_* env now fallback-only)
+- Last manual update: 2026-06-27 (krs-writeback-idempotency shipped; 7 migrations; SyncJob.krsClaimedTxnNo + SyncJobStatus.NEEDS_RECONCILE Prisma enum; outbound module remains dormant)
 - Synced to: seller-company-settings on main (commits 27153c1, c7ab7f9; prior: 942efa8, c8f4afd, d48de83, 989d88c, 054f291, 6ae8346)
 - Package manager: npm
 - Source files scanned: `prisma/schema.prisma`, `prisma/migrations/`, `prisma/seed.ts`,

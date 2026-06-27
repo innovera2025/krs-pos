@@ -5,7 +5,7 @@ This file is the canonical database context entrypoint for krs-pos.
 Use it after `process/context/all-context.md` when the task needs schema changes, Prisma model
 work, migrations, seeding, or money/Decimal handling.
 
-Last updated: 2026-06-24 (seller-company-settings shipped — 12 models, 11 enums, 6 migrations)
+Last updated: 2026-06-27 (krs-writeback-idempotency shipped — 7 migrations; SyncJob.krsClaimedTxnNo; SyncJobStatus.NEEDS_RECONCILE Prisma enum value)
 
 ---
 
@@ -13,7 +13,7 @@ Last updated: 2026-06-24 (seller-company-settings shipped — 12 models, 11 enum
 
 This group covers:
 
-- the Prisma schema (`prisma/schema.prisma`): 12 models + 11 enums (as of seller-company-settings)
+- the Prisma schema (`prisma/schema.prisma`): 12 models + 11 enums, 7 migrations (as of krs-writeback-idempotency)
 - model relationships and key constraints (unique fields, cascade deletes)
 - migration workflow (`prisma migrate` — tracked migrations only; `db push` is dev-convenience only)
 - seeding (`prisma/seed.ts` via tsx)
@@ -52,7 +52,7 @@ Provider: **PostgreSQL** (`datasource db`, `url = env("DATABASE_URL")`). Generat
 | `StockMovement` | `type StockMovementType`, `qty Int`, `reference String?`, `branchId @default("BR-01")` (P4) | `product Product` (**onDelete: Cascade**) |
 | `Shift` | `shiftNumber` unique, `status ShiftStatus @default(OPEN)`, `openedAt/closedAt?`, `openingFloat Decimal(10,2) @default(0)`, `countedCash Decimal(10,2)?`, `cashierId?`, `branchId @default("BR-01")` (P5) | `cashier User?`, `orders Order[]` |
 | `Customer` | `name`, `taxId? @unique`, `phone?`, `address?`, `branchId @default("BR-01")` (P6a) | `orders Order[]` |
-| `SyncJob` | `type SyncJobType`, `direction SyncDirection @default(INSERT)`, `ref String`, `amount Decimal(12,2) @default(0)`, `status SyncJobStatus @default(PENDING)`, `provider String @default("KRS")`, `error?`, `response?`, `branchId @default("BR-01")` (P6a) | — |
+| `SyncJob` | `type SyncJobType`, `direction SyncDirection @default(INSERT)`, `ref String`, `amount Decimal(12,2) @default(0)`, `status SyncJobStatus @default(PENDING)`, `provider String @default("KRS")`, `error?`, `response?`, `branchId @default("BR-01")` (P6a); `krsClaimedTxnNo String?` (krs-writeback-idempotency — burned-anchor: SaleInvoiceTrNo claimed in a separate committed phase-0 tx; non-null means a prior attempt burned this number; never cleared on failure, reused on NOT FOUND retry) | — |
 | `KrsStockSnapshot` | `itemCode String @id`, `lastQty Decimal(12,4)`, `lockedAt DateTime?`, `updatedAt @updatedAt` — KRS on-hand snapshot for the inbound auto-pull delta engine. The row with `itemCode = "__LOCK__"` is the run-lock sentinel (prevents concurrent sync runs). | — |
 | `ShopSettings` | Singleton row (`id = "singleton"`). Receipt layout: `receiptWidthMm Int @default(80)`, `receiptHeightAuto Boolean @default(true)`, `receiptHeightMm Int?`. Seller identity (DB-primary, ENV fallback via `getSellerConfig()`): `sellerName String?`, `sellerTaxId String?`, `sellerAddress String?`, `sellerPhone String?`, `sellerPosId String?`, `sellerBranchCode String?`, `sellerBranchLabel String?`. The 7 seller fields replaced the former `SELLER_*`-env-only design (migration `20260624120424_seller_settings`); `getSellerConfig()` is now async, reads DB first, falls back to `SELLER_*` env vars per field. Editable by admin via `/settings` Seller Info card. | — |
 
@@ -61,7 +61,7 @@ and `KrsStockSnapshot` also have `updatedAt @updatedAt` (KrsStockSnapshot has `u
 `createdAt` — it is a keyed snapshot store, not an audit log). IDs are `cuid()` strings for most models;
 `KrsStockSnapshot` uses `itemCode String @id` as a natural key.
 
-**Enums — 11 enums as of krs-inbound-auto-pull:**
+**Enums — 11 enums as of krs-inbound-auto-pull (SyncJobStatus gained NEEDS_RECONCILE in krs-writeback-idempotency — Prisma enum only):**
 
 | Enum | Values |
 |---|---|
@@ -73,14 +73,14 @@ and `KrsStockSnapshot` also have `updatedAt @updatedAt` (KrsStockSnapshot has `u
 | `StockMovementType` | `RECEIVE`, `SALE`, `ADJUST` (P4), `KRS_SYNC` (krs-inbound-auto-pull — auto-pull delta audit) |
 | `SyncJobType` | `SALE`, `REFUND`, `STOCK`, `PULL`, `TAX_INVOICE`, `STOCK_ADJ`, `RECEIVE` (P6a) |
 | `SyncDirection` | `INSERT`, `PULL` (P6a) |
-| `SyncJobStatus` | `PENDING`, `SYNCED`, `FAILED`, `RETRYING`, `SKIPPED` (P6a) |
+| `SyncJobStatus` | `PENDING`, `SYNCED`, `FAILED`, `RETRYING`, `SKIPPED` (P6a), `NEEDS_RECONCILE` (krs-writeback-idempotency — Prisma enum only; NOT in `src/types/index.ts` local union; not auto-claimable; routes to operator review when existence check persistently fails on a reclaimed job) |
 
 ## Tracked Migrations
 
 The repo uses **`prisma migrate`** (tracked migration history) — NOT `db push` for production.
 `db push` is available as `npm run db:push` for dev/scratch use only.
 
-Six migrations exist under `prisma/migrations/`:
+Seven migrations exist under `prisma/migrations/`:
 
 | Migration folder | Phase | Contents |
 |---|---|---|
@@ -90,6 +90,7 @@ Six migrations exist under `prisma/migrations/`:
 | `20260620144152_phase6a_customer_syncjob` | P6a | `Customer` model; `SyncJob` model; enums SyncJobType/SyncDirection/SyncJobStatus; `Order.customerId` |
 | `20260623105939_krs_auto_sync_snapshot` | krs-inbound-auto-pull | `KrsStockSnapshot` model (`itemCode @id`, `lastQty Decimal(12,4)`, `lockedAt`, `updatedAt`); `KRS_SYNC` value added to `StockMovementType` enum |
 | `20260624120424_seller_settings` | seller-company-settings | 7 nullable `TEXT` columns added to `ShopSettings` (`sellerName`, `sellerTaxId`, `sellerAddress`, `sellerPhone`, `sellerPosId`, `sellerBranchCode`, `sellerBranchLabel`); additive only — no drops, no alters to existing columns |
+| `20260627000000_add_syncjob_krs_claimed_txn_v2` | krs-writeback-idempotency | `ADD COLUMN "krsClaimedTxnNo" TEXT` on `SyncJob`; `ALTER TYPE "SyncJobStatus" ADD VALUE 'NEEDS_RECONCILE'`; additive only — no backfill, no constraint changes |
 
 Apply to a fresh DB with `prisma migrate deploy` (CI/production) or `prisma migrate dev` (dev).
 
