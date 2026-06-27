@@ -11,7 +11,7 @@
 //      for Assets3 (cash), Revenues2 (revenue), Liabilities4 (output VAT).
 //   4. INSERT dbo.SalesInvoiceHdr (1 row).
 //   5. INSERT dbo.SalesInvoiceDtl (1 row per line).
-//   6. INSERT dbo.TheJournal ×3 (D cash=total / C revenue=subtotal / C VAT=tax),
+//   6. INSERT dbo.TheJournal ×3 (D cash=total / C revenue=exVat(total-tax) / C VAT=tax),
 //      asserting DR == CR BEFORE commit.
 //   7. INSERT dbo.InventoryFlowHdr + dbo.InventoryFlowDtl (Approved=1, IsClosed=0, InOut=-1
 //      so dbo.sp_Onhand counts the cut immediately).
@@ -365,15 +365,30 @@ export async function writeKrsSale(
 
   const cfg = KRS_WRITE_CONFIG;
 
-  // (2) Double-entry balance gate (integer satang — no float). Asserted up-front so a
-  // malformed/unbalanced snapshot is rejected before opening a connection. The journal
-  // posts D total / C subtotal / C tax; total MUST equal subtotal + tax exactly.
+  // (2) Snapshot balance gate (integer satang — no float). Asserted up-front so a
+  // malformed/unbalanced snapshot is rejected before opening a connection. The POS is
+  // VAT-INCLUSIVE: subtotal = gross line totals (incl VAT, before the bill discount);
+  // total = subtotal − discount (both incl VAT); tax is EXTRACTED from total
+  // (round(total × 7/107)). So the snapshot identity is total == subtotal − discount,
+  // NOT total == subtotal + tax. The ex-VAT base = total − tax is what KRS records as
+  // SubTotalAmnt / VATForValue and as the revenue journal line.
   const totalSatang = toSatang(payload.total);
   const subtotalSatang = toSatang(payload.subtotal);
   const taxSatang = toSatang(payload.tax);
-  if (totalSatang !== subtotalSatang + taxSatang) {
+  const discountSatang = toSatang(payload.discount);
+  if (totalSatang !== subtotalSatang - discountSatang) {
     throw new KrsWriteError(
-      `Journal imbalance: total ${payload.total} != subtotal ${payload.subtotal} + tax ${payload.tax}`
+      `Snapshot imbalance: total ${payload.total} != subtotal ${payload.subtotal} - discount ${payload.discount}`
+    );
+  }
+  // Ex-VAT base = what KRS calls SubTotalAmnt / VATForValue (vendor sample: Total=100, SubTotalAmnt=93.46=total-tax).
+  const exVatSatang = totalSatang - taxSatang;
+  // Defense-in-depth before any live ERP post: revenue (ex-VAT) and VAT must be non-negative.
+  // Unreachable from the current VAT-inclusive checkout (tax = round(total×7/107) ≤ total), but a
+  // corrupt/legacy snapshot with tax > total would otherwise post a negative revenue journal line.
+  if (taxSatang < 0 || exVatSatang < 0) {
+    throw new KrsWriteError(
+      `Invalid VAT split: tax ${payload.tax} exceeds total ${payload.total} (ex-VAT base < 0)`
     );
   }
 
@@ -487,9 +502,9 @@ export async function writeKrsSale(
       .input("ExchangeRate", sql.Decimal(18, 6), 1)
       .input("AccountsDescription", sql.NVarChar, cfg.ACCOUNTS_DESCRIPTION)
       .input("TotalAmount", sql.Decimal(18, 2), money(payload.total))
-      .input("SubTotalAmnt", sql.Decimal(18, 2), money(payload.subtotal))
+      .input("SubTotalAmnt", sql.Decimal(18, 2), exVatSatang / 100)
       .input("DepositAmount", sql.Decimal(18, 2), 0)
-      .input("VATForValue", sql.Decimal(18, 2), money(payload.subtotal))
+      .input("VATForValue", sql.Decimal(18, 2), exVatSatang / 100)
       .input("VATPercent", sql.Decimal(18, 2), cfg.VAT_PERCENT)
       .input("VATAmount", sql.Decimal(18, 2), money(payload.tax))
       .input("AmountDue", sql.Decimal(18, 2), money(payload.total))
@@ -547,19 +562,21 @@ export async function writeKrsSale(
         );
     }
 
-    // ── Step 6: INSERT TheJournal ×3 (D cash=total / C revenue=subtotal / C VAT=tax) ──
-    // The double-entry balance was asserted up-front (totalSatang == subtotal + tax).
-    // We re-assert the DR/CR split here as the final gate immediately before posting.
+    // ── Step 6: INSERT TheJournal ×3 (D cash=total / C revenue=exVat(total−tax) / C VAT=tax) ──
+    // The snapshot balance was asserted up-front (totalSatang == subtotal − discount).
+    // We re-assert the DR/CR split here as the final gate immediately before posting
+    // (tautologically true since exVat = total − tax, so exVat + tax == total).
     const drSatang = totalSatang;
-    const crSatang = subtotalSatang + taxSatang;
+    const crSatang = exVatSatang + taxSatang;
     if (drSatang !== crSatang) {
       throw new KrsWriteError(
-        `Journal imbalance before post: DR ${payload.total} != CR ${payload.subtotal}+${payload.tax}`
+        `Journal imbalance before post: DR ${payload.total} != CR exVat(${(exVatSatang / 100).toFixed(2)})+tax(${payload.tax})`
       );
     }
+    const exVatStr = (exVatSatang / 100).toFixed(2);
     const journalRows: Array<{ drcr: "D" | "C"; account: string; amount: string }> = [
       { drcr: "D", account: cashAccount, amount: payload.total },
-      { drcr: "C", account: revenueAccount, amount: payload.subtotal },
+      { drcr: "C", account: revenueAccount, amount: exVatStr },
       { drcr: "C", account: vatAccount, amount: payload.tax },
     ];
     for (const jr of journalRows) {
