@@ -36,6 +36,11 @@ export function CartLine({
   const meta = CATEGORY_META[slug];
   const Icon = meta.icon;
 
+  // KRS product image (mapped by PictureName); falls back to the category Icon when
+  // absent or the proxied fetch errors (onError flips the flag).
+  const [imgFailed, setImgFailed] = useState(false);
+  const showImg = Boolean(product.imageUrl) && !imgFailed;
+
   const [open, setOpen] = useState(lineDiscountSatang > 0);
   // Local text mirror so the field can be cleared while typing.
   const [draft, setDraft] = useState(
@@ -61,17 +66,27 @@ export function CartLine({
     >
       <div className="flex items-start gap-2.5">
         <span
-          className="grid h-[42px] w-[42px] flex-shrink-0 place-items-center rounded-[14px]"
+          className="grid h-[42px] w-[42px] flex-shrink-0 place-items-center overflow-hidden rounded-[14px]"
           style={{ background: meta.gradient, color: "#0b8060" }}
         >
-          <Icon size={18} strokeWidth={2} />
+          {showImg ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={`/api/products/image?code=${encodeURIComponent(product.sku)}`}
+              alt={product.name}
+              className="h-full w-full object-cover"
+              onError={() => setImgFailed(true)}
+            />
+          ) : (
+            <Icon size={18} strokeWidth={2} />
+          )}
         </span>
         <div className="min-w-0 flex-1">
           <strong className="block text-[13.5px] leading-tight">
             {product.name}
           </strong>
           <span className="mono mt-0.5 block text-[10.5px]" style={{ color: "var(--muted)" }}>
-            {product.sku} · {money(Number(product.price))}
+            {product.barcode ?? product.sku} · {money(Number(product.price))}
           </span>
         </div>
         <div className="mono text-[14px] font-bold">

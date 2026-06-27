@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { Boxes, Plus, Check } from "lucide-react";
 import type { Product } from "@/types";
 import { money } from "@/lib/money";
@@ -35,6 +35,12 @@ export const ProductCard = React.memo(function ProductCard({
   const meta = CATEGORY_META[slug];
   const Icon = meta.icon;
 
+  // KRS product image (mapped by PictureName). Falls back to the category Icon when
+  // the product has no image filename OR the proxied fetch errors (onError flips the
+  // flag). imageUrl is a stable prop from the product object, so React.memo holds.
+  const [imgFailed, setImgFailed] = useState(false);
+  const showImg = Boolean(product.imageUrl) && !imgFailed;
+
   const isOut = stock === 0;
   const isLow = !isOut && stock <= LOW_STOCK;
   const inCart = inCartQty > 0;
@@ -59,7 +65,17 @@ export const ProductCard = React.memo(function ProductCard({
         className="relative grid h-[58px] place-items-center overflow-hidden rounded-[17px]"
         style={{ background: meta.gradient, color: "#0b8060" }}
       >
-        <Icon size={25} strokeWidth={2} />
+        {showImg ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={`/api/products/image?code=${encodeURIComponent(product.sku)}`}
+            alt={product.name}
+            className="h-full w-full object-cover"
+            onError={() => setImgFailed(true)}
+          />
+        ) : (
+          <Icon size={25} strokeWidth={2} />
+        )}
         <span
           className="mono absolute right-2 top-[7px] rounded-full px-[7px] py-0.5 text-[10px]"
           style={{ background: "rgba(255,255,255,.75)", color: "#667085" }}

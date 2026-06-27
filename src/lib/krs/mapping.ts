@@ -43,7 +43,8 @@ export type ProductTargetField =
   | "price"
   | "barcode"
   | "category"
-  | "isActive";
+  | "isActive"
+  | "imageUrl";
 
 /** One target-field spec entry (drives both the UI and server-side validation). */
 export type TargetFieldSpec = {
@@ -64,6 +65,7 @@ export const PRODUCT_TARGET_FIELDS: TargetFieldSpec[] = [
   { field: "barcode", required: false, label: "บาร์โค้ด · Barcode" },
   { field: "category", required: false, label: "หมวดหมู่ · Category" },
   { field: "isActive", required: false, label: "สถานะใช้งาน · Active" },
+  { field: "imageUrl", required: false, label: "ชื่อไฟล์รูป · Image filename" },
 ];
 
 /** The set of known PRODUCT_IMPORT target fields (for fast membership checks). */
@@ -105,6 +107,9 @@ export const DEFAULT_PRODUCT_IMPORT_MAPPING: ProductImportMapping = {
     barcode: "BarCode",
     category: "ItemTypename",
     isActive: "IsActive",
+    // Raw KRS image filename (e.g. "F01-0001.JPG"); served from the FTP image
+    // store by /api/products/image. Optional — null when KRS PictureName is blank.
+    imageUrl: "PictureName",
   },
 };
 

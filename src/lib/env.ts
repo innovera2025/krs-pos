@@ -179,6 +179,52 @@ const EnvSchema = z.object({
   KRS_SANDBOX_PASS: z.string().optional(),
   KRS_SANDBOX_SSL: z.enum(["true", "false"]).default("true"),
   KRS_SANDBOX_TRUST_CERT: z.enum(["true", "false"]).default("true"),
+
+  // --- KRS product-image FTP (product images mapped by KRS PictureName). The
+  // product master carries a raw image FILENAME on Product.imageUrl (from KRS
+  // PictureName); the browser cannot speak FTP, so the Node route
+  // GET /api/products/image proxies + disk-caches the file from a plain FTP store.
+  // ALL OPTIONAL at boot (a deploy that never serves product images, and CI/e2e,
+  // must still boot). The route reads these LAZILY at request time: when
+  // HOST/USER/PASS are unset it simply returns 404 (feature inactive) instead of
+  // crashing. The password is a SECRET — NEVER logged, echoed, or committed.
+  //
+  // KRS_FTP_HOST — the FTP server host/IP (plain FTP, port 21, secure:false).
+  KRS_FTP_HOST: z
+    .string()
+    .max(255, "KRS_FTP_HOST must be at most 255 characters")
+    .optional(),
+  // KRS_FTP_USER — the FTP login user. Optional; unset → image feature inactive.
+  KRS_FTP_USER: z
+    .string()
+    .max(255, "KRS_FTP_USER must be at most 255 characters")
+    .optional(),
+  // KRS_FTP_PASS — the FTP login password (SECRET). Optional at boot; lazy-checked
+  // at the route. NEVER logged or committed (placeholder/empty only in .env.example).
+  KRS_FTP_PASS: z.string().optional(),
+  // KRS_FTP_COMPANY — the company segment in the image path
+  // (`{BASEPATH}/{COMPANY}/Image/{filename}`). Defaults to "SNP".
+  KRS_FTP_COMPANY: z
+    .string()
+    .max(64, "KRS_FTP_COMPANY must be at most 64 characters")
+    .default("SNP"),
+  // KRS_FTP_BASEPATH — the base path segment on the FTP server. Defaults to
+  // "updateEXE" (full remote path: `{BASEPATH}/{COMPANY}/Image/{filename}`).
+  KRS_FTP_BASEPATH: z
+    .string()
+    .max(255, "KRS_FTP_BASEPATH must be at most 255 characters")
+    .default("updateEXE"),
+  // KRS_IMAGE_CACHE_DIR — local directory the route caches downloaded images in.
+  // Defaults to "/tmp/krs-images" (ephemeral; fine for the current ~1 image).
+  KRS_IMAGE_CACHE_DIR: z
+    .string()
+    .max(512, "KRS_IMAGE_CACHE_DIR must be at most 512 characters")
+    .default("/tmp/krs-images"),
+  // KRS_FTP_SECURE — explicit FTPS (AUTH TLS) toggle for the image fetch. "true"
+  // upgrades the FTP control+data connection to TLS; default "false" = plain FTP
+  // (what the KRS store speaks today per probe), so the default keeps existing
+  // behavior unchanged. Opt-in.
+  KRS_FTP_SECURE: z.enum(["true", "false"]).default("false"),
 });
 
 function loadEnv(): z.infer<typeof EnvSchema> {
@@ -234,6 +280,18 @@ function loadEnv(): z.infer<typeof EnvSchema> {
         process.env.KRS_SANDBOX_SSL === "false" ? "false" : "true",
       KRS_SANDBOX_TRUST_CERT:
         process.env.KRS_SANDBOX_TRUST_CERT === "false" ? "false" : "true",
+      // KRS product-image FTP knobs — passed through unvalidated during the build
+      // phase (the image route never runs at build time); real shape validation +
+      // the route's lazy gates apply at runtime. The defaulted fields mirror the
+      // schema defaults (?? applies only when the env var is unset).
+      KRS_FTP_HOST: process.env.KRS_FTP_HOST,
+      KRS_FTP_USER: process.env.KRS_FTP_USER,
+      KRS_FTP_PASS: process.env.KRS_FTP_PASS,
+      KRS_FTP_COMPANY: process.env.KRS_FTP_COMPANY ?? "SNP",
+      KRS_FTP_BASEPATH: process.env.KRS_FTP_BASEPATH ?? "updateEXE",
+      KRS_IMAGE_CACHE_DIR: process.env.KRS_IMAGE_CACHE_DIR ?? "/tmp/krs-images",
+      KRS_FTP_SECURE:
+        process.env.KRS_FTP_SECURE === "true" ? "true" : "false",
     };
   }
 

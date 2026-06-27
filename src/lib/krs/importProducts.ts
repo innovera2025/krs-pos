@@ -203,7 +203,9 @@ export async function importKrsProducts(
         barcode,
         isActive: rec.isActive,
         categoryId,
-        // stock is POS-owned going forward — NOT touched on update.
+        // Raw KRS image filename (null when unmapped/blank); served by
+        // /api/products/image. stock is POS-owned going forward — NOT touched.
+        imageUrl: rec.imageUrl,
       },
       create: {
         sku: rec.sku,
@@ -212,6 +214,7 @@ export async function importKrsProducts(
         barcode,
         isActive: rec.isActive,
         categoryId,
+        imageUrl: rec.imageUrl,
         stock: 0,
       },
       select: { id: true },

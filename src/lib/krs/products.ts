@@ -52,6 +52,8 @@ import { logger } from "@/lib/logger";
  *   - `barcode`      ← KRS `BarCode`      (real EAN; null when blank/unmapped)
  *   - `isActive`     ← KRS `IsActive`     (1 → true; defaults true when unmapped)
  *   - `categoryName` ← KRS `ItemTypename` (POS Category name; null when blank/unmapped)
+ *   - `imageUrl`     ← KRS `PictureName`  (raw image filename, e.g. "F01-0001.JPG";
+ *                                          null when blank/unmapped)
  *
  * `price` is a plain JS number rounded to 2dp here for transport. The importer
  * re-derives the exact 2dp Decimal string and bounds it to Decimal(10,2) — this
@@ -64,6 +66,9 @@ export type KrsProductRecord = {
   barcode: string | null;
   isActive: boolean;
   categoryName: string | null;
+  /** Raw KRS image filename (e.g. "F01-0001.JPG"); null when KRS PictureName is
+   *  blank/unmapped. Served (FTP-proxied) by /api/products/image. */
+  imageUrl: string | null;
 };
 
 /** Trim a nullable string to a non-empty value, or null. */
@@ -234,6 +239,9 @@ export async function fetchKrsProducts(
         // default to true so the POS row is active by default.
         isActive: isActiveCol !== null ? toBool(row.isActive) : true,
         categoryName: cleanString(row.category),
+        // Raw image filename (e.g. "F01-0001.JPG"); optional/unmapped → key absent
+        // from the row → cleanString → null. The importer stores it on imageUrl.
+        imageUrl: cleanString(row.imageUrl),
       });
     }
     return records;
