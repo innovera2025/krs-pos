@@ -63,14 +63,14 @@ export const ProductCard = React.memo(function ProductCard({
       {/* Thumbnail — enlarged so the product image dominates the card */}
       <div
         className="relative grid h-[100px] place-items-center overflow-hidden rounded-[17px]"
-        style={{ background: meta.gradient, color: "#0b8060" }}
+        style={{ background: showImg ? "#fff" : meta.gradient, color: "#0b8060" }}
       >
         {showImg ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={`/api/products/image?code=${encodeURIComponent(product.sku)}`}
             alt={product.name}
-            className="h-full w-full object-cover"
+            className="h-full w-full object-contain p-1.5"
             onError={() => setImgFailed(true)}
           />
         ) : (

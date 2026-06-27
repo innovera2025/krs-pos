@@ -67,14 +67,14 @@ export function CartLine({
       <div className="flex items-start gap-2.5">
         <span
           className="grid h-[42px] w-[42px] flex-shrink-0 place-items-center overflow-hidden rounded-[14px]"
-          style={{ background: meta.gradient, color: "#0b8060" }}
+          style={{ background: showImg ? "#fff" : meta.gradient, color: "#0b8060" }}
         >
           {showImg ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={`/api/products/image?code=${encodeURIComponent(product.sku)}`}
               alt={product.name}
-              className="h-full w-full object-cover"
+              className="h-full w-full object-contain"
               onError={() => setImgFailed(true)}
             />
           ) : (
