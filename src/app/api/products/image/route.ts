@@ -1,20 +1,22 @@
 // NODE-ONLY product-image proxy + disk cache (product images mapped by KRS
 // PictureName). The product master carries a raw image FILENAME on
 // `Product.imageUrl` (imported from KRS `PictureName`, e.g. "F01-0001.JPG"). The
-// actual bytes live on a plain FTP server that the browser cannot reach, so this
-// route resolves sku → filename, fetches the file over FTP (basic-ftp, Node-only),
-// caches it on local disk, and serves it. The client `<img>` falls back to a
-// category icon on any non-2xx, so almost every failure path here degrades to 404
-// ("no image available"). The ONE exception is a genuine DB fault while resolving
-// sku → filename: that is a real server problem and returns a sanitized 500 (the
-// <img> still shows the icon fallback regardless of the status code).
+// actual bytes live on a plain HTTP server that the BROWSER cannot load directly:
+// the POS is served over HTTPS, so an `http://` <img> is blocked as mixed content.
+// This route resolves sku → filename, fetches the file over plain HTTP server-side
+// (Node fetch), caches it on local disk, and serves it same-origin over HTTPS. The
+// client `<img>` falls back to a category icon on any non-2xx, so almost every
+// failure path here degrades to 404 ("no image available"). The ONE exception is a
+// genuine DB fault while resolving sku → filename: that is a real server problem and
+// returns a sanitized 500 (the <img> still shows the icon fallback regardless of
+// the status code).
 //
 // runtime = nodejs + dynamic = force-dynamic keep this off the edge/client bundle:
-// basic-ftp uses node:net/node:fs and MUST NOT be pulled into an edge runtime.
+// the route uses node:fs/node:path for the disk cache and MUST NOT be pulled into an
+// edge runtime.
 import { NextResponse } from "next/server";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { Client as FtpClient } from "basic-ftp";
 import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env";
 import { requireUser } from "@/lib/auth";
@@ -28,17 +30,17 @@ export const dynamic = "force-dynamic";
 const CODE_RE = /^[A-Za-z0-9_.\-]+$/;
 
 /** Hard cap on a downloaded image (8 MiB). A larger remote file is rejected (→404)
- *  BEFORE its bytes are pulled, via a cheap SIZE command. */
+ *  up-front via the Content-Length header when present, and again after the body is
+ *  read (a missing/lying Content-Length is still bounded). */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
-/** FTP control+data op timeout (ms). Bounds a KRS FTP outage so a request can't
- *  hang on the basic-ftp default (~30s). Applied via the Client constructor —
- *  `ftp.timeout` is a readonly property in the basic-ftp types, so the constructor
- *  argument is the type-safe way to set it; it covers both control and data ops. */
-const FTP_TIMEOUT_MS = 8000;
+/** HTTP fetch timeout (ms). Bounds a KRS image-server outage so a request can't hang
+ *  on the platform default. Applied via an AbortController signal that covers the
+ *  whole fetch (connect + response). */
+const HTTP_TIMEOUT_MS = 8000;
 
-/** Negative-cache TTL (ms): after one FTP failure for a key we skip re-opening an
- *  FTP socket for that key for this long. */
+/** Negative-cache TTL (ms): after one fetch failure for a key we skip re-fetching
+ *  over HTTP for that key for this long. */
 const NEG_CACHE_TTL_MS = 60_000;
 
 /** Prune the negative cache once it grows past this many entries. */
@@ -46,16 +48,16 @@ const NEG_CACHE_MAX = 500;
 
 /**
  * Negative cache: cacheKey → expiry epoch ms. A key present with expiry > now
- * means "this image recently failed to fetch; do not re-open FTP yet". This stops
- * a missing/unreachable image from re-opening an FTP socket on every grid render
- * during an outage. Module-level (per server process); fail-open by design.
+ * means "this image recently failed to fetch; do not re-fetch over HTTP yet". This
+ * stops a missing/unreachable image from issuing an HTTP request on every grid
+ * render during an outage. Module-level (per server process); fail-open by design.
  */
 const negCache = new Map<string, number>();
 
 /**
- * In-flight FTP fetches: cachePath → the pending fetch promise. Concurrent
- * requests for the SAME image await the existing fetch instead of opening a
- * second FTP connection. The promise resolves to the image Buffer or null (→404).
+ * In-flight HTTP fetches: cachePath → the pending fetch promise. Concurrent
+ * requests for the SAME image await the existing fetch instead of issuing a
+ * second HTTP request. The promise resolves to the image Buffer or null (→404).
  */
 const inflight = new Map<string, Promise<Buffer | null>>();
 
@@ -106,56 +108,85 @@ function imageResponse(bytes: Buffer, filename: string): NextResponse {
 }
 
 /**
- * Fetch one image over FTP into the disk cache and return its bytes (or null on any
- * failure → 404). Fail-open: a missing / oversized / unreachable file resolves to
- * null and is negative-cached, never throws. Downloads into a unique temp file and
+ * Fetch one image over plain HTTP into the disk cache and return its bytes (or null
+ * on any failure → 404). Fail-open: a missing / oversized / unreachable file resolves
+ * to null and is negative-cached, never throws. Downloads into a unique temp file and
  * atomically renames it into place so a concurrent reader never sees a partial file.
+ *
+ * SSRF: `url` is built from env-fixed host + company + a sanitized, encoded filename
+ * (see GET) — the request controls only `code`, never the host. Keep it that way.
  */
-async function fetchImageOverFtp(opts: {
-  host: string;
-  user: string;
-  password: string;
-  secure: boolean;
-  remotePath: string;
+async function fetchImageOverHttp(opts: {
+  url: string;
   cachePath: string;
   cacheKey: string;
 }): Promise<Buffer | null> {
-  const { host, user, password, secure, remotePath, cachePath, cacheKey } = opts;
+  const { url, cachePath, cacheKey } = opts;
   const tmpPath = `${cachePath}.tmp.${process.pid}.${Date.now()}.${Math.random()
     .toString(36)
     .slice(2)}`;
-  const client = new FtpClient(FTP_TIMEOUT_MS);
+  // Bound the fetch with an AbortController (replaces the old FTP op timeout).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
   try {
-    await client.access({ host, port: 21, user, password, secure });
+    const res = await fetch(url, { signal: controller.signal });
 
-    // Cheap SIZE command before pulling bytes: reject an oversized file up-front.
-    // A 550 (file-not-found) throws here and is handled as the normal FTP-error
-    // 404 path in the catch below.
-    const remoteSize = await client.size(remotePath);
-    if (remoteSize > MAX_IMAGE_BYTES) {
+    // Non-2xx (404/403/500/…) → fail-open 404 + negative-cache. Log a sanitized
+    // status + the (host-fixed, env-controlled, credential-free) URL.
+    if (!res.ok) {
       negCacheSet(cacheKey);
       logger.warn(
-        { remote: remotePath, remoteSize },
-        "KRS image exceeds size cap; skipping download"
+        { status: res.status, url },
+        "KRS image HTTP fetch returned non-2xx"
       );
       return null;
     }
 
-    await client.downloadTo(tmpPath, remotePath);
+    // Cheap up-front size guard: reject an oversized file via Content-Length BEFORE
+    // buffering its bytes (when the header is present + parses to a finite number).
+    const lenHeader = res.headers.get("content-length");
+    if (lenHeader !== null) {
+      const declared = Number.parseInt(lenHeader, 10);
+      if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES) {
+        negCacheSet(cacheKey);
+        logger.warn(
+          { url, declared },
+          "KRS image exceeds size cap (content-length); skipping download"
+        );
+        return null;
+      }
+    }
+
+    const buf = Buffer.from(await res.arrayBuffer());
+
+    // Post-read guard: a missing/lying Content-Length is still bounded here — a body
+    // over the cap is discarded (never written to the cache).
+    if (buf.byteLength > MAX_IMAGE_BYTES) {
+      negCacheSet(cacheKey);
+      logger.warn(
+        { url, bytes: buf.byteLength },
+        "KRS image exceeds size cap (body); discarding"
+      );
+      return null;
+    }
+
+    // Write the bytes to a unique temp file; the atomic publish happens after the
+    // try/catch/finally so a partial write never lands in the cache.
+    await fs.writeFile(tmpPath, buf);
   } catch (err) {
-    // FTP error / file-not-found (FTPError code 550) / timeout → 404 (NOT 500) so
-    // the client shows the icon fallback. Negative-cache the key so an outage does
-    // not re-open a socket per render. Log ONLY a sanitized FTP code + the
-    // (credential-free) remote path — never the host/user/password.
+    // Network error / DNS failure / timeout (AbortError) → 404 (NOT 500) so the
+    // client shows the icon fallback. Negative-cache the key so an outage does not
+    // issue an HTTP request per render. Log ONLY a sanitized message + the
+    // (credential-free, env-fixed-host) URL.
     await fs.rm(tmpPath, { force: true }).catch(() => {});
     negCacheSet(cacheKey);
     logger.warn(
-      { ftpCode: (err as { code?: unknown }).code, remote: remotePath },
-      "KRS image FTP fetch failed"
+      { err: err instanceof Error ? err.message : String(err), url },
+      "KRS image HTTP fetch failed"
     );
     return null;
   } finally {
-    client.close();
+    clearTimeout(timer);
   }
 
   // Publish the temp file into the cache atomically, then read + return. A rename
@@ -184,10 +215,11 @@ async function fetchImageOverFtp(opts: {
 // AUTH: requires an authenticated session (requireUser, mirroring GET /api/products).
 // The POS <img> sends the session cookie same-origin so the grid keeps working; an
 // unauthenticated caller gets 401. Resolves the sku's KRS image filename and serves
-// the file (disk-cache first, FTP on a miss). Every non-DB failure degrades to 404
-// (the client shows the category icon); a genuine DB fault is a sanitized 500.
+// the file (disk-cache first, plain-HTTP fetch on a miss). Every non-DB failure
+// degrades to 404 (the client shows the category icon); a genuine DB fault is a
+// sanitized 500.
 export async function GET(req: Request) {
-  // 0) AUTH gate (defense-in-depth) — reject before any DB/FTP work.
+  // 0) AUTH gate (defense-in-depth) — reject before any DB/network work.
   const gate = await requireUser();
   if ("response" in gate) return gate.response;
 
@@ -202,18 +234,17 @@ export async function GET(req: Request) {
     );
   }
 
-  // 2) FTP must be configured; otherwise the feature is simply inactive → 404.
-  const host = (env.KRS_FTP_HOST ?? "").trim();
-  const user = (env.KRS_FTP_USER ?? "").trim();
-  const password = env.KRS_FTP_PASS ?? "";
-  if (host === "" || user === "" || password === "") return notFound();
-
-  const company = (env.KRS_FTP_COMPANY ?? "SNP").trim() || "SNP";
-  const basePath = (env.KRS_FTP_BASEPATH ?? "updateEXE").trim() || "updateEXE";
-  const cacheDir = (env.KRS_IMAGE_CACHE_DIR ?? "/tmp/krs-images").trim() || "/tmp/krs-images";
-  // Explicit FTPS (AUTH TLS) opt-in. Default false = plain FTP (what the KRS store
-  // speaks today per probe); secure:false keeps existing behavior unchanged.
-  const secure = env.KRS_FTP_SECURE === "true";
+  // 2) Resolve the image-source config. Defaults are baked in (host + company are
+  //    env-FIXED, never request-controlled), so the feature is always active: a
+  //    deploy serves product images with no extra env. The request controls only
+  //    `code`; the URL host can never be steered by the caller (SSRF-safe, step 8).
+  const baseUrl = (env.KRS_IMAGE_BASE_URL ?? "http://43.229.134.162/update").replace(
+    /\/+$/,
+    ""
+  );
+  const company = env.KRS_IMAGE_COMPANY ?? "SNP";
+  const cacheDir =
+    (env.KRS_IMAGE_CACHE_DIR ?? "/tmp/krs-images").trim() || "/tmp/krs-images";
 
   // 3) Resolve sku → image filename. Unknown sku or no/blank filename → 404 (the
   //    product has no mapped image; the client shows the icon).
@@ -268,7 +299,7 @@ export async function GET(req: Request) {
     return notFound();
   }
 
-  // 6) Cache hit → serve from disk. ENOENT = miss (fall through to FTP); any other
+  // 6) Cache hit → serve from disk. ENOENT = miss (fall through to fetch); any other
   //    read error is logged and also falls through to a fresh fetch.
   try {
     const cached = await fs.readFile(cachePath);
@@ -281,29 +312,29 @@ export async function GET(req: Request) {
         "KRS image cache read failed; refetching"
       );
     }
-    // fall through to FTP fetch
+    // fall through to HTTP fetch
   }
 
-  // 7) Negative cache: a recent FTP failure for this key short-circuits to 404
-  //    WITHOUT touching FTP — keeps a missing/unreachable image from re-opening a
-  //    socket on every grid render during an outage (fail-open).
+  // 7) Negative cache: a recent fetch failure for this key short-circuits to 404
+  //    WITHOUT issuing an HTTP request — keeps a missing/unreachable image from
+  //    re-fetching on every grid render during an outage (fail-open).
   const negExpiry = negCache.get(cacheKey);
   if (negExpiry !== undefined && negExpiry > Date.now()) {
     return notFound();
   }
 
-  // 8) Cache miss → fetch over FTP, deduped across concurrent requests for the SAME
-  //    image (keyed by cachePath). Concurrent callers await one fetch instead of
-  //    opening a second FTP connection; the entry clears in `finally`.
-  const remotePath = `${basePath}/${company}/Image/${filename}`;
+  // 8) Cache miss → fetch over plain HTTP, deduped across concurrent requests for the
+  //    SAME image (keyed by cachePath). Concurrent callers await one fetch instead of
+  //    issuing a second HTTP request; the entry clears in `finally`.
+  //
+  //    URL = {base}/{company}/Image/Drawing/{PictureName}. host + company are
+  //    env-fixed; the filename is sanitized (steps 1+4) and encodeURIComponent'd, so
+  //    the caller controls no part of the host/authority → no SSRF.
+  const url = `${baseUrl}/${company}/Image/Drawing/${encodeURIComponent(filename)}`;
   let fetchPromise = inflight.get(cachePath);
   if (!fetchPromise) {
-    fetchPromise = fetchImageOverFtp({
-      host,
-      user,
-      password,
-      secure,
-      remotePath,
+    fetchPromise = fetchImageOverHttp({
+      url,
       cachePath,
       cacheKey,
     }).finally(() => {

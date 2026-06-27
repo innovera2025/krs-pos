@@ -60,9 +60,9 @@ export const ProductCard = React.memo(function ProductCard({
         boxShadow: "var(--shadow-sm)",
       }}
     >
-      {/* Thumbnail */}
+      {/* Thumbnail — enlarged so the product image dominates the card */}
       <div
-        className="relative grid h-[58px] place-items-center overflow-hidden rounded-[17px]"
+        className="relative grid h-[100px] place-items-center overflow-hidden rounded-[17px]"
         style={{ background: meta.gradient, color: "#0b8060" }}
       >
         {showImg ? (
@@ -74,7 +74,7 @@ export const ProductCard = React.memo(function ProductCard({
             onError={() => setImgFailed(true)}
           />
         ) : (
-          <Icon size={25} strokeWidth={2} />
+          <Icon size={34} strokeWidth={2} />
         )}
         <span
           className="mono absolute right-2 top-[7px] rounded-full px-[7px] py-0.5 text-[10px]"
@@ -92,8 +92,8 @@ export const ProductCard = React.memo(function ProductCard({
         )}
       </div>
 
-      {/* Name */}
-      <div className="text-[14px] font-bold leading-tight">{product.name}</div>
+      {/* Name — one step smaller so the enlarged image dominates */}
+      <div className="text-[13px] font-bold leading-tight">{product.name}</div>
 
       {/* Bottom: stock + price + add */}
       <div className="mt-auto flex items-end justify-between">

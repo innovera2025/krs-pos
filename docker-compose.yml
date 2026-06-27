@@ -107,24 +107,19 @@ services:
       KRS_SANDBOX_PASS: ${KRS_SANDBOX_PASS:-}
       KRS_SANDBOX_SSL: ${KRS_SANDBOX_SSL:-true}
       KRS_SANDBOX_TRUST_CERT: ${KRS_SANDBOX_TRUST_CERT:-true}
-      # KRS product-image FTP (product images mapped by KRS PictureName). The app
+      # KRS product-image HTTP (product images mapped by KRS PictureName). The app
       # reads these at request time via src/lib/env.ts; compose only forwards
-      # explicitly-listed vars, so without these lines the container never sees them
-      # even if they are in .env, and GET /api/products/image stays inactive (404).
-      #  - KRS_FTP_HOST/USER/PASS: the plain-FTP image store creds. Empty = inactive.
-      #  - KRS_FTP_COMPANY/BASEPATH: path segments ({BASEPATH}/{COMPANY}/Image/{file}).
+      # explicitly-listed vars. Defaults are baked in, so GET /api/products/image
+      # serves images with no extra prod env (no secret — open plain HTTP).
+      #  - KRS_IMAGE_BASE_URL: base URL of the image store. Default points at the KRS
+      #    box; full URL = {base}/{company}/Image/Drawing/{PictureName}.
+      #  - KRS_IMAGE_COMPANY: company path segment (default SNP).
       #  - KRS_IMAGE_CACHE_DIR: local image cache. Ephemeral /tmp is fine for now (only
       #    ~1 image exists); a named volume at this path is an optional future
       #    optimization to avoid re-fetch on restart — NOT added now.
-      KRS_FTP_HOST: ${KRS_FTP_HOST:-}
-      KRS_FTP_USER: ${KRS_FTP_USER:-}
-      KRS_FTP_PASS: ${KRS_FTP_PASS:-}
-      KRS_FTP_COMPANY: ${KRS_FTP_COMPANY:-SNP}
-      KRS_FTP_BASEPATH: ${KRS_FTP_BASEPATH:-updateEXE}
+      KRS_IMAGE_BASE_URL: ${KRS_IMAGE_BASE_URL:-http://43.229.134.162/update}
+      KRS_IMAGE_COMPANY: ${KRS_IMAGE_COMPANY:-SNP}
       KRS_IMAGE_CACHE_DIR: ${KRS_IMAGE_CACHE_DIR:-/tmp/krs-images}
-      #  - KRS_FTP_SECURE: explicit FTPS (AUTH TLS) toggle. Default false = plain
-      #    FTP (what the KRS store speaks today); set "true" only for a TLS store.
-      KRS_FTP_SECURE: ${KRS_FTP_SECURE:-false}
     ports:
       # Bind to localhost only — the public entrypoint is the Caddy reverse proxy
       # (docker-compose.prod.yml, ports 80/443). Caddy reaches the app over the
