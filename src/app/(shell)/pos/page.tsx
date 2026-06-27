@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { ScanBarcode, ShoppingCart, UserRound, AlertCircle, ChevronRight } from "lucide-react";
 import type {
   Product,
@@ -65,6 +65,10 @@ export default function POSPage() {
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState("");
+  // Low-priority mirror of `search` used for the heavy grid filter only.
+  // useDeferredValue lets React defer the (up to ~2020-card) grid re-render so the
+  // urgent Enter→addToCart commit isn't blocked by a fast scanner's keystrokes.
+  const deferredSearch = useDeferredValue(search);
   // Selection key: "all" (synthetic all-chip) or a real product category id.
   const [activeCat, setActiveCat] = useState<string>("all");
 
@@ -219,7 +223,7 @@ export default function POSPage() {
   // Filter: category (by real category id) + case-insensitive search across name +
   // sku + category name.
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = deferredSearch.trim().toLowerCase();
     return products.filter((p) => {
       const catOk = activeCat === "all" || p.category?.id === activeCat;
       if (!catOk) return false;
@@ -231,7 +235,7 @@ export default function POSPage() {
         (p.barcode ?? "").toLowerCase().includes(q)
       );
     });
-  }, [products, search, activeCat]);
+  }, [products, deferredSearch, activeCat]);
 
   // Cart qty lookup for the in-cart badge.
   const cartQtyById = useMemo(() => {
@@ -256,7 +260,11 @@ export default function POSPage() {
   }, [cart, discountDraft, discountType]);
 
   // ---- cart actions ----
-  function addToCart(product: Product) {
+  // useCallback keeps addToCart referentially stable across renders so the
+  // React.memo'd ProductCard only re-renders when its own props change — not on
+  // every keystroke. setCart is a stable setter (no dep needed); showToast is a
+  // stable useCallback from ToastProvider.
+  const addToCart = useCallback((product: Product) => {
     if (effectiveStock(product) === 0) return;
     setCart((prev) => {
       const existing = prev.find((i) => i.product.id === product.id);
@@ -268,7 +276,7 @@ export default function POSPage() {
       return [...prev, { product, quantity: 1, lineDiscountSatang: 0 }];
     });
     showToast(`เพิ่ม ${product.name} แล้ว`);
-  }
+  }, [showToast]);
 
   function incLine(productId: string) {
     setCart((prev) =>
@@ -481,7 +489,11 @@ export default function POSPage() {
   // Enter on an exact SKU match = scan-to-cart.
   function onSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key !== "Enter") return;
-    const q = search.trim().toLowerCase();
+    // Read the LIVE DOM input value at Enter time (not the stale React `search`
+    // closure). A fast scanner can fire Enter before React commits the last
+    // keystroke into `search`, so reading currentTarget.value avoids missing the
+    // exact barcode/sku match.
+    const q = (e.currentTarget.value ?? search).trim().toLowerCase();
     if (!q) return;
     const match = products.find(
       (p) => (p.barcode != null && p.barcode.toLowerCase() === q) || p.sku.toLowerCase() === q
@@ -745,6 +757,17 @@ export default function POSPage() {
       ? "สินค้าทั้งหมด"
       : chips.find((c) => c.key === activeCat)?.label ?? "สินค้า";
 
+  // Cap the rendered cards DURING SEARCH/SCAN only (plain category browsing still
+  // renders every card). While scanning, the grid is irrelevant, so slicing to
+  // GRID_CAP cuts the deferred render work ~25× and keeps the main thread free for
+  // the urgent Enter→addToCart commit.
+  const GRID_CAP = 80;
+  const isSearching = deferredSearch.trim().length > 0;
+  const displayProducts =
+    isSearching && filtered.length > GRID_CAP
+      ? filtered.slice(0, GRID_CAP)
+      : filtered;
+
   return (
     <div
       className="flex h-full min-h-0"
@@ -842,7 +865,7 @@ export default function POSPage() {
                 className="grid gap-3"
                 style={{ gridTemplateColumns: "repeat(auto-fill,minmax(184px,1fr))" }}
               >
-                {filtered.map((p) => (
+                {displayProducts.map((p) => (
                   <ProductCard
                     key={p.id}
                     product={p}
@@ -852,6 +875,14 @@ export default function POSPage() {
                   />
                 ))}
               </div>
+            )}
+            {isSearching && filtered.length > GRID_CAP && (
+              <p
+                className="mt-2 text-center text-[11px]"
+                style={{ color: "var(--muted)" }}
+              >
+                แสดง {GRID_CAP} รายการแรก · พิมพ์/สแกนให้ละเอียดขึ้นเพื่อค้นหาเพิ่ม
+              </p>
             )}
           </section>
         </section>

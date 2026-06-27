@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import { Boxes, Plus, Check } from "lucide-react";
 import type { Product } from "@/types";
 import { money } from "@/lib/money";
@@ -24,7 +25,7 @@ const LOW_STOCK = 10;
  *  - "หมด" (out of stock) + disabled add when stock === 0
  *  - in-cart ✓ badge + qty when the product is already in the cart
  */
-export function ProductCard({
+export const ProductCard = React.memo(function ProductCard({
   product,
   stock,
   inCartQty,
@@ -63,7 +64,7 @@ export function ProductCard({
           className="mono absolute right-2 top-[7px] rounded-full px-[7px] py-0.5 text-[10px]"
           style={{ background: "rgba(255,255,255,.75)", color: "#667085" }}
         >
-          {product.barcode ?? product.sku}
+          {product.barcode || product.sku}
         </span>
         {inCart && (
           <span
@@ -106,4 +107,4 @@ export function ProductCard({
       </div>
     </button>
   );
-}
+});
