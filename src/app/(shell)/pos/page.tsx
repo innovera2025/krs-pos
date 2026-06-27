@@ -55,6 +55,23 @@ function nextPayLineId(): string {
   return `pl-${payLineSeq}`;
 }
 
+/**
+ * Map a physical KeyboardEvent.code to its layout-independent Latin character,
+ * or null for keys we don't capture (Backspace, arrows, Shift, etc.). Used by
+ * the barcode-scanner cadence detector (scan-thai-ime-fix) so a Thai OS keyboard
+ * layout can't corrupt scanned digits — event.code is the physical key and is
+ * independent of the active input-method layout.
+ */
+function codeToLatin(code: string): string | null {
+  const digit = /^Digit(\d)$/.exec(code);
+  if (digit) return digit[1];
+  const letter = /^Key([A-Z])$/.exec(code);
+  if (letter) return letter[1].toLowerCase();
+  if (code === "Minus") return "-";
+  if (code === "Period") return ".";
+  return null;
+}
+
 type LoadState = "loading" | "ready" | "error";
 
 export default function POSPage() {
@@ -115,6 +132,17 @@ export default function POSPage() {
   );
 
   const searchRef = useRef<HTMLInputElement>(null);
+
+  // ---- barcode-scanner cadence capture (scan-thai-ime-fix) ----
+  // A hardware scanner types fast; when the OS keyboard is Thai, its digits get
+  // IME-mapped to Thai characters, so the search box fills with garbage and finds
+  // nothing. We detect a fast keystroke burst (≤50ms apart) and reconstruct the
+  // scanned code from event.code (layout-independent Latin), overwriting the box
+  // with the correct digits. Slow manual typing (incl. Thai product NAMES) passes
+  // through to the normal onChange untouched so name search still works.
+  const lastKeyTimeRef = useRef(0);
+  const scanBufRef = useRef("");
+  const SCAN_GAP_MS = 50; // keystrokes ≤50ms apart = scanner burst
 
   // ---- checkout idempotency key (Sub-phase C) ----
   // A client-generated UUID identifying ONE checkout ATTEMPT. It is minted lazily
@@ -486,21 +514,64 @@ export default function POSPage() {
     showToast("พักบิลไว้แล้ว");
   }
 
-  // Enter on an exact SKU match = scan-to-cart.
+  // Enter on an exact SKU/barcode match = scan-to-cart, PLUS cadence-based
+  // scanner capture: a fast keystroke burst is reconstructed from event.code
+  // (layout-independent Latin) so a Thai OS keyboard can't corrupt scanned
+  // digits, while slow human typing (incl. Thai product names) passes through to
+  // onChange untouched.
   function onSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key !== "Enter") return;
-    // Read the LIVE DOM input value at Enter time (not the stale React `search`
-    // closure). A fast scanner can fire Enter before React commits the last
-    // keystroke into `search`, so reading currentTarget.value avoids missing the
-    // exact barcode/sku match.
-    const q = (e.currentTarget.value ?? search).trim().toLowerCase();
-    if (!q) return;
-    const match = products.find(
-      (p) => (p.barcode != null && p.barcode.toLowerCase() === q) || p.sku.toLowerCase() === q
-    );
-    if (match) {
-      addToCart(match);
-      setSearch("");
+    const now = e.timeStamp;
+    const gap = now - lastKeyTimeRef.current;
+    lastKeyTimeRef.current = now;
+
+    if (e.key === "Enter") {
+      // Prefer the reconstructed scan buffer (Latin) when it holds a plausible
+      // code (≥3 chars); otherwise fall back to the LIVE DOM value (manual
+      // typing — not the stale React `search` closure). A fast scanner can fire
+      // Enter before React commits the last keystroke into `search`, so reading
+      // currentTarget.value avoids missing the exact barcode/sku match.
+      const q = (
+        scanBufRef.current.length >= 3
+          ? scanBufRef.current
+          : e.currentTarget.value ?? search
+      )
+        .trim()
+        .toLowerCase();
+      scanBufRef.current = "";
+      if (!q) return;
+      const match = products.find(
+        (p) => (p.barcode != null && p.barcode.toLowerCase() === q) || p.sku.toLowerCase() === q
+      );
+      if (match) {
+        addToCart(match);
+        setSearch("");
+      }
+      return;
+    }
+
+    // Printable physical key? Non-printable keys (Backspace, arrows, Shift, …)
+    // map to null and return early, leaving normal typing untouched.
+    const ch = codeToLatin(e.code);
+    if (ch === null) return;
+
+    if (gap < SCAN_GAP_MS) {
+      // Scanner burst: reconstruct from layout-independent Latin and overwrite
+      // the box, visually correcting any Thai-IME-mapped characters.
+      e.preventDefault();
+      scanBufRef.current += ch;
+      setSearch(scanBufRef.current);
+    } else {
+      // First key of a burst OR slow manual typing. Seed a fresh buffer with the
+      // Latin char but DO NOT preventDefault — let the IME/onChange handle it so
+      // normal (Thai) name typing still populates `search`. If the next key
+      // arrives fast we enter scanner mode and setSearch overwrites with the
+      // corrected buffer.
+      //
+      // First-character caveat: if a scanner's first→second gap exceeds
+      // SCAN_GAP_MS the leading char may pass through the IME (Thai). Rare — most
+      // scanners burst every char — and the buffer self-corrects from the 2nd
+      // fast char onward.
+      scanBufRef.current = ch;
     }
   }
 
