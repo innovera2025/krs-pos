@@ -10,6 +10,18 @@
 // module on the SEPARATE sandbox config. The mssql write is called OUTSIDE any Prisma
 // `$transaction` (no mssql call ever enlists in a Prisma tx).
 //
+// ANCHOR WRITE SEQUENCING (invariant): SyncJob.krsClaimedTxnNo is written to Postgres
+// via onSaleTxnNoBurned AFTER the phase-0 burn-commit completes and BEFORE the phase-1
+// SERIALIZABLE tx opens. No mssql tx is held open during this Postgres write. See
+// KrsWriteOpts in writeback.ts for the full per-phase contract.
+//
+// DISPATCH RUN-LOCK: runDispatch relies on per-job FOR UPDATE SKIP LOCKED + lockedAt to
+// prevent two workers claiming the SAME job. It does NOT have an app-level singleton run-
+// lock (unlike runAutoSync, autoSync.ts:116-150). The alive-but-slow double-write risk
+// (crash-window 9) is mitigated by the UNIQUE constraint on KRS.SalesInvoiceHdr.
+// TransactionNo (pre-enable gate). A batch-level run-lock is recommended defense-in-depth
+// (see plan Residual §7).
+//
 // FAIL-OPEN (invariant): a KRS/dispatch failure NEVER touches checkout — this module
 // only runs from the dispatch endpoint, well after the sale committed. A write failure
 // just updates the SyncJob (retry/backoff/FAILED); the sale is untouched.
@@ -26,7 +38,8 @@ import { logger } from "@/lib/logger";
 import { env } from "@/lib/env";
 import { buildSandboxConfig } from "./sandboxClient";
 import { parseSalePayload } from "./salePayload";
-import { writeKrsSale, WriteConfigNotReadyError } from "./writeback";
+import { writeKrsSale, WriteConfigNotReadyError, checkKrsSaleExists } from "./writeback";
+import type { KrsWriteOpts } from "./writeback";
 
 /** Jobs claimed per dispatch call. */
 const BATCH_SIZE = 10;
@@ -208,6 +221,7 @@ export async function runDispatch(): Promise<DispatchResult> {
         payload: true,
         attempts: true,
         ref: true,
+        krsClaimedTxnNo: true,   // ← ADD: burned anchor for reclaim detection
       },
     });
     if (!job) {
@@ -279,9 +293,116 @@ export async function runDispatch(): Promise<DispatchResult> {
       continue;
     }
 
+    // === RECLAIM EXISTENCE CHECK ===
+    // A prior attempt burned a SaleInvoiceTrNo and persisted it to krsClaimedTxnNo.
+    // We must determine whether the phase-1 document tx committed BEFORE re-running
+    // writeKrsSale. Calling writeKrsSale without this check risks a double-write.
+    //
+    // Safety scope: checkKrsSaleExists(burnedNo) disambiguates at the instant it runs.
+    // It is NOT a lock. An alive-but-slow concurrent writer can still commit the same
+    // TransactionNo after this returns NOT FOUND. Only the KRS UNIQUE constraint on
+    // SalesInvoiceHdr.TransactionNo prevents that race at the server side.
+    //
+    //   FOUND   → markSynced(recovered). Job sealed. Done.
+    //   NOT FOUND → fall through to KRS WRITE below with preClaimedSaleTxnNo.
+    //   THROWS  → treat as per-job failure (retry or NEEDS_RECONCILE). writeKrsSale
+    //             is NOT called on this path.
+    if (job.krsClaimedTxnNo != null) {
+      try {
+        const exists = await checkKrsSaleExists(job.krsClaimedTxnNo, sandboxConfig);
+        if (exists) {
+          // FOUND: phase-1 committed in a prior attempt. Recover without re-writing.
+          await markSynced(
+            job.id,
+            job.attempts,
+            JSON.stringify({ transactionNo: job.krsClaimedTxnNo, recovered: true })
+          );
+          result.synced += 1;
+          logger.info(
+            {
+              krsDispatch: {
+                jobId: job.id,
+                ref: job.ref,
+                transactionNo: job.krsClaimedTxnNo,
+              },
+            },
+            "KRS dispatch: crash-recovered — prior phase-1 tx found, job marked SYNCED"
+          );
+          continue;
+        }
+        // NOT FOUND: phase-1 never committed (or alive-but-slow — UNIQUE constraint is
+        // the server-side guard). Fall through to KRS WRITE; writeKrsSale will reuse
+        // the burned anchor via preClaimedSaleTxnNo (no new burn).
+        logger.info(
+          {
+            krsDispatch: {
+              jobId: job.id,
+              ref: job.ref,
+              reuseTxnNo: job.krsClaimedTxnNo,
+            },
+          },
+          "KRS dispatch: prior phase-1 tx not found — reusing burned anchor"
+        );
+      } catch (e) {
+        // checkKrsSaleExists OR markSynced (FOUND path) threw. Do NOT call writeKrsSale.
+        const sanitized = safeErrMsg(e);
+        logger.error(
+          {
+            krsDispatch: {
+              jobId: job.id,
+              ref: job.ref,
+              code: safeErrCode(e),
+              message: sanitized,
+            },
+          },
+          "KRS dispatch: reclaim check failed"
+        );
+        const newAttempts = job.attempts + 1;
+        if (newAttempts >= MAX_ATTEMPTS) {
+          // Route to NEEDS_RECONCILE rather than terminal FAILED. A job with a burned
+          // anchor but persistently-failing existence check MAY already be in KRS.
+          // Terminal FAILED excludes the job from claims forever; an operator re-keying
+          // it risks a manual double-write. NEEDS_RECONCILE signals "investigate before
+          // re-entry." claimJobs does NOT claim NEEDS_RECONCILE jobs.
+          await prisma.syncJob.update({
+            where: { id: job.id },
+            data: {
+              status: SyncJobStatus.NEEDS_RECONCILE,
+              lockedAt: null,
+              attempts: newAttempts,
+              lastError: sanitized,
+              error: sanitized,
+            },
+          });
+          logger.error(
+            { krsDispatch: { jobId: job.id, ref: job.ref } },
+            "KRS dispatch: job reached NEEDS_RECONCILE — manual reconciliation required"
+          );
+        } else {
+          await markFailedOrRetry(job.id, job.attempts, sanitized);
+        }
+        result.failed += 1;
+        continue;
+      }
+    }
+
     // === KRS WRITE (mssql, OUTSIDE any Prisma tx) ===
     try {
-      const writeResult = await writeKrsSale(payload, sandboxConfig);
+      const opts: KrsWriteOpts = {
+        // Reuse the burned anchor on the NOT-FOUND reclaim path; undefined on first-time
+        // path (job.krsClaimedTxnNo is null → writeKrsSale runs phase 0 + burns fresh).
+        preClaimedSaleTxnNo: job.krsClaimedTxnNo ?? undefined,
+        // Persist the burned SaleInvoiceTrNo to Postgres AFTER phase-0 commit and BEFORE
+        // the phase-1 SERIALIZABLE tx opens. No mssql tx is held during this Postgres write.
+        // Idempotent on reuse path (re-writes the same value already in krsClaimedTxnNo).
+        onSaleTxnNoBurned: async (txnNo) => {
+          await prisma.syncJob.update({
+            where: { id: job.id },
+            data: { krsClaimedTxnNo: txnNo },
+          });
+        },
+      };
+      const writeResult = await writeKrsSale(payload, sandboxConfig, opts);
       // Store ALL returned KRS document numbers in SyncJob.response so the sale is
       // fully traceable back to its KRS rows (sale txn/voucher, flow txn/voucher, jnl).
       await markSynced(

@@ -30,18 +30,17 @@
 //   - VAT-INCLUSIVE money: UnitPrice / Amount / Total are the gross POS amounts (the sample
 //     proved 10×10 = 100 incl-VAT; UNIT_PRICE_INCL_VAT=true). All money binds as DECIMAL(18,2).
 //
-// IDEMPOTENCY CAVEAT (flagged for security review): the SIMPLIFIED KRS inserts confirmed by
-// the vendor (field-analysis §6/§7) have NO idempotency column — SalesInvoiceHdr.Remarks is
-// NOT in the confirmed insert set, so there is no anchor to dedup on at the KRS side, and a
-// pre-insert "SELECT … WHERE Remarks = ?" would query a column the insert never populates.
-// Exactly-once therefore relies ENTIRELY on the dispatcher: each SyncJob is dispatched once
-// (atomic FOR UPDATE SKIP LOCKED claim + idempotencyKey SYNCED dedup), and the job is marked
-// SYNCED only AFTER this function returns (COMMIT succeeded). RESIDUAL RISK: a crash in the
-// window between the mssql COMMIT and the Postgres mark-SYNCED leaves the job lock-held; after
-// the 10-minute stale-lock window it is re-claimable and would DOUBLE-WRITE (a second sale +
-// stock cut in KRS), because nothing in KRS rejects the duplicate. Mitigations to consider in
-// review: (a) add an idempotency anchor column to the KRS insert set if the vendor exposes one,
-// or (b) shrink the crash window / use a 2-phase mark. This is documented, not silently ignored.
+// IDEMPOTENCY (burned-anchor design, krs-writeback-idempotency_PLAN_27-06-26.md v3):
+// SaleInvoiceTrNo is claimed in a SEPARATE COMMITTED phase-0 tx before the SERIALIZABLE
+// phase-1 document tx opens. A phase-1 rollback cannot revert the phase-0 increment.
+// checkKrsSaleExists(burnedNo) disambiguates committed vs rolled-back AT THE INSTANT the
+// check runs — it is NOT a lock against a concurrently-alive writer committing the same
+// TransactionNo after the check returns NOT FOUND. The UNIQUE constraint on
+// KRS.SalesInvoiceHdr.TransactionNo (owner/DBA; hard pre-enable gate) is the ONLY server-
+// side mechanism that forces such a late duplicate commit to fail. The dispatcher supplies
+// opts.onSaleTxnNoBurned to persist the anchor after phase-0 commit (no mssql tx held).
+// VoucherNo (SC-YYMM-NNNN, human/tax-facing) stays in-tx and gapless. SaleInvoiceTrNo
+// may have rare gaps on crash paths — acceptable for this internal surrogate.
 //
 // Plan: process/features/krs-sync/active/krs-outbound-writeback_PLAN_25-06-26.md §9
 // Field map: process/features/krs-sync/references/krs-writeback-field-analysis_24-06-26.md §5–§7
@@ -69,6 +68,33 @@ export type KrsWriteResult = {
   flowVoucherNo: string;
   /** The Receipt running-number claim used as TheJournal.JnlCode. */
   jnlCode: string;
+};
+
+/**
+ * Options for writeKrsSale. All fields optional. Omitting opts entirely (two-arg call)
+ * still burns a fresh SaleInvoiceTrNo anchor in the separate phase-0 committed tx — it
+ * just fires no persist callback and does no reuse. Only preClaimedSaleTxnNo skips the
+ * burn; omitting onSaleTxnNoBurned means the burned number is never persisted to Postgres
+ * (suitable for ad-hoc testing; the dispatcher always supplies it).
+ */
+export type KrsWriteOpts = {
+  /**
+   * A SaleInvoiceTrNo already burned (committed in its own phase-0 short tx) by a
+   * prior attempt. When supplied, writeKrsSale SKIPS phase 0 (no new burn) and uses
+   * this value as SalesInvoiceHdr.TransactionNo in the phase-1 document tx. Must be
+   * byte-identical to the value stored in SyncJob.krsClaimedTxnNo. Do NOT supply a
+   * new value each retry — that inflates gaps in the internal SaleInvoiceTrNo sequence.
+   */
+  preClaimedSaleTxnNo?: string;
+  /**
+   * Called AFTER the phase-0 burn-commit and BEFORE the phase-1 SERIALIZABLE tx opens.
+   * No mssql tx is held open during this callback. The dispatcher uses this to persist
+   * the burned number to Postgres (SyncJob.krsClaimedTxnNo) so a crash in phase 1 is
+   * detectable on reclaim. A throw aborts before any document INSERT is attempted.
+   * Also fires on the reuse path (preClaimedSaleTxnNo supplied) with the same value —
+   * idempotent re-persist.
+   */
+  onSaleTxnNoBurned?: (txnNo: string) => Promise<void>;
 };
 
 /**
@@ -198,6 +224,54 @@ async function claimRunningNumber(tx: sql.Transaction, name: string): Promise<nu
   return 1;
 }
 
+// ─── existence check (own pool, NOT in the sale tx — called by dispatcher on reclaim) ──
+
+/**
+ * Read-only existence check: returns true when a SalesInvoiceHdr row with the given
+ * TransactionNo is present in KRS AT THE INSTANT THE CHECK RUNS. Called ONLY by the
+ * dispatcher on a reclaimed job that holds a non-null krsClaimedTxnNo (a previously
+ * burned anchor), to determine whether the phase-1 document tx committed or rolled back.
+ *
+ * CONCURRENCY NOTE: this is NOT a lock. An alive-but-slow dispatcher A can commit the
+ * same TransactionNo AFTER this function returns false (not found). The defense against
+ * that race is a UNIQUE constraint on KRS.SalesInvoiceHdr.TransactionNo (owner/DBA
+ * action; hard pre-enable gate — see plan Residual §5).
+ *
+ * Uses a THROWAWAY POOL (open → SELECT → close in finally) on the caller-supplied
+ * config — NOT inside any sale tx and NOT sharing the in-tx pool.
+ *
+ * TransactionNo is bound as NVarChar (@txnNo) — never interpolated. Sargable when
+ * SalesInvoiceHdr.TransactionNo is NVarChar (confirm at first sandbox run). A timed-out
+ * check (REQUEST_TIMEOUT_MS=20_000, sandboxClient.ts:29) is a SAFE retry — it does not
+ * bypass or alter KRS state.
+ *
+ * Errors are sanitized (never the raw mssql driver object or config).
+ * Pure SELECT: this function NEVER modifies KRS state.
+ */
+export async function checkKrsSaleExists(
+  saleTxnNo: string,
+  config: sql.config
+): Promise<boolean> {
+  let pool: sql.ConnectionPool | null = null;
+  try {
+    pool = new sql.ConnectionPool(config);
+    await pool.connect();
+    const res = await new sql.Request(pool)
+      .input("txnNo", sql.NVarChar, saleTxnNo)
+      .query<{ Found: number }>(
+        `SELECT TOP 1 1 AS Found FROM dbo.SalesInvoiceHdr WHERE TransactionNo = @txnNo;`
+      );
+    return res.recordset.length > 0;
+  } catch (e) {
+    const parts = safeErrorParts(e);
+    throw new Error(`KRS existence check failed [${parts.code}]: ${parts.message}`);
+  } finally {
+    if (pool) {
+      try { await pool.close(); } catch { /* secondary — result already determined */ }
+    }
+  }
+}
+
 // ───────────────────────────── lookups (read, inside the tx) ─────────────────────────────
 
 /** Resolve a GL account code by AccountHead group name (cash / revenue / VAT), taking
@@ -282,7 +356,8 @@ async function lookupMainUnits(
  */
 export async function writeKrsSale(
   payload: SalePayload,
-  config: sql.config
+  config: sql.config,
+  opts?: KrsWriteOpts
 ): Promise<KrsWriteResult> {
   // (1) Refuse if any vendor constant is still a TODO placeholder — never guess. This
   // runs BEFORE any connection is opened or any number is claimed.
@@ -307,36 +382,66 @@ export async function writeKrsSale(
   const saleDate = toDate(payload.createdAt);
 
   let pool: sql.ConnectionPool | null = null;
-  let tx: sql.Transaction | null = null;
+  let burnTx: sql.Transaction | null = null;   // phase-0 short tx (READ COMMITTED)
+  let burnCommitted = false;
+  let tx: sql.Transaction | null = null;        // phase-1 document tx (SERIALIZABLE)
   let committed = false;
   try {
     pool = new sql.ConnectionPool(config);
     await pool.connect();
 
+    // ── Phase 0: Burn the SaleInvoiceTrNo anchor ──────────────────────────────
+    // A SEPARATE, IMMEDIATELY-COMMITTED tx (READ COMMITTED — sufficient for a
+    // single-row counter UPDATE). Once committed, the increment is permanent: a later
+    // rollback of the phase-1 SERIALIZABLE doc tx cannot revert it.
+    //
+    // SAFETY SCOPE: the burned anchor disambiguates committed vs rolled-back AT THE
+    // INSTANT checkKrsSaleExists runs. It does NOT prevent an alive-but-slow concurrent
+    // writer from committing the same TransactionNo after the existence check returns NOT
+    // FOUND. The UNIQUE constraint on KRS.SalesInvoiceHdr.TransactionNo (hard pre-enable
+    // gate, see Residual §5) is the only server-side protection against that race.
+    //
+    // REUSE PATH (preClaimedSaleTxnNo supplied): a prior attempt already burned this
+    // number. Skip phase 0 and reuse it — do NOT burn a new one (inflates gaps).
+    let saleTxnNo: string;
+    if (opts?.preClaimedSaleTxnNo != null) {
+      saleTxnNo = opts.preClaimedSaleTxnNo;
+    } else {
+      burnTx = new sql.Transaction(pool);
+      await burnTx.begin();   // READ COMMITTED — sufficient for a counter UPDATE
+      const saleTxnSeq = await claimRunningNumber(burnTx, cfg.RUNNING_NUMBER_NAME_INVOICE);
+      await burnTx.commit();
+      burnCommitted = true;
+      saleTxnNo = String(saleTxnSeq);
+    }
+
+    // ── Phase 0b: Persist the burned anchor to Postgres ───────────────────────
+    // Fires AFTER burn-commit, BEFORE the phase-1 SERIALIZABLE tx opens.
+    // NO mssql tx is held open during this Postgres write.
+    await opts?.onSaleTxnNoBurned?.(saleTxnNo);
+
+    // ── Phase 1: SERIALIZABLE document tx ─────────────────────────────────────
+    // Claims the remaining 4 running numbers + all INSERTs in one atomic tx.
+    // A rollback releases these 4 in-tx claims (human-facing VoucherNo stays gapless).
+    // SaleInvoiceTrNo is NOT claimed here — it came from the burned phase-0 anchor.
     tx = new sql.Transaction(pool);
-    // SERIALIZABLE: the running-number claims + inserts are one logical document; the
-    // strictest isolation matches the vendor's "in-progress txn must finish or it
-    // blocks" concurrency note (field-analysis §6) and prevents phantom doubles.
     await tx.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
 
-    // ── Step 1: atomic RunningNumber claims (all inside the tx) ──
-    const saleTxnSeq = await claimRunningNumber(tx, cfg.RUNNING_NUMBER_NAME_INVOICE);
+    // ── Step 1: atomic RunningNumber claims (4 in-tx counters only) ───────────
     const saleVoucherSeq = await claimRunningNumber(
       tx,
       `${cfg.RUNNING_NUMBER_VOUCHER_PREFIX}${yymm}`
     );
-    const flowTxnSeq = await claimRunningNumber(tx, cfg.RUNNING_NUMBER_NAME_INVFLOW);
+    const flowTxnSeq  = await claimRunningNumber(tx, cfg.RUNNING_NUMBER_NAME_INVFLOW);
     const flowVoucherSeq = await claimRunningNumber(
       tx,
       `${cfg.INV_VOUCHER_PREFIX}${yymm}`
     );
     const jnlSeq = await claimRunningNumber(tx, cfg.RUNNING_NUMBER_NAME_RECEIPT);
 
-    // TransactionNo values are the raw claimed sequences (KRS keys documents by them).
-    const saleTxnNo = String(saleTxnSeq);
-    const flowTxnNo = String(flowTxnSeq);
-    const jnlCode = String(jnlSeq);
-    // Formatted voucher numbers "{PREFIX}-{YYMM}-{NNNN}".
+    // saleTxnNo is the burned phase-0 anchor (set above). DO NOT re-declare it here.
+    const flowTxnNo    = String(flowTxnSeq);
+    const jnlCode      = String(jnlSeq);
     const saleVoucherNo = formatVoucherNo(
       cfg.RUNNING_NUMBER_VOUCHER_PREFIX,
       yymm,
@@ -579,21 +684,15 @@ export async function writeKrsSale(
       jnlCode,
     };
   } catch (e) {
-    // Roll back the whole document on ANY failure. A rollback can itself throw (e.g. the
-    // connection dropped); swallow that secondary error so the ORIGINAL cause surfaces.
+    // Roll back burn tx only if it started but did not commit (phase-0 failure).
+    if (burnTx && !burnCommitted) {
+      try { await burnTx.rollback(); } catch { /* secondary */ }
+    }
+    // Roll back document tx if it started but did not commit (phase-1 failure).
     if (tx && !committed) {
-      try {
-        await tx.rollback();
-      } catch {
-        // The original error below is the real cause; a rollback fault is secondary.
-      }
+      try { await tx.rollback(); } catch { /* secondary */ }
     }
-    // Re-throw the typed "leave pending" / "data problem" errors unchanged so the
-    // dispatcher can branch on them. Everything else is a transient driver/tx fault →
-    // SANITIZE it (never the raw mssql/config/password) and re-throw a plain Error.
-    if (e instanceof WriteConfigNotReadyError || e instanceof KrsWriteError) {
-      throw e;
-    }
+    if (e instanceof WriteConfigNotReadyError || e instanceof KrsWriteError) throw e;
     const parts = safeErrorParts(e);
     throw new Error(`KRS write failed [${parts.code}]: ${parts.message}`);
   } finally {

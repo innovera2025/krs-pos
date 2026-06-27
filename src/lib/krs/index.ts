@@ -47,8 +47,9 @@ export {
   writeKrsSale,
   KrsWriteError,
   WriteConfigNotReadyError,
+  checkKrsSaleExists,
 } from "./writeback";
-export type { KrsWriteResult } from "./writeback";
+export type { KrsWriteResult, KrsWriteOpts } from "./writeback";
 export { buildSandboxConfig, isSandboxConfigured } from "./sandboxClient";
 export { parseSalePayload } from "./salePayload";
 export type { SalePayload, SalePayloadItem } from "./salePayload";

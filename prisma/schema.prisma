@@ -71,6 +71,11 @@ model SyncJob {
   lastError      String?
   nextAttemptAt  DateTime?
   lockedAt       DateTime?
+  krsClaimedTxnNo  String?   // SaleInvoiceTrNo burned in a SEPARATE committed phase-0 tx.
+                            // Non-null = a prior attempt burned this number. Reclaim uses
+                            // checkKrsSaleExists to decide: FOUND → markSynced; NOT FOUND
+                            // → reuse via preClaimedSaleTxnNo (no new burn). Never cleared
+                            // after a phase-1 failure — must be reused, never replaced.
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
 
@@ -104,6 +109,9 @@ enum SyncJobStatus {
   FAILED
   RETRYING
   SKIPPED
+  NEEDS_RECONCILE   // burned anchor held but existence check persistently fails;
+                    // operator must reconcile before re-entry (NOT auto-claimable);
+                    // UI-alias NOT updated in this pass (see Residual §6)
 }
 
 // Store-level settings singleton (Receipt print-size feature). Exactly ONE row
