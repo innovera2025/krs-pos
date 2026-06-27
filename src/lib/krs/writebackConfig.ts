@@ -34,7 +34,6 @@ export const KRS_WRITE_CONFIG = {
   RUNNING_NUMBER_NAME_RECEIPT: "Receipt", // CONFIRMED — TheJournal JnlCode seq
   RUNNING_NUMBER_NAME_INVFLOW: "InventoryFlow", // CONFIRMED — InventoryFlow TransactionNo seq
   RUNNING_NUMBER_VOUCHER_PREFIX: "SC", // CONFIRMED — voucher key = 'SC'+YYMM (e.g. 'SC2606')
-  RUNNING_NUMBER_INVFLOW_VOUCHER_PREFIX: "IBG", // CONFIRMED — flow voucher key 'IBG'+YYMM
 
   // === Document format / journal ===
   DOC_NO_FORMAT: "SC-{YYMM}-{NNNN}", // CONFIRMED — VoucherNo e.g. SC-2606-0001
@@ -87,6 +86,9 @@ export const KRS_WRITE_CONFIG = {
   INV_DEPARTMENT_NAME: "แผนกคลังสินค้า", // CONFIRMED — Hdr Department (Dtl Department = the WHE code)
   INV_IS_ASSET_FORM: 1, // CONFIRMED
   INV_IS_STOCK: 1, // CONFIRMED
+  // VoucherNo prefix AND RunningNumber counter key = OSL+YYMM (live KRS has OSL2606);
+  // confirm empirically in the sandbox test that OSL{YYMM} — not IBG{YYMM} — is the
+  // counter that increments.
   INV_VOUCHER_PREFIX: "OSL", // CONFIRMED — VoucherNo = OSL-{YYMM}-{NNNN} (e.g. OSL-2606-0001)
   IN_OUT: -1, // CONFIRMED — stock out
   INV_APPROVED: 1, // CONFIRMED — sp_Onhand gate

@@ -38,14 +38,14 @@ export type { KrsStockBalance } from "./stock";
 export { runAutoSync } from "./autoSync";
 export type { AutoSyncOptions, AutoSyncResult, AutoSyncStatus } from "./autoSync";
 export { encrypt, decrypt, KrsKeyError } from "./crypto";
-// Outbound write-back (krs-sync P2): the SALE outbox dispatcher + the (Track-A stub)
-// KRS write module + the sandbox-only connection builder. Exported here so the
-// dispatch route + the test harness import the public surface, not the deep paths.
+// Outbound write-back (krs-sync P2, Track B): the SALE outbox dispatcher + the real
+// KRS cash-sale write module + the sandbox-only connection builder. Exported here so
+// the dispatch route + the test harness import the public surface, not the deep paths.
 export { runDispatch } from "./dispatcher";
 export type { DispatchResult } from "./dispatcher";
 export {
   writeKrsSale,
-  WritebackNotImplementedError,
+  KrsWriteError,
   WriteConfigNotReadyError,
 } from "./writeback";
 export type { KrsWriteResult } from "./writeback";

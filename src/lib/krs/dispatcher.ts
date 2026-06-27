@@ -26,11 +26,7 @@ import { logger } from "@/lib/logger";
 import { env } from "@/lib/env";
 import { buildSandboxConfig } from "./sandboxClient";
 import { parseSalePayload } from "./salePayload";
-import {
-  writeKrsSale,
-  WritebackNotImplementedError,
-  WriteConfigNotReadyError,
-} from "./writeback";
+import { writeKrsSale, WriteConfigNotReadyError } from "./writeback";
 
 /** Jobs claimed per dispatch call. */
 const BATCH_SIZE = 10;
@@ -286,29 +282,31 @@ export async function runDispatch(): Promise<DispatchResult> {
     // === KRS WRITE (mssql, OUTSIDE any Prisma tx) ===
     try {
       const writeResult = await writeKrsSale(payload, sandboxConfig);
+      // Store ALL returned KRS document numbers in SyncJob.response so the sale is
+      // fully traceable back to its KRS rows (sale txn/voucher, flow txn/voucher, jnl).
       await markSynced(
         job.id,
         job.attempts,
         JSON.stringify({
           transactionNo: writeResult.transactionNo,
           journalNo: writeResult.journalNo,
+          saleVoucherNo: writeResult.saleVoucherNo,
+          flowTxnNo: writeResult.flowTxnNo,
+          flowVoucherNo: writeResult.flowVoucherNo,
+          jnlCode: writeResult.jnlCode,
         })
       );
       result.synced += 1;
     } catch (e) {
-      // "Leave pending" outcomes (NOT a transient failure, NOT a data error):
-      //  - WritebackNotImplementedError → Track B not built yet (the current state).
-      //  - WriteConfigNotReadyError     → vendor constants still TODO_FROM_VENDOR.
-      // Re-queue without counting an attempt; the job waits for Track B / config.
-      if (
-        e instanceof WritebackNotImplementedError ||
-        e instanceof WriteConfigNotReadyError
-      ) {
+      // "Leave pending" outcome (NOT a transient failure, NOT a data error):
+      //  - WriteConfigNotReadyError → vendor constants still TODO_FROM_VENDOR.
+      // Re-queue without counting an attempt; the job waits for the config to land.
+      if (e instanceof WriteConfigNotReadyError) {
         await requeuePending(job.id);
         result.skipped += 1;
         logger.debug(
           { krsDispatch: { jobId: job.id, ref: job.ref, code: e.name } },
-          "KRS dispatch: write not configured/implemented — left pending"
+          "KRS dispatch: write not configured — left pending"
         );
         continue;
       }
