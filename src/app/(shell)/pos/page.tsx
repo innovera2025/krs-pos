@@ -172,6 +172,11 @@ export default function POSPage() {
     return () => ctrl.abort();
   }, []);
 
+  // Auto-focus the search/scan input on mount so a barcode scanner can fire immediately.
+  useEffect(() => {
+    searchRef.current?.focus();
+  }, []);
+
   // Category chips derived data-driven from the fetched products' REAL categories
   // (KRS ItemTypename). One chip per distinct category keyed by category id,
   // ordered by product count descending (biggest categories first), preceded by a
@@ -222,7 +227,8 @@ export default function POSPage() {
       return (
         p.name.toLowerCase().includes(q) ||
         p.sku.toLowerCase().includes(q) ||
-        (p.category?.name ?? "").toLowerCase().includes(q)
+        (p.category?.name ?? "").toLowerCase().includes(q) ||
+        (p.barcode ?? "").toLowerCase().includes(q)
       );
     });
   }, [products, search, activeCat]);
@@ -477,7 +483,9 @@ export default function POSPage() {
     if (e.key !== "Enter") return;
     const q = search.trim().toLowerCase();
     if (!q) return;
-    const match = products.find((p) => p.sku.toLowerCase() === q);
+    const match = products.find(
+      (p) => (p.barcode != null && p.barcode.toLowerCase() === q) || p.sku.toLowerCase() === q
+    );
     if (match) {
       addToCart(match);
       setSearch("");

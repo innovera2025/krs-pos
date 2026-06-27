@@ -63,7 +63,7 @@ export function ProductCard({
           className="mono absolute right-2 top-[7px] rounded-full px-[7px] py-0.5 text-[10px]"
           style={{ background: "rgba(255,255,255,.75)", color: "#667085" }}
         >
-          {product.sku}
+          {product.barcode ?? product.sku}
         </span>
         {inCart && (
           <span
