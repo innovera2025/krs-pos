@@ -207,3 +207,33 @@ Vendor delivered the authoritative files (Downloads): `Insertขายสด.txt
 4. (minor) `IBG`+YYMM flow-voucher format + `JnlName` exact value.
 
 Everything else for the cash-sale write is now resolved; Track B is buildable once items 1–3 land.
+
+---
+
+## 7. UPDATE 2026-06-27 — InventoryFlow (stock-cut) sample received → ALL GAPS CLOSED
+
+Vendor delivered `Insert Stock.txt` (the exact InventoryFlow insert columns) + `pos stock.xlsx` (a real sale stock-out of `F01-0001 ×5`). The final 4 gaps are resolved (writebackConfig now has zero `TODO_FROM_VENDOR`):
+
+**InventoryFlowHdr insert columns:** TransactionNo, IsStock, TransactionType, Approved, ApprovedBy, ApprovedDate, IsAssetForm, IsClosed, InOutDate, InOut, ReasonIndex, ReasonName, CompanyCode, DeptCode, Department, VoucherNo, EntryBy, EntryDate. (This simpler insert has NO SalesInvoiceTrNo/CustOrSup link — the stock cut stands alone, tied to the sale only by timing/voucher.)
+**InventoryFlowDtl insert columns:** TransactionNo, Number, TransactionType, IsAssetForm, IsStock, IsClosed, Approved, InOutDate, InOut, ReasonIndex, ReasonName, CompanyCode, Warehouse, Department, VoucherNo, ItemCode, Description, SOTrNo, PONo, MainQuantity, MainUnits.
+
+**CONFIRMED values (pos stock.xlsx):**
+| Field | Value |
+|---|---|
+| IsStock / IsAssetForm / Approved / IsClosed | 1 / 1 / 1 / 0 |
+| TransactionType | 1 |
+| InOut | -1 (out) |
+| **ReasonIndex** | **15** |
+| **ReasonName** | **`การขาย: เบิกออกสินค้าเพื่อขาย`** |
+| CompanyCode | `SNP` |
+| **DeptCode** / Department(Hdr) | `WHE` / `แผนกคลังสินค้า` (Dtl Department = `WHE`) |
+| **Warehouse** | **`WH01`** (NOT WHFG) |
+| **VoucherNo** | **`OSL-{YYMM}-{NNNN}`** (e.g. `OSL-2606-0001`) |
+| ApprovedBy / EntryBy | the cashier (`ADMIN` in sample) |
+| TransactionNo | own seq (RunningNumber `InventoryFlow`) |
+| ItemCode / Description / MainQuantity | `F01-0001` / product name / 5 |
+| **MainUnits** | **`ซอง`** ← from **`InventoryItem.MainUnits`** column (verified via live query; `PackUnits` also = ซอง) |
+
+**MainUnits source RESOLVED:** the KRS `InventoryItem.MainUnits` column holds the unit. POS Product has no unit field → the write module reads `MainUnits` from KRS `InventoryItem` per ItemCode at write-time (one `SELECT ItemCode, MainUnits WHERE ItemCode IN (...)` for the order), or it can be pulled during product import.
+
+**→ Track B is now FULLY UNBLOCKED.** `writebackConfig.ts` has every constant confirmed (REQUIRED_VENDOR_KEYS is empty). Remaining work is the Track-B build itself: implement `writeback.ts` (RunningNumber claims for SaleInvoiceTrNo + SC voucher + InventoryFlow + OSL voucher + Receipt journal; the 2 SalesInvoice inserts + 3 TheJournal rows + 2 InventoryFlow inserts in ONE mssql transaction), point `KRS_SANDBOX_*` at `db_ACC_SNP` (the test DB), test, verify via `sp_Onhand`, then enable + handle the backlog.

@@ -78,20 +78,24 @@ export const KRS_WRITE_CONFIG = {
   VAT_PERCENT: 7, // CONFIRMED
   UNIT_PRICE_INCL_VAT: true, // CONFIRMED — sample line: UnitPrice 10 × qty 10 = Amount 100 (incl VAT)
 
-  // === InventoryFlow (stock-cut) constants — STILL TODO (not in the xlsx sample) ===
-  INV_TRANSACTION_TYPE: TODO_FROM_VENDOR, // InventoryFlow TransactionType for a sale-out
-  INV_REASON_INDEX: TODO_FROM_VENDOR, // ReasonIndex for "ตัดออกจากการขาย"
-  INV_REASON_NAME: "ตัดออกจากการขาย", // ASSUMED — confirm exact string
-  WAREHOUSE: TODO_FROM_VENDOR, // WHFG? confirm
-  INV_DEPT_CODE: TODO_FROM_VENDOR, // InventoryFlowHdr DeptCode (minor)
+  // === InventoryFlow (stock-cut) constants — CONFIRMED from pos stock.xlsx (2026-06-27) ===
+  INV_TRANSACTION_TYPE: 1, // CONFIRMED
+  INV_REASON_INDEX: 15, // CONFIRMED — sale stock-out
+  INV_REASON_NAME: "การขาย: เบิกออกสินค้าเพื่อขาย", // CONFIRMED (was assumed)
+  WAREHOUSE: "WH01", // CONFIRMED (NOT WHFG — the sale-out warehouse is WH01)
+  INV_DEPT_CODE: "WHE", // CONFIRMED — InventoryFlow DeptCode
+  INV_DEPARTMENT_NAME: "แผนกคลังสินค้า", // CONFIRMED — Hdr Department (Dtl Department = the WHE code)
+  INV_IS_ASSET_FORM: 1, // CONFIRMED
+  INV_IS_STOCK: 1, // CONFIRMED
+  INV_VOUCHER_PREFIX: "OSL", // CONFIRMED — VoucherNo = OSL-{YYMM}-{NNNN} (e.g. OSL-2606-0001)
   IN_OUT: -1, // CONFIRMED — stock out
   INV_APPROVED: 1, // CONFIRMED — sp_Onhand gate
   INV_IS_CLOSED: 0, // CONFIRMED — sp_Onhand gate
 
-  // === Per-product unit (sample line MainUnits = "ซอง") — STILL TODO ===
-  // POS Product has no unit field; needs the KRS InventoryItem unit column (or a
-  // product-import mapping) so the Dtl MainUnits is correct per item.
-  MAIN_UNITS_SOURCE: TODO_FROM_VENDOR, // KRS InventoryItem unit-of-measure column name
+  // === Per-product unit — CONFIRMED: KRS InventoryItem.MainUnits (e.g. "ซอง") ===
+  // POS Product has no unit field → the write module reads MainUnits from KRS
+  // InventoryItem per ItemCode at write-time (or it can be pulled during import).
+  MAIN_UNITS_SOURCE: "MainUnits", // CONFIRMED — KRS InventoryItem column name
 } as const;
 
 export type KrsWriteConfig = typeof KRS_WRITE_CONFIG;
@@ -104,15 +108,11 @@ export type KrsWriteConfig = typeof KRS_WRITE_CONFIG;
  * Kept as a typed key list (not "scan every field") so a future field that is
  * intentionally optional/derived doesn't accidentally block the write.
  */
-// After the 2026-06-25 xlsx sample, the SalesInvoice + journal constants are all
-// CONFIRMED. Only the InventoryFlow (stock-cut) constants + the per-product unit
-// source remain unresolved — those are the genuine hard gates for a live write.
-const REQUIRED_VENDOR_KEYS: ReadonlyArray<keyof KrsWriteConfig> = [
-  "INV_TRANSACTION_TYPE",
-  "INV_REASON_INDEX",
-  "WAREHOUSE",
-  "MAIN_UNITS_SOURCE",
-];
+// ALL vendor constants are now CONFIRMED (SalesInvoice/journal from ขายสด.xlsx
+// 2026-06-25; InventoryFlow + MainUnits from pos stock.xlsx 2026-06-27). No
+// TODO_FROM_VENDOR remains, so the config gate is OPEN. (The write itself is still
+// the Track-B stub in writeback.ts until that module is implemented.)
+const REQUIRED_VENDOR_KEYS: ReadonlyArray<keyof KrsWriteConfig> = [];
 
 /** Thrown when a required vendor constant is still `TODO_FROM_VENDOR`. The write
  *  module catches this and the dispatcher leaves the job for a later attempt (it is
