@@ -20,6 +20,9 @@ const USER_PUBLIC_SELECT = {
   role: true,
   isActive: true,
   branchId: true,
+  // Branch/Warehouse program (Phase 2): the user's assigned KRS WarehouseCode
+  // (null = unassigned). Branch is DERIVED from the Warehouse master for display.
+  warehouseCode: true,
   createdAt: true,
   // Lockout state (auth Phase 3) for the Users UI. Password hash NEVER selected.
   lockedUntil: true,
@@ -41,6 +44,9 @@ type PatchUserBody = {
   isActive?: unknown;
   password?: unknown;
   action?: unknown;
+  // Branch/Warehouse program (Phase 2): assign (string) or clear (null) the user's
+  // KRS WarehouseCode.
+  warehouseCode?: unknown;
 };
 
 /**
@@ -51,6 +57,10 @@ type PatchUserBody = {
  *   { password: string }       — admin reset of the user's password (min 8).
  *   { action: "forceLogout" }  — bump tokenVersion → revoke all the user's JWTs.
  *   { action: "unlock" }       — clear failedLoginAttempts + lockedUntil.
+ *   { warehouseCode: string | null }
+ *                              — assign (validated against the Warehouse master)
+ *                                or clear (null) the user's KRS WarehouseCode
+ *                                (Branch/Warehouse program, Phase 2).
  *
  * An unrecognized shape → 400 BAD_VARIANT. The password hash is never selected
  * or returned by any branch.
@@ -216,11 +226,49 @@ export async function PATCH(
     }
   }
 
+  // --- variant: assign / clear warehouse (Branch/Warehouse program, Phase 2) ---
+  // Body { warehouseCode: string | null }. A non-null value MUST exist in the
+  // Warehouse master (never trust the client); null (or an empty/whitespace string)
+  // clears the assignment. Inert downstream — nothing in checkout/auth/session/stock
+  // reads it yet (Phase 3+). branchCode is DERIVED from the Warehouse table for
+  // display and is never stored here.
+  if (
+    "warehouseCode" in body &&
+    (typeof body.warehouseCode === "string" || body.warehouseCode === null)
+  ) {
+    const raw =
+      typeof body.warehouseCode === "string" ? body.warehouseCode.trim() : "";
+    const warehouseCode = raw.length > 0 ? raw : null;
+    if (warehouseCode !== null) {
+      const wh = await prisma.warehouse.findUnique({
+        where: { warehouseCode },
+        select: { warehouseCode: true },
+      });
+      if (!wh) {
+        return NextResponse.json(
+          { error: "ไม่พบคลังที่เลือก", code: "UNKNOWN_WAREHOUSE" },
+          { status: 400 }
+        );
+      }
+    }
+    try {
+      const user = await prisma.user.update({
+        where: { id },
+        data: { warehouseCode },
+        select: USER_PUBLIC_SELECT,
+      });
+      logSuccess("warehouse");
+      return NextResponse.json(user);
+    } catch (err) {
+      return handlePatchError(err);
+    }
+  }
+
   // No recognized variant.
   return NextResponse.json(
     {
       error:
-        "body must be one of {isActive}, {password}, {action:'forceLogout'}, {action:'unlock'}",
+        "body must be one of {isActive}, {password}, {action:'forceLogout'}, {action:'unlock'}, {warehouseCode}",
       code: "BAD_VARIANT",
     },
     { status: 400 }

@@ -4,17 +4,23 @@ import { useEffect, useState } from "react";
 import { UserPlus, X, Eye, EyeOff } from "lucide-react";
 import { Modal } from "@/components/Modal";
 import type { UiRole } from "@/components/users/userMeta";
+import type { Warehouse } from "@/types";
 
 type AddUserModalProps = {
   open: boolean;
   submitting: boolean;
   error: string;
+  // Warehouse master options for the picker (sourced from GET /api/warehouses by
+  // the parent). Branch/Warehouse program, Phase 2.
+  warehouses: Warehouse[];
   onClose: () => void;
   onSubmit: (input: {
     name: string;
     email: string;
     role: UiRole;
     password: string;
+    // Phase 2: chosen KRS WarehouseCode, or null = unassigned ("— ไม่ระบุ —").
+    warehouseCode: string | null;
   }) => void;
 };
 
@@ -33,6 +39,7 @@ export function AddUserModal({
   open,
   submitting,
   error,
+  warehouses,
   onClose,
   onSubmit,
 }: AddUserModalProps) {
@@ -42,6 +49,8 @@ export function AddUserModal({
   const [role, setRole] = useState<UiRole>("seller");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  // Phase 2: chosen KRS WarehouseCode ("" = unassigned / "— ไม่ระบุ —"). Optional.
+  const [warehouseCode, setWarehouseCode] = useState("");
   const [touched, setTouched] = useState(false);
 
   useEffect(() => {
@@ -51,6 +60,7 @@ export function AddUserModal({
       setRole("seller");
       setPassword("");
       setShowPassword(false);
+      setWarehouseCode("");
       setTouched(false);
     }
   }, [open]);
@@ -64,7 +74,14 @@ export function AddUserModal({
     e.preventDefault();
     setTouched(true);
     if (!canSubmit) return;
-    onSubmit({ name: name.trim(), email: email.trim(), role, password });
+    onSubmit({
+      name: name.trim(),
+      email: email.trim(),
+      role,
+      password,
+      // "" = unassigned → null; the server re-validates the code (never trusts us).
+      warehouseCode: warehouseCode || null,
+    });
   }
 
   return (
@@ -178,6 +195,23 @@ export function AddUserModal({
                 รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร
               </span>
             )}
+          </label>
+
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[12.5px] font-semibold">คลัง / สาขา · Warehouse</span>
+            <select
+              value={warehouseCode}
+              onChange={(e) => setWarehouseCode(e.target.value)}
+              className="h-11 rounded-[12px] border bg-white px-3 text-[14px]"
+              style={{ borderColor: "var(--line)" }}
+            >
+              <option value="">— ไม่ระบุ —</option>
+              {warehouses.map((w) => (
+                <option key={w.warehouseCode} value={w.warehouseCode}>
+                  {w.warehouseName} ({w.warehouseCode}) · สาขา {w.branchCode}
+                </option>
+              ))}
+            </select>
           </label>
 
           <fieldset className="flex flex-col gap-1.5 border-0 p-0">

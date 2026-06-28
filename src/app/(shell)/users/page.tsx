@@ -14,11 +14,13 @@ import {
   Unlock,
   Eye,
   EyeOff,
+  Warehouse as WarehouseIcon,
 } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
 import { AdminOnly } from "@/components/AdminOnly";
 import { AddUserModal } from "@/components/users/AddUserModal";
 import { Modal } from "@/components/Modal";
+import type { Warehouse } from "@/types";
 import {
   ADMIN_PERMISSIONS,
   SELLER_PERMISSIONS,
@@ -52,6 +54,15 @@ function UsersScreen() {
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [filter, setFilter] = useState<FilterChip>("all");
 
+  // Warehouse master (Branch/Warehouse program, Phase 2) — feeds the add/edit
+  // pickers AND the 'สาขา' column display (the branch is DERIVED from this list by
+  // warehouseCode). Best-effort: a failed fetch just leaves the picker empty.
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+
+  // Edit-warehouse modal (Phase 2): the user whose warehouse is being reassigned.
+  const [warehouseTarget, setWarehouseTarget] = useState<UserDTO | null>(null);
+  const [warehouseSubmitting, setWarehouseSubmitting] = useState(false);
+
   // Add-user modal.
   const [addOpen, setAddOpen] = useState(false);
   const [addSubmitting, setAddSubmitting] = useState(false);
@@ -79,9 +90,31 @@ function UsersScreen() {
     }
   }
 
+  // Load the warehouse master for the picker + 'สาขา' column (Phase 2). Best-effort
+  // — on failure the picker is simply empty and the column falls back to the code.
+  async function loadWarehouses() {
+    try {
+      const res = await fetch("/api/warehouses");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as Warehouse[];
+      setWarehouses(Array.isArray(data) ? data : []);
+    } catch {
+      setWarehouses([]);
+    }
+  }
+
   useEffect(() => {
     loadUsers();
+    loadWarehouses();
   }, []);
+
+  // warehouseCode → Warehouse lookup so the 'สาขา' column can DERIVE the branch and
+  // human name from the master list without trusting a client-stored branchCode.
+  const warehouseByCode = useMemo(() => {
+    const m = new Map<string, Warehouse>();
+    for (const w of warehouses) m.set(w.warehouseCode, w);
+    return m;
+  }, [warehouses]);
 
   // Filter chips: ทั้งหมด / ผู้ขาย (CASHIER) / Admin (ADMIN+MANAGER).
   const filtered = useMemo(() => {
@@ -101,6 +134,7 @@ function UsersScreen() {
     email: string;
     role: UiRole;
     password: string;
+    warehouseCode: string | null;
   }) {
     setAddSubmitting(true);
     setAddError("");
@@ -113,6 +147,9 @@ function UsersScreen() {
           email: input.email,
           role: uiRoleToEnum(input.role),
           password: input.password,
+          // Phase 2: null = unassigned; the server re-validates against the
+          // Warehouse master (never trusts the client).
+          warehouseCode: input.warehouseCode,
         }),
       });
       if (!res.ok) {
@@ -232,6 +269,40 @@ function UsersScreen() {
       showToast("ปลดล็อกไม่สำเร็จ");
     } finally {
       setActingId(null);
+    }
+  }
+
+  // ---- admin assign/clear warehouse (Phase 2: PATCH {warehouseCode}) ----
+  // `warehouseCode` is the chosen KRS WarehouseCode, or null = clear assignment.
+  // The server re-validates against the Warehouse master before persisting.
+  async function submitWarehouse(warehouseCode: string | null) {
+    if (!warehouseTarget) return;
+    setWarehouseSubmitting(true);
+    try {
+      const res = await fetch(`/api/users/${warehouseTarget.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ warehouseCode }),
+      });
+      if (!res.ok) {
+        let msg = "อัปเดตคลังไม่สำเร็จ";
+        try {
+          const data = await res.json();
+          if (data?.error) msg = data.error;
+        } catch {
+          /* keep default */
+        }
+        showToast(msg);
+        return;
+      }
+      const updated = (await res.json()) as UserDTO;
+      setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
+      setWarehouseTarget(null);
+      showToast("อัปเดตคลังแล้ว");
+    } catch {
+      showToast("อัปเดตคลังไม่สำเร็จ");
+    } finally {
+      setWarehouseSubmitting(false);
     }
   }
 
@@ -385,9 +456,46 @@ function UsersScreen() {
                       </span>
                     </Td>
                     <Td>
-                      <span className="mono text-[12px]" style={{ color: "var(--muted)" }}>
-                        {u.branchId}
-                      </span>
+                      {(() => {
+                        const wh = u.warehouseCode
+                          ? warehouseByCode.get(u.warehouseCode)
+                          : undefined;
+                        return (
+                          <div className="flex flex-col items-start gap-1">
+                            {u.warehouseCode ? (
+                              <>
+                                <span className="font-semibold text-[12.5px]">
+                                  {wh ? wh.warehouseName : "คลัง"}
+                                </span>
+                                <span
+                                  className="mono text-[11.5px]"
+                                  style={{ color: "var(--muted)" }}
+                                >
+                                  {u.warehouseCode}
+                                  {wh ? ` · สาขา ${wh.branchCode}` : ""}
+                                </span>
+                              </>
+                            ) : (
+                              <span
+                                className="text-[12.5px]"
+                                style={{ color: "var(--soft)" }}
+                              >
+                                — ไม่ระบุคลัง —
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setWarehouseTarget(u)}
+                              aria-label={`แก้ไขคลัง ${u.name}`}
+                              className="inline-flex h-7 items-center gap-1 rounded-[9px] border px-2 text-[11.5px] font-semibold"
+                              style={{ borderColor: "var(--line)", color: "var(--brand-2)" }}
+                            >
+                              <WarehouseIcon size={12} strokeWidth={2} aria-hidden="true" />
+                              แก้ไขคลัง
+                            </button>
+                          </div>
+                        );
+                      })()}
                     </Td>
                     <Td>
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -478,6 +586,7 @@ function UsersScreen() {
         open={addOpen}
         submitting={addSubmitting}
         error={addError}
+        warehouses={warehouses}
         onClose={() => setAddOpen(false)}
         onSubmit={submitAdd}
       />
@@ -487,6 +596,14 @@ function UsersScreen() {
         submitting={resetSubmitting}
         onClose={() => setResetTarget(null)}
         onSubmit={submitResetPassword}
+      />
+
+      <EditWarehouseModal
+        target={warehouseTarget}
+        warehouses={warehouses}
+        submitting={warehouseSubmitting}
+        onClose={() => setWarehouseTarget(null)}
+        onSubmit={submitWarehouse}
       />
     </div>
   );
@@ -630,6 +747,124 @@ function ResetPasswordModal({
             style={{ background: "var(--brand)" }}
           >
             {submitting ? "กำลังบันทึก…" : "รีเซ็ตรหัสผ่าน"}
+          </button>
+        </footer>
+      </form>
+    </Modal>
+  );
+}
+
+/**
+ * Edit-warehouse modal (Branch/Warehouse program, Phase 2). Assigns or clears the
+ * target user's KRS WarehouseCode via PATCH {warehouseCode}. The picker offers
+ * "— ไม่ระบุ —" (clear → null) plus every warehouse from the master list; the
+ * server re-validates the chosen code against the Warehouse table. The branch shown
+ * per option is DERIVED from the master (never a client-stored branchCode). Admin-
+ * gated by the page wrapper (AdminOnly) and the requireAdmin PATCH route.
+ */
+function EditWarehouseModal({
+  target,
+  warehouses,
+  submitting,
+  onClose,
+  onSubmit,
+}: {
+  target: UserDTO | null;
+  warehouses: Warehouse[];
+  submitting: boolean;
+  onClose: () => void;
+  onSubmit: (warehouseCode: string | null) => void;
+}) {
+  const [warehouseCode, setWarehouseCode] = useState("");
+
+  const open = target !== null;
+
+  useEffect(() => {
+    if (open) {
+      // Prefill with the user's current assignment ("" = unassigned).
+      setWarehouseCode(target?.warehouseCode ?? "");
+    }
+  }, [open, target]);
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (submitting) return;
+    // "" → null clears the assignment; the server re-validates a non-null code.
+    onSubmit(warehouseCode || null);
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} label="แก้ไขคลัง / สาขา">
+      <form
+        onSubmit={handleSubmit}
+        className="w-[min(440px,calc(100vw-32px))] rounded-[22px] bg-white"
+        style={{ boxShadow: "var(--shadow)" }}
+      >
+        <header
+          className="flex items-center gap-3 border-b px-5 py-4"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <span
+            className="grid h-10 w-10 place-items-center rounded-[14px]"
+            style={{ background: "var(--mint)", color: "var(--brand-2)" }}
+          >
+            <WarehouseIcon size={20} strokeWidth={2} />
+          </span>
+          <div className="flex-1">
+            <strong className="block text-[15px]">แก้ไขคลัง / สาขา</strong>
+            <span className="block text-[11.5px]" style={{ color: "var(--muted)" }}>
+              Warehouse{target ? ` · ${target.name}` : ""}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="ปิด"
+            className="grid h-9 w-9 place-items-center rounded-[12px] border"
+            style={{ borderColor: "var(--line)", color: "var(--muted)" }}
+          >
+            <XIcon size={18} strokeWidth={2} />
+          </button>
+        </header>
+
+        <div className="flex flex-col gap-3.5 px-5 py-4">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[12.5px] font-semibold">คลัง / สาขา · Warehouse</span>
+            <select
+              value={warehouseCode}
+              onChange={(e) => setWarehouseCode(e.target.value)}
+              className="h-11 rounded-[12px] border bg-white px-3 text-[14px]"
+              style={{ borderColor: "var(--line)" }}
+            >
+              <option value="">— ไม่ระบุ —</option>
+              {warehouses.map((w) => (
+                <option key={w.warehouseCode} value={w.warehouseCode}>
+                  {w.warehouseName} ({w.warehouseCode}) · สาขา {w.branchCode}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <footer
+          className="flex justify-end gap-2.5 border-t px-5 py-4"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-11 rounded-[12px] border px-4 text-[13.5px] font-semibold"
+            style={{ borderColor: "var(--line)", color: "var(--ink)" }}
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="h-11 rounded-[12px] px-5 text-[13.5px] font-bold text-white disabled:opacity-50"
+            style={{ background: "var(--brand)" }}
+          >
+            {submitting ? "กำลังบันทึก…" : "บันทึก"}
           </button>
         </footer>
       </form>

@@ -8,6 +8,11 @@ export type UserDTO = {
   role: Role;
   isActive: boolean;
   branchId: string;
+  // Branch/Warehouse program (Phase 2): the user's assigned KRS WarehouseCode
+  // (e.g. "WH01"), or null/absent = unassigned. The branch is DERIVED from the
+  // Warehouse master (looked up by warehouseCode) for display — branchCode is never
+  // stored on the user.
+  warehouseCode?: string | null;
   createdAt: string;
   // Lockout state (auth Phase 3). `lockedUntil` is an ISO string when the account
   // is locked (null/absent otherwise); a value in the future means "Locked now".

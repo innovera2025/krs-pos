@@ -36,6 +36,10 @@ const USER_PUBLIC_SELECT = {
   role: true,
   isActive: true,
   branchId: true,
+  // Branch/Warehouse program (Phase 2): the user's assigned KRS WarehouseCode
+  // (null = unassigned). The branch is DERIVED from the Warehouse master for
+  // display — branchCode is never stored here.
+  warehouseCode: true,
   createdAt: true,
   // Lockout state (auth Phase 3) so the Users UI can show a "Locked" badge and a
   // contextual Unlock action. The password hash is NEVER selected here.
@@ -70,6 +74,8 @@ type CreateUserBody = {
   email?: unknown;
   role?: unknown;
   password?: unknown;
+  // Branch/Warehouse program (Phase 2): optional KRS WarehouseCode assignment.
+  warehouseCode?: unknown;
 };
 
 // Email shape check — same loose pattern as the Simple POS add-user form.
@@ -155,6 +161,27 @@ export async function POST(req: Request) {
     );
   }
 
+  // Branch/Warehouse program (Phase 2): optional warehouse assignment. Empty /
+  // absent = unassigned (stored null). When provided, the value MUST exist in the
+  // Warehouse master — NEVER trust the client. Validated here (before the bcrypt
+  // hash) so an unknown code fails cheaply. branchCode is DERIVED from the
+  // Warehouse table for display; it is never stored on the user.
+  const warehouseCodeRaw =
+    typeof body.warehouseCode === "string" ? body.warehouseCode.trim() : "";
+  const warehouseCode = warehouseCodeRaw.length > 0 ? warehouseCodeRaw : null;
+  if (warehouseCode !== null) {
+    const wh = await prisma.warehouse.findUnique({
+      where: { warehouseCode },
+      select: { warehouseCode: true },
+    });
+    if (!wh) {
+      return NextResponse.json(
+        { error: "ไม่พบคลังที่เลือก", code: "UNKNOWN_WAREHOUSE" },
+        { status: 400 }
+      );
+    }
+  }
+
   let passwordHash: string;
   try {
     passwordHash = await bcrypt.hash(password, BCRYPT_COST);
@@ -174,6 +201,8 @@ export async function POST(req: Request) {
         role,
         isActive: true,
         password: passwordHash,
+        // Phase 2: validated above against the Warehouse master (null = unassigned).
+        warehouseCode,
       },
       select: USER_PUBLIC_SELECT,
     });
