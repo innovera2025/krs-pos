@@ -76,6 +76,14 @@ model SyncJob {
                             // checkKrsSaleExists to decide: FOUND → markSynced; NOT FOUND
                             // → reuse via preClaimedSaleTxnNo (no new burn). Never cleared
                             // after a phase-1 failure — must be reused, never replaced.
+  snapshotAdvancedAt DateTime? // krs-sync: set EXACTLY ONCE when the write-back's stock-cut
+                            // is reflected into the global KrsStockSnapshot (warehouseCode="").
+                            // The dispatcher decrements the snapshot by the sale's qty on the
+                            // first attempt that reaches SYNCED (fresh write OR burned-anchor
+                            // reclaim), guarded by `snapshotAdvancedAt IS NULL`, so the next
+                            // auto-sync does NOT re-apply the sale's KRS on-hand drop as a
+                            // fresh negative delta (which would double-count an already-
+                            // decremented Product.stock). Null = not yet advanced.
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
 

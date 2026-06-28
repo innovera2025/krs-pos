@@ -32,7 +32,7 @@
 //
 // Plan: process/features/krs-sync/active/krs-outbound-writeback_PLAN_25-06-26.md §8
 
-import { SyncJobStatus, SyncJobType } from "@prisma/client";
+import { Prisma, SyncJobStatus, SyncJobType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
 import { env } from "@/lib/env";
@@ -124,22 +124,94 @@ async function requeuePending(jobId: string): Promise<void> {
   });
 }
 
-/** Mark a job SYNCED after a successful KRS write. Clears the lock, records the KRS
- *  document numbers in `response`, and bumps `attempts` (the succeeding attempt). */
-async function markSynced(
+/** One sale line reduced to the two fields the snapshot-advance needs: the snapshot key
+ *  (= POS sku = KRS ItemCode = SalePayloadItem.itemCode bound to InventoryFlowDtl.ItemCode)
+ *  and the positive integer quantity that the write-back cut from KRS on-hand. */
+type SnapshotAdvanceLine = { itemCode: string; qty: number };
+
+/**
+ * Advance the GLOBAL stock snapshot (warehouseCode = "") to reflect this sale's KRS
+ * stock-cut: for each line, decrement KrsStockSnapshot.lastQty by the sold qty. This
+ * "burns" the write-back's on-hand drop into the same baseline the inbound auto-sync
+ * delta engine reads, so the next auto-sync computes delta=0 for the cut (instead of
+ * seeing the KRS on-hand drop as a fresh negative delta and re-applying it to a
+ * Product.stock that checkout ALREADY decremented → double-count).
+ *
+ * Keyed on (itemCode, warehouseCode="") — the global all-warehouse sentinel rows that
+ * sync-stock baselines and autoSync's global pass own. An item that was never baselined
+ * (count === 0) is logged and SKIPPED: we do NOT create a 0 row, because a 0 baseline
+ * would make the next auto-sync treat the full KRS on-hand as a fresh positive delta.
+ *
+ * Runs INSIDE the caller's Prisma `$transaction(tx)` so the SYNCED flip and the snapshot
+ * decrement commit atomically together (the exactly-once guard lives on the SyncJob row).
+ */
+async function advanceGlobalSnapshotForSale(
+  tx: Prisma.TransactionClient,
+  lines: SnapshotAdvanceLine[]
+): Promise<void> {
+  for (const line of lines) {
+    const res = await tx.krsStockSnapshot.updateMany({
+      where: { itemCode: line.itemCode, warehouseCode: "" },
+      data: { lastQty: { decrement: line.qty } },
+    });
+    if (res.count === 0) {
+      logger.warn(
+        { krsDispatch: { itemCode: line.itemCode } },
+        "KRS dispatch: snapshot-advance skipped — item not baselined in global snapshot (no 0 row created)"
+      );
+    }
+  }
+}
+
+/**
+ * Mark a job SYNCED after a successful KRS write AND advance the global stock snapshot
+ * EXACTLY ONCE for this sale's lines. Clears the lock, records the KRS document numbers
+ * in `response`, and bumps `attempts` (the succeeding attempt).
+ *
+ * EXACTLY-ONCE: the mssql document write already committed (the two engines cannot share
+ * a tx), so the snapshot advance must not double-apply across retries / burned-anchor
+ * reclaims. The conditional `updateMany({ where: { snapshotAdvancedAt: null } })` is the
+ * boundary: only the FIRST attempt to reach SYNCED flips snapshotAdvancedAt and runs the
+ * decrement, both in the SAME pg tx. A later attempt finds count===0 and re-asserts the
+ * SYNCED bookkeeping WITHOUT touching the snapshot or the advance timestamp. The SYNCED
+ * fields (status, lockedAt, attempts, response, lastError) match the prior markSynced exactly.
+ */
+async function markSyncedAndAdvance(
   jobId: string,
   currentAttempts: number,
-  response: string
+  response: string,
+  lines: SnapshotAdvanceLine[]
 ): Promise<void> {
-  await prisma.syncJob.update({
-    where: { id: jobId },
-    data: {
-      status: SyncJobStatus.SYNCED,
-      lockedAt: null,
-      attempts: currentAttempts + 1,
-      response,
-      lastError: null,
-    },
+  const attempts = currentAttempts + 1;
+  await prisma.$transaction(async (tx) => {
+    const claimed = await tx.syncJob.updateMany({
+      where: { id: jobId, snapshotAdvancedAt: null },
+      data: {
+        status: SyncJobStatus.SYNCED,
+        lockedAt: null,
+        attempts,
+        response,
+        lastError: null,
+        snapshotAdvancedAt: new Date(),
+      },
+    });
+    if (claimed.count === 1) {
+      // First time this job reaches SYNCED → advance the global snapshot once.
+      await advanceGlobalSnapshotForSale(tx, lines);
+    } else {
+      // A prior attempt already advanced the snapshot (snapshotAdvancedAt set). Ensure the
+      // SYNCED bookkeeping WITHOUT re-advancing the snapshot or re-stamping the timestamp.
+      await tx.syncJob.update({
+        where: { id: jobId },
+        data: {
+          status: SyncJobStatus.SYNCED,
+          lockedAt: null,
+          attempts,
+          response,
+          lastError: null,
+        },
+      });
+    }
   });
 }
 
@@ -312,10 +384,13 @@ export async function runDispatch(): Promise<DispatchResult> {
         const exists = await checkKrsSaleExists(job.krsClaimedTxnNo, sandboxConfig);
         if (exists) {
           // FOUND: phase-1 committed in a prior attempt. Recover without re-writing.
-          await markSynced(
+          // Advance the global snapshot EXACTLY ONCE (guarded by snapshotAdvancedAt): if a
+          // prior attempt already advanced it, markSyncedAndAdvance re-asserts SYNCED only.
+          await markSyncedAndAdvance(
             job.id,
             job.attempts,
-            JSON.stringify({ transactionNo: job.krsClaimedTxnNo, recovered: true })
+            JSON.stringify({ transactionNo: job.krsClaimedTxnNo, recovered: true }),
+            payload.items.map((it) => ({ itemCode: it.itemCode, qty: it.quantity }))
           );
           result.synced += 1;
           logger.info(
@@ -405,7 +480,9 @@ export async function runDispatch(): Promise<DispatchResult> {
       const writeResult = await writeKrsSale(payload, sandboxConfig, opts);
       // Store ALL returned KRS document numbers in SyncJob.response so the sale is
       // fully traceable back to its KRS rows (sale txn/voucher, flow txn/voucher, jnl).
-      await markSynced(
+      // markSyncedAndAdvance also burns this sale's KRS stock-cut into the global snapshot
+      // EXACTLY ONCE, so the next auto-sync does not re-apply it as a fresh negative delta.
+      await markSyncedAndAdvance(
         job.id,
         job.attempts,
         JSON.stringify({
@@ -415,7 +492,8 @@ export async function runDispatch(): Promise<DispatchResult> {
           flowTxnNo: writeResult.flowTxnNo,
           flowVoucherNo: writeResult.flowVoucherNo,
           jnlCode: writeResult.jnlCode,
-        })
+        }),
+        payload.items.map((it) => ({ itemCode: it.itemCode, qty: it.quantity }))
       );
       result.synced += 1;
     } catch (e) {
