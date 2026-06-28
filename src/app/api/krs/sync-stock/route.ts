@@ -132,10 +132,14 @@ export async function POST(req: Request) {
         // baseline) — the snapshot must reflect the current KRS value regardless of
         // whether POS stock changed. This is the manual absolute-baseline path, not
         // the auto delta path, so it intentionally tracks the raw KRS value here.
+        // Composite-PK snapshot (Branch/Warehouse Phase 5): this manual baseline
+        // seeds the GLOBAL all-warehouse sentinel row (warehouseCode = "") that the
+        // global auto-sync delta engine reads. Per-warehouse rows are written by the
+        // auto-sync per-warehouse pass, not here.
         await prisma.krsStockSnapshot.upsert({
-          where: { itemCode: p.sku },
+          where: { itemCode_warehouseCode: { itemCode: p.sku, warehouseCode: "" } },
           update: { lastQty: new Prisma.Decimal(balance) },
-          create: { itemCode: p.sku, lastQty: new Prisma.Decimal(balance) },
+          create: { itemCode: p.sku, warehouseCode: "", lastQty: new Prisma.Decimal(balance) },
         });
 
         const target = toPosStock(balance);

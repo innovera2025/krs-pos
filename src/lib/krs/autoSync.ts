@@ -43,6 +43,13 @@ import { importKrsProducts } from "./importProducts";
  *  excluded from delta computation. */
 const LOCK_ITEM_CODE = "__LOCK__";
 
+/** The all-warehouse sentinel `warehouseCode` for the GLOBAL delta engine and the
+ *  run-lock row. After the composite-PK migration (Branch/Warehouse Phase 5) every
+ *  row written by the existing global pass uses this empty-string warehouseCode, so
+ *  the global Product.stock logic behaves identically. Per-warehouse rows (display)
+ *  carry the real KRS WarehouseCode instead. */
+const GLOBAL_WAREHOUSE_SENTINEL = "";
+
 /** A lock older than this is treated as stale (a crashed prior run) and reclaimed.
  *  Generous vs. the expected 10–30s run so a slow-but-live run is never stolen. */
 const LOCK_STALE_MS = 5 * 60 * 1000; // 5 minutes
@@ -126,9 +133,18 @@ async function acquireRunLock(runId: string): Promise<boolean> {
   // Ensure the sentinel row exists (idempotent). `lastQty` on the lock row is
   // meaningless (0); only `lockedAt` matters. Excluded from delta computation.
   await prisma.krsStockSnapshot.upsert({
-    where: { itemCode: LOCK_ITEM_CODE },
+    where: {
+      itemCode_warehouseCode: {
+        itemCode: LOCK_ITEM_CODE,
+        warehouseCode: GLOBAL_WAREHOUSE_SENTINEL,
+      },
+    },
     update: {},
-    create: { itemCode: LOCK_ITEM_CODE, lastQty: new Prisma.Decimal(0) },
+    create: {
+      itemCode: LOCK_ITEM_CODE,
+      warehouseCode: GLOBAL_WAREHOUSE_SENTINEL,
+      lastQty: new Prisma.Decimal(0),
+    },
   });
 
   // Atomic claim: set lockedAt = now ONLY if the lock is free or stale. The
@@ -140,6 +156,7 @@ async function acquireRunLock(runId: string): Promise<boolean> {
     UPDATE "KrsStockSnapshot"
        SET "lockedAt" = NOW(), "updatedAt" = NOW()
      WHERE "itemCode" = ${LOCK_ITEM_CODE}
+       AND "warehouseCode" = ${GLOBAL_WAREHOUSE_SENTINEL}
        AND ("lockedAt" IS NULL OR "lockedAt" < ${staleBefore})
   `;
   const acquired = affected === 1;
@@ -155,7 +172,12 @@ async function acquireRunLock(runId: string): Promise<boolean> {
 async function releaseRunLock(): Promise<void> {
   try {
     await prisma.krsStockSnapshot.update({
-      where: { itemCode: LOCK_ITEM_CODE },
+      where: {
+        itemCode_warehouseCode: {
+          itemCode: LOCK_ITEM_CODE,
+          warehouseCode: GLOBAL_WAREHOUSE_SENTINEL,
+        },
+      },
       data: { lockedAt: null },
     });
   } catch (e) {
@@ -263,7 +285,11 @@ export async function runAutoSync(
 
     // === STEP 5: Load existing snapshots (excluding the sentinel) ===
     const snapshots = await prisma.krsStockSnapshot.findMany({
-      where: { itemCode: { not: LOCK_ITEM_CODE } },
+      // GLOBAL pass only — restrict to the all-warehouse sentinel rows so the
+      // existing global Product.stock delta engine behaves identically. The new
+      // per-warehouse rows (warehouseCode != "") are display-only and are NOT part
+      // of this global delta computation.
+      where: { warehouseCode: GLOBAL_WAREHOUSE_SENTINEL, itemCode: { not: LOCK_ITEM_CODE } },
       select: { itemCode: true, lastQty: true },
     });
     const snapshotMap = new Map<string, number>(
@@ -323,9 +349,15 @@ export async function runAutoSync(
         errors.push(`No POS product for KRS sku ${sku}`);
         try {
           await prisma.krsStockSnapshot.upsert({
-            where: { itemCode: sku },
+            where: {
+              itemCode_warehouseCode: { itemCode: sku, warehouseCode: GLOBAL_WAREHOUSE_SENTINEL },
+            },
             update: { lastQty: new Prisma.Decimal(krsCurrentQty) },
-            create: { itemCode: sku, lastQty: new Prisma.Decimal(krsCurrentQty) },
+            create: {
+              itemCode: sku,
+              warehouseCode: GLOBAL_WAREHOUSE_SENTINEL,
+              lastQty: new Prisma.Decimal(krsCurrentQty),
+            },
           });
         } catch (snapErr) {
           errors.push(`Snapshot update failed for ${sku}: ${safeErrMsg(snapErr)}`);
@@ -343,9 +375,15 @@ export async function runAutoSync(
         // the stock column, but persist the new snapshot.
         try {
           await prisma.krsStockSnapshot.upsert({
-            where: { itemCode: sku },
+            where: {
+              itemCode_warehouseCode: { itemCode: sku, warehouseCode: GLOBAL_WAREHOUSE_SENTINEL },
+            },
             update: { lastQty: new Prisma.Decimal(krsCurrentQty) },
-            create: { itemCode: sku, lastQty: new Prisma.Decimal(krsCurrentQty) },
+            create: {
+              itemCode: sku,
+              warehouseCode: GLOBAL_WAREHOUSE_SENTINEL,
+              lastQty: new Prisma.Decimal(krsCurrentQty),
+            },
           });
         } catch (snapErr) {
           errors.push(`Snapshot update failed for ${sku}: ${safeErrMsg(snapErr)}`);
@@ -377,9 +415,15 @@ export async function runAutoSync(
             },
           });
           await tx.krsStockSnapshot.upsert({
-            where: { itemCode: sku },
+            where: {
+              itemCode_warehouseCode: { itemCode: sku, warehouseCode: GLOBAL_WAREHOUSE_SENTINEL },
+            },
             update: { lastQty: new Prisma.Decimal(krsCurrentQty) },
-            create: { itemCode: sku, lastQty: new Prisma.Decimal(krsCurrentQty) },
+            create: {
+              itemCode: sku,
+              warehouseCode: GLOBAL_WAREHOUSE_SENTINEL,
+              lastQty: new Prisma.Decimal(krsCurrentQty),
+            },
           });
         });
         totalDelta += appliedDelta;
@@ -406,7 +450,9 @@ export async function runAutoSync(
         // No POS product to adjust — just reset the snapshot to 0.
         try {
           await prisma.krsStockSnapshot.update({
-            where: { itemCode: sku },
+            where: {
+              itemCode_warehouseCode: { itemCode: sku, warehouseCode: GLOBAL_WAREHOUSE_SENTINEL },
+            },
             data: { lastQty: new Prisma.Decimal(0) },
           });
         } catch (snapErr) {
@@ -435,7 +481,9 @@ export async function runAutoSync(
             });
           }
           await tx.krsStockSnapshot.update({
-            where: { itemCode: sku },
+            where: {
+              itemCode_warehouseCode: { itemCode: sku, warehouseCode: GLOBAL_WAREHOUSE_SENTINEL },
+            },
             data: { lastQty: new Prisma.Decimal(0) },
           });
         });
@@ -445,6 +493,82 @@ export async function runAutoSync(
         const msg = safeErrMsg(txErr);
         logger.error({ err: msg, krsAutoSync: { runId, sku } }, "KRS auto-sync: POS write failed for disappeared sku");
         errors.push(`POS write failed for disappeared ${sku}: ${msg}`);
+      }
+    }
+
+    // === STEP 8c: Per-warehouse stock pass (Branch/Warehouse Phase 5 — DISPLAY-ONLY) ===
+    // Runs AFTER the global Product.stock pass above and is fully independent of it:
+    // it never touches Product.stock or StockMovement. For each known POS Warehouse it
+    // re-reads sp_Onhand SCOPED to that single warehouse and mirrors the raw KRS
+    // on-hand into:
+    //   - WarehouseStock(sku, warehouseCode, qty)  → read by GET /api/products to
+    //     scope the product grid's stock badge to the logged-in user's warehouse.
+    //   - KrsStockSnapshot(itemCode, warehouseCode) → seeds a per-warehouse snapshot
+    //     for a FUTURE per-warehouse delta engine (display-only today).
+    //
+    // FAIL-SAFE: a per-warehouse failure is NON-FATAL — it is collected into `errors`
+    // (degrading the run to PARTIAL) and the loop continues. A bad warehouse never
+    // aborts the run nor disturbs the already-committed global pass. Cross-engine
+    // separation holds: the KRS read (mssql) is OUTSIDE every Prisma write.
+    let warehouses: { warehouseCode: string }[] = [];
+    try {
+      warehouses = await prisma.warehouse.findMany({ select: { warehouseCode: true } });
+    } catch (whListErr) {
+      const msg = safeErrMsg(whListErr);
+      logger.error({ err: msg, krsAutoSync: { runId } }, "KRS auto-sync: warehouse list load failed (per-warehouse pass skipped)");
+      errors.push(`Warehouse list load failed: ${msg}`);
+    }
+
+    for (const wh of warehouses) {
+      const warehouseCode = wh.warehouseCode;
+      // Skip the global sentinel defensively — it is not a real KRS warehouse and a
+      // per-warehouse snapshot at warehouseCode="" would collide with the global rows.
+      if (warehouseCode === GLOBAL_WAREHOUSE_SENTINEL) continue;
+
+      // KRS read SCOPED to this warehouse (mssql, OUTSIDE any Prisma write). A fetch
+      // fault here is non-fatal: record + continue to the next warehouse.
+      let whBalances: KrsStockBalance[];
+      try {
+        whBalances = await fetchKrsStockBalances(config, warehouseCode);
+      } catch (whFetchErr) {
+        const msg = safeErrMsg(whFetchErr);
+        logger.error(
+          { err: msg, krsAutoSync: { runId, warehouseCode } },
+          "KRS auto-sync: per-warehouse sp_Onhand failed — skipping warehouse (non-fatal)"
+        );
+        errors.push(`Warehouse ${warehouseCode} stock fetch failed: ${msg}`);
+        continue;
+      }
+
+      for (const b of whBalances) {
+        // Never persist the lock sentinel as a per-warehouse row — a (hypothetical)
+        // KRS item literally named "__LOCK__" must not seed a snapshot a future
+        // per-warehouse delta engine would misread. Mirrors the global pass filter.
+        if (b.itemCode === LOCK_ITEM_CODE) continue;
+        const sku = b.itemCode;
+        const qty = Math.max(0, Math.round(b.balance));
+        // WarehouseStock (display value). Each upsert is independently try/caught so a
+        // single bad row never aborts the warehouse or the run.
+        try {
+          await prisma.warehouseStock.upsert({
+            where: { sku_warehouseCode: { sku, warehouseCode } },
+            update: { qty },
+            create: { sku, warehouseCode, qty },
+          });
+        } catch (wsErr) {
+          errors.push(`WarehouseStock upsert failed for ${sku}@${warehouseCode}: ${safeErrMsg(wsErr)}`);
+        }
+        // Per-warehouse KrsStockSnapshot (raw fractional KRS balance) — seeds a future
+        // per-warehouse delta engine. Independent of the global-sentinel snapshot rows.
+        try {
+          await prisma.krsStockSnapshot.upsert({
+            where: { itemCode_warehouseCode: { itemCode: sku, warehouseCode } },
+            update: { lastQty: new Prisma.Decimal(b.balance) },
+            create: { itemCode: sku, warehouseCode, lastQty: new Prisma.Decimal(b.balance) },
+          });
+        } catch (snapErr) {
+          errors.push(`Per-warehouse snapshot upsert failed for ${sku}@${warehouseCode}: ${safeErrMsg(snapErr)}`);
+        }
       }
     }
 

@@ -13,10 +13,20 @@ import { logger } from "@/lib/logger";
 // AUTH (auth Phase 2): requires an authenticated session (requireUser, NOT
 // requireAdmin). Cashiers need the product grid to ring up sales at /pos, so
 // over-gating this to admin would break the seller flow.
+//
+// PER-WAREHOUSE STOCK DISPLAY (Branch/Warehouse Phase 5 — DISPLAY-ONLY): when the
+// signed-in user has an assigned `warehouseCode` (read SERVER-SIDE from the session
+// only — never a client/query param), each product's `stock` is overridden with that
+// warehouse's last-synced KRS on-hand (WarehouseStock.qty), defaulting to 0 when the
+// warehouse has no row for the sku. An UNASSIGNED user (warehouseCode = null) gets
+// the global `Product.stock` unchanged (fallback). The response shape is IDENTICAL
+// (`Product[]` with a numeric `stock`), so the POS client + effectiveStock need no
+// change. This is DISPLAY-ONLY — checkout still decrements/guards `Product.stock`.
 export async function GET(req: Request) {
   return runWithRequestId(req, async () => {
     const gate = await requireUser();
     if ("response" in gate) return gate.response;
+    const warehouseCode = gate.session.user.warehouseCode ?? null;
 
     try {
       const products = await prisma.product.findMany({
@@ -24,7 +34,26 @@ export async function GET(req: Request) {
         include: { category: true },
         orderBy: { name: "asc" },
       });
-      return NextResponse.json(products);
+
+      // Unassigned user → global Product.stock (fallback), shape unchanged.
+      if (warehouseCode === null) {
+        return NextResponse.json(products);
+      }
+
+      // Assigned user → override each product's stock with the per-warehouse on-hand
+      // (display value), 0 when the warehouse has no row for that sku.
+      const warehouseStock = await prisma.warehouseStock.findMany({
+        where: { warehouseCode },
+        select: { sku: true, qty: true },
+      });
+      const stockBySku = new Map<string, number>(
+        warehouseStock.map((w) => [w.sku, w.qty])
+      );
+      const scoped = products.map((p) => ({
+        ...p,
+        stock: stockBySku.get(p.sku) ?? 0,
+      }));
+      return NextResponse.json(scoped);
     } catch (err) {
       logger.error({ err }, "GET /api/products failed");
       return NextResponse.json(

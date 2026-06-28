@@ -514,20 +514,33 @@ model KrsFieldMapping {
   updatedAt   DateTime @updatedAt
 }
 
-// KRS on-hand snapshot per item (krs-sync inbound auto-pull). One row per
-// KRS ItemCode (= POS Product.sku). Stores the last-seen sp_Onhand Balqty
-// so the auto-sync delta engine can compute ERP-originated movements only
-// (delta = currentKrsQty − lastSeenKrsQty). See src/lib/krs/autoSync.ts.
+// KRS on-hand snapshot per item PER WAREHOUSE (krs-sync inbound auto-pull). The
+// primary key is the COMPOSITE (itemCode, warehouseCode) — one row per KRS ItemCode
+// (= POS Product.sku) per warehouse. Stores the last-seen sp_Onhand Balqty so a
+// delta engine can compute ERP-originated movements only (delta = currentKrsQty −
+// lastSeenKrsQty). See src/lib/krs/autoSync.ts.
 //
-// The magic row itemCode = "__LOCK__" is the run-lock sentinel (lockedAt field);
-// it is never a real product snapshot and is never included in delta computation.
+// warehouseCode SENTINEL — `warehouseCode = ""` (empty string) is the all-warehouse
+// row used by the EXISTING global delta engine (sp_Onhand summed across every
+// warehouse → the global Product.stock pass). Per-warehouse rows (Branch/Warehouse
+// Phase 5) carry the real KRS WarehouseCode (e.g. "WH01") and feed future
+// per-warehouse delta engines; today they are written for display only.
 //
-// ADDITIVE ONLY — no existing table altered.
+// The magic row (itemCode = "__LOCK__", warehouseCode = "") is the run-lock sentinel
+// (lockedAt field); it is never a real product snapshot and is never included in
+// delta computation.
+//
+// ADDITIVE-COMPATIBLE — the composite PK migration preserves every existing row by
+// defaulting warehouseCode to "" (the global sentinel the prior single-key engine
+// implicitly used).
 model KrsStockSnapshot {
-  itemCode  String    @id               // KRS ItemCode (trimmed) = POS Product.sku
-  lastQty   Decimal   @db.Decimal(12, 4) // last seen sp_Onhand Balqty (raw fractional)
-  lockedAt  DateTime?                   // run-lock sentinel (only itemCode="__LOCK__")
-  updatedAt DateTime  @updatedAt
+  itemCode      String                       // KRS ItemCode (trimmed) = POS Product.sku
+  warehouseCode String    @default("")       // "" = all-warehouse sentinel (global engine); else the KRS WarehouseCode
+  lastQty       Decimal   @db.Decimal(12, 4) // last seen sp_Onhand Balqty (raw fractional)
+  lockedAt      DateTime?                    // run-lock sentinel (only itemCode="__LOCK__", warehouseCode="")
+  updatedAt     DateTime  @updatedAt
+
+  @@id([itemCode, warehouseCode])
 }
 
 // Warehouse master (Branch/Warehouse program, Phase 1). Mirrors the KRS
@@ -552,4 +565,30 @@ model Warehouse {
   branchCode    String                  // KRS BranchCode this warehouse maps to
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+}
+
+// Per-warehouse on-hand stock (Branch/Warehouse program, Phase 5 — DISPLAY-ONLY).
+// One row per (sku, warehouseCode): the last-seen KRS sp_Onhand Balqty for that item
+// in that warehouse, rounded + floored at 0. Written by the per-warehouse pass of
+// the KRS auto-sync (src/lib/krs/autoSync.ts) and read by GET /api/products so the
+// product grid's "หมด"/stock badge reflects the logged-in user's assigned warehouse
+// (User.warehouseCode → session.user.warehouseCode).
+//
+// ⚠️ RAW KRS value — NOT POS-sale-adjusted. This mirrors KRS on-hand for display;
+// it is NOT the authoritative sellable stock. Checkout still decrements/guards the
+// global `Product.stock` (Phase 6 oversell guard is OUT OF SCOPE). When a user has
+// no warehouse assigned, GET /api/products falls back to the global Product.stock.
+//
+// ADDITIVE ONLY — no existing table altered; no existing flow touched.
+model WarehouseStock {
+  sku           String   // KRS ItemCode (trimmed) = Product.sku
+  warehouseCode String   // KRS WarehouseCode e.g. "WH01"
+  qty           Int      @default(0) // last-seen sp_Onhand Balqty, rounded + floored >= 0; RAW KRS (display-only)
+  updatedAt     DateTime @updatedAt
+
+  @@id([sku, warehouseCode])
+  // GET /api/products filters by warehouseCode ALONE on every product-grid load for a
+  // warehouse-assigned user. The composite PK leads with `sku`, so it can't serve that
+  // filter — index warehouseCode explicitly to avoid a per-request seq scan.
+  @@index([warehouseCode])
 }
