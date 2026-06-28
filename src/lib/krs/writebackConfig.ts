@@ -98,6 +98,13 @@ export const KRS_WRITE_CONFIG = {
   // POS Product has no unit field → the write module reads MainUnits from KRS
   // InventoryItem per ItemCode at write-time (or it can be pulled during import).
   MAIN_UNITS_SOURCE: "MainUnits", // CONFIRMED — KRS InventoryItem column name
+
+  // === SaleVAT (dbo.SalePurchaseTax) — confirmed from Salevat.xlsx ===
+  SALEVAT_IS_PURCHASE_TAX: 0, // it's a SALE
+  SALEVAT_TYPE: "Invoice",
+  SALEVAT_IS_UNDUE_VAT: 0,
+  SALEVAT_IS_FREE_VAT: 2,
+  SALEVAT_TAX_FIL: 0,
 } as const;
 
 export type KrsWriteConfig = typeof KRS_WRITE_CONFIG;

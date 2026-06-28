@@ -15,7 +15,9 @@
 //      asserting DR == CR BEFORE commit.
 //   7. INSERT dbo.InventoryFlowHdr + dbo.InventoryFlowDtl (Approved=1, IsClosed=0, InOut=-1
 //      so dbo.sp_Onhand counts the cut immediately).
-//   8. COMMIT; return the claimed doc numbers.
+//   8. INSERT dbo.SalePurchaseTax (1 row — the SaleVAT/output-VAT tax-log entry;
+//      BillAmount = ex-VAT base, VATAmount = output VAT, mirroring SalesInvoiceHdr).
+//   9. COMMIT; return the claimed doc numbers.
 //
 // INVARIANTS (all enforced below):
 //   - ONE transaction: every insert + claim + lookup runs on `new sql.Request(tx)`.
@@ -693,6 +695,44 @@ export async function writeKrsSale(
               @VoucherNo, @ItemCode, @Description, @SOTrNo, @PONo, @MainQuantity, @MainUnits);`
         );
     }
+
+    // ── Step 7c: INSERT dbo.SalePurchaseTax (SaleVAT — VAT/tax log) ──
+    // The output-VAT tax-log row for this cash sale. BillAmount = the ex-VAT base
+    // (= SalesInvoiceHdr.SubTotalAmnt), VATAmount = the output VAT (= Hdr.VATAmount) —
+    // it mirrors the Hdr's SubTotalAmnt/VATAmount split. No new RunningNumber is claimed:
+    // VoucherTrNo reuses saleTxnNo (the SaleInvoiceTrNo anchor) and VoucherNo reuses
+    // saleVoucherNo (SC-{YYMM}-{NNNN}). Roworder is identity (omitted); MyCode is optional
+    // (left null). A failure here rolls back the whole tx — correct (no partial KRS write).
+    await new sql.Request(tx)
+      .input("IsPurchaseTax", sql.Int, cfg.SALEVAT_IS_PURCHASE_TAX) // tinyint NOT NULL
+      .input("Type", sql.NVarChar, cfg.SALEVAT_TYPE) // nvarchar(30) NOT NULL
+      .input("VoucherTrNo", sql.Decimal(18, 0), Number(saleTxnNo)) // decimal NOT NULL (= SaleInvoiceTrNo)
+      .input("IsUndueVAT", sql.Int, cfg.SALEVAT_IS_UNDUE_VAT) // tinyint
+      .input("IsFreeVAT", sql.Int, cfg.SALEVAT_IS_FREE_VAT) // tinyint
+      .input("CompanyCode", sql.NVarChar, cfg.COMPANY_CODE)
+      .input("CustOrSuppCode", sql.NVarChar, custCode)
+      .input("CustOrSuppName", sql.NVarChar, custName)
+      .input("VoucherDate", sql.Date, saleDate)
+      .input("VoucherNo", sql.NVarChar, saleVoucherNo)
+      .input("ActualInvoiceDate", sql.Date, saleDate)
+      .input("ActualInvoiceNo", sql.NVarChar, saleVoucherNo) // nvarchar(50) NOT NULL
+      .input("Description", sql.NVarChar, cfg.ACCOUNTS_DESCRIPTION)
+      .input("BillAmount", sql.Decimal(18, 2), exVatSatang / 100) // ex-VAT base (matches SubTotalAmnt)
+      .input("VATAmount", sql.Decimal(18, 2), money(payload.tax))
+      .input("TaxFil", sql.Int, cfg.SALEVAT_TAX_FIL) // tinyint
+      .input("VATPercent", sql.Decimal(18, 2), cfg.VAT_PERCENT)
+      .input("BranchCode", sql.NVarChar, payload.branchCode)
+      .input("BranchName", sql.NVarChar, payload.branchName)
+      .query(
+        `INSERT INTO dbo.SalePurchaseTax
+           (IsPurchaseTax, Type, VoucherTrNo, IsUndueVAT, IsFreeVAT, CompanyCode, CustOrSuppCode, CustOrSuppName,
+            VoucherDate, VoucherNo, ActualInvoiceDate, ActualInvoiceNo, Description, BillAmount, VATAmount, TaxFil,
+            VATPercent, BranchCode, BranchName)
+         VALUES
+           (@IsPurchaseTax, @Type, @VoucherTrNo, @IsUndueVAT, @IsFreeVAT, @CompanyCode, @CustOrSuppCode, @CustOrSuppName,
+            @VoucherDate, @VoucherNo, @ActualInvoiceDate, @ActualInvoiceNo, @Description, @BillAmount, @VATAmount, @TaxFil,
+            @VATPercent, @BranchCode, @BranchName);`
+      );
 
     // ── Step 8: COMMIT ──
     await tx.commit();
