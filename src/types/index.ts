@@ -25,6 +25,9 @@ export type Warehouse = {
   warehouseCode: string;
   warehouseName: string;
   branchCode: string;
+  // KRS `Branch.BranchName` for `branchCode` (resolved via the Warehouse→Branch
+  // join on pull; seeded for WH01–WH04). Nullable until a pull/seed fills it.
+  branchName?: string | null;
 };
 
 export type CartItem = {

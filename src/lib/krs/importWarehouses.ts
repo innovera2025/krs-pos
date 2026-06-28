@@ -29,8 +29,8 @@ export type ImportWarehousesResult = {
  *   - trim the fields defensively (the fetch already trims, but the importer is
  *     reusable and must not trust its input)
  *   - SKIP a record with a blank `warehouseCode` (cannot key the upsert)
- *   - CREATE: warehouseCode + warehouseName + branchCode
- *   - UPDATE: warehouseName + branchCode (the code is the immutable key)
+ *   - CREATE: warehouseCode + warehouseName + branchCode + branchName
+ *   - UPDATE: warehouseName + branchCode + branchName (the code is the immutable key)
  *
  * Counted by a per-record pre-check (warehouseCode) so the result reports
  * created vs updated; the upsert itself is still atomic. Returns { created,
@@ -49,6 +49,11 @@ export async function importKrsWarehouses(
 
     const warehouseName = rec.warehouseName.trim();
     const branchCode = rec.branchCode.trim();
+    // branchName is nullable: trim to a non-empty value, else null (the Branch join
+    // may miss). Stored so checkout can resolve the cashier's real KRS branch name.
+    const trimmedBranchName = rec.branchName?.trim();
+    const branchName =
+      trimmedBranchName && trimmedBranchName.length > 0 ? trimmedBranchName : null;
 
     // Pre-check by the natural key so we can report created/updated; the upsert is
     // still atomic.
@@ -62,11 +67,13 @@ export async function importKrsWarehouses(
       update: {
         warehouseName,
         branchCode,
+        branchName,
       },
       create: {
         warehouseCode,
         warehouseName,
         branchCode,
+        branchName,
       },
       select: { warehouseCode: true },
     });

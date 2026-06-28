@@ -563,6 +563,7 @@ model Warehouse {
   warehouseCode String   @id            // KRS WarehouseCode (e.g. "WH01")
   warehouseName String                  // KRS WarehouseName (Thai)
   branchCode    String                  // KRS BranchCode this warehouse maps to
+  branchName    String?                 // KRS Branch.BranchName (via Branch join); nullable until a KRS pull/seed fills it
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }

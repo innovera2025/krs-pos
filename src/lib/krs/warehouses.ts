@@ -13,11 +13,12 @@
 //     error (which can embed the config/password) is NEVER logged or propagated.
 //
 // FIXED source (no injection surface): unlike the product pull, the warehouse source
-// table and columns are HARDCODED here (`dbo.Warehouse` → WarehouseCode/WarehouseName/
-// BranchCode), not config-supplied. The SELECT is therefore a CONSTANT string with no
-// user/config input — the same parameter-free, injection-free shape as the schema
-// browser's fixed `listKrsTablesWithConfig` query. No QUOTENAME/sp_executesql is
-// needed because nothing untrusted is interpolated.
+// table and columns are HARDCODED here (`dbo.Warehouse w LEFT JOIN dbo.Branch b ON
+// b.BranchCode = w.BranchCode` → WarehouseCode/WarehouseName/BranchCode + the joined
+// Branch.BranchName), not config-supplied. The SELECT is therefore a CONSTANT string
+// with no user/config input — the same parameter-free, injection-free shape as the
+// schema browser's fixed `listKrsTablesWithConfig` query. No QUOTENAME/sp_executesql
+// is needed because nothing untrusted is interpolated.
 
 import sql from "mssql";
 import { safeErrorParts } from "./client";
@@ -35,6 +36,9 @@ export type KrsWarehouseRecord = {
   warehouseCode: string;
   warehouseName: string;
   branchCode: string;
+  /** KRS `Branch.BranchName` (resolved via the LEFT JOIN on BranchCode), or null
+   *  when the warehouse's BranchCode has no matching `dbo.Branch` row. */
+  branchName: string | null;
 };
 
 /** Trim a nullable string to a non-empty value, or null. */
@@ -71,12 +75,15 @@ export async function fetchKrsWarehouses(
       warehouseCode: unknown;
       warehouseName: unknown;
       branchCode: unknown;
+      branchName: unknown;
     }>(
       `SELECT
-         WarehouseCode AS warehouseCode,
-         WarehouseName AS warehouseName,
-         BranchCode    AS branchCode
-       FROM dbo.Warehouse;`
+         w.WarehouseCode AS warehouseCode,
+         w.WarehouseName AS warehouseName,
+         w.BranchCode    AS branchCode,
+         b.BranchName    AS branchName
+       FROM dbo.Warehouse w
+       LEFT JOIN dbo.Branch b ON b.BranchCode = w.BranchCode;`
     );
 
     const records: KrsWarehouseRecord[] = [];
@@ -91,6 +98,8 @@ export async function fetchKrsWarehouses(
         warehouseName: cleanString(row.warehouseName) ?? warehouseCode,
         // branchCode is required but never the natural key; blank → "".
         branchCode: cleanString(row.branchCode) ?? "",
+        // branchName is nullable (the Branch join may miss); trim → null when blank.
+        branchName: cleanString(row.branchName),
       });
     }
     return records;

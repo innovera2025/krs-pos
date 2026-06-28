@@ -607,8 +607,11 @@ export async function writeKrsSale(
         .input("VoucherNo", sql.NVarChar, saleVoucherNo)
         .input("JournalNo", sql.NVarChar, saleVoucherNo)
         .input("ActualInvoiceNo", sql.NVarChar, saleVoucherNo)
-        .input("BranchCode", sql.NVarChar, cfg.JOURNAL_BRANCH_CODE)
-        .input("BranchName", sql.NVarChar, cfg.JOURNAL_BRANCH_NAME)
+        // Branch/Warehouse Phase 4: TheJournal scopes to the cashier's branch (from the
+        // snapshot), not the fixed cfg.JOURNAL_BRANCH_CODE/NAME. The payload defaults to
+        // HQ ("00000"/"สำนักงานใหญ่") for an unassigned cashier, matching the old constants.
+        .input("BranchCode", sql.NVarChar, payload.branchCode)
+        .input("BranchName", sql.NVarChar, payload.branchName)
         .query(
           `INSERT INTO dbo.TheJournal
              (JnlName, JnlCode, TransactionTypeI, TransactionTypeT, CompanyCode, Department,
@@ -675,7 +678,11 @@ export async function writeKrsSale(
         .input("ReasonIndex", sql.Int, cfg.INV_REASON_INDEX)
         .input("ReasonName", sql.NVarChar, cfg.INV_REASON_NAME)
         .input("CompanyCode", sql.NVarChar, cfg.COMPANY_CODE)
-        .input("Warehouse", sql.NVarChar, cfg.WAREHOUSE)
+        // Branch/Warehouse Phase 4: the stock-cut targets the cashier's WarehouseCode
+        // (from the snapshot), not the fixed cfg.WAREHOUSE. Defaults to HQ "WH01" for an
+        // unassigned cashier, matching the old constant. DeptCode (Department, below) is
+        // CONFIRMED SHARED across warehouses ('WHE') → it stays cfg.INV_DEPT_CODE.
+        .input("Warehouse", sql.NVarChar, payload.warehouseCode)
         .input("Department", sql.NVarChar, cfg.INV_DEPT_CODE)
         .input("VoucherNo", sql.NVarChar, flowVoucherNo)
         .input("ItemCode", sql.NVarChar, item.itemCode)

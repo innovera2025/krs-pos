@@ -28,10 +28,10 @@ async function main() {
   // warehouseName/branchCode in place. warehouseCode = KRS WarehouseCode (NOT the
   // POS internal branchId); branchCode = the KRS BranchCode it maps to.
   const seedWarehouses = [
-    { warehouseCode: "WH01", warehouseName: "คลังปัตตานี", branchCode: "00000" },
-    { warehouseCode: "WH02", warehouseName: "คลังยะรัง", branchCode: "00002" },
-    { warehouseCode: "WH03", warehouseName: "คลังสุไหงโก-ลก", branchCode: "00003" },
-    { warehouseCode: "WH04", warehouseName: "คลังเขต8หาดใหญ่", branchCode: "00004" },
+    { warehouseCode: "WH01", warehouseName: "คลังปัตตานี", branchCode: "00000", branchName: "สำนักงานใหญ่" },
+    { warehouseCode: "WH02", warehouseName: "คลังยะรัง", branchCode: "00002", branchName: "สาขายะรัง" },
+    { warehouseCode: "WH03", warehouseName: "คลังสุไหงโก-ลก", branchCode: "00003", branchName: "สาขาสุไหงโก-ลก" },
+    { warehouseCode: "WH04", warehouseName: "คลังเขต8หาดใหญ่", branchCode: "00004", branchName: "สาขาเขต8หาดใหญ่" },
   ];
   for (const w of seedWarehouses) {
     await prisma.warehouse.upsert({

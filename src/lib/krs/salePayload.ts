@@ -57,10 +57,13 @@ export type SalePayload = {
   customerName: string | null;
   /** Customer.address, or null. */
   customerAddress: string | null;
-  /** Seller branch code (ShopSettings.sellerBranchCode), defaulted to HQ "00000". */
+  /** Branch code for all KRS docs — the cashier's warehouse→branch, defaulted to HQ "00000". */
   branchCode: string;
-  /** Seller branch label, defaulted to "สำนักงานใหญ่". */
+  /** Branch name for all KRS docs — the cashier's branch, defaulted to "สำนักงานใหญ่". */
   branchName: string;
+  /** KRS WarehouseCode for the InventoryFlow stock-cut — the cashier's assigned
+   *  warehouse, defaulted to HQ "WH01" (SALE_PAYLOAD_HQ_WAREHOUSE). */
+  warehouseCode: string;
   /** Per-line snapshot. */
   items: SalePayloadItem[];
 };
@@ -69,6 +72,10 @@ export type SalePayload = {
  *  never fails on a missing branch). Mirrors getSellerConfig's HQ defaults. */
 export const SALE_PAYLOAD_HQ_BRANCH_CODE = "00000";
 export const SALE_PAYLOAD_HQ_BRANCH_NAME = "สำนักงานใหญ่";
+/** The HQ warehouse default used when the cashier has no assigned warehouse (e.g.
+ *  admin), so the InventoryFlow stock-cut never fails on a missing warehouse. Mirrors
+ *  the writeback config's WAREHOUSE default ("WH01"). */
+export const SALE_PAYLOAD_HQ_WAREHOUSE = "WH01";
 
 /**
  * Validate an `unknown` value (e.g. `SyncJob.payload` read back from the DB as JSON)
@@ -146,6 +153,15 @@ export function parseSalePayload(value: unknown): SalePayload {
     customerAddress: nullableStr("customerAddress"),
     branchCode: str("branchCode"),
     branchName: str("branchName"),
+    // warehouseCode is parsed LENIENTLY (not via `str`, which would reject): a
+    // legacy/in-flight SALE snapshot enqueued before this field existed has no
+    // warehouseCode, and such a job must still dispatch. A missing/blank value falls
+    // back to the HQ warehouse so the InventoryFlow stock-cut targets WH01 — matching
+    // the pre-Phase-4 fixed behavior — instead of failing the whole write.
+    warehouseCode:
+      typeof v.warehouseCode === "string" && v.warehouseCode.length > 0
+        ? v.warehouseCode
+        : SALE_PAYLOAD_HQ_WAREHOUSE,
     items,
   };
 }

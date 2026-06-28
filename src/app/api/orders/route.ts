@@ -22,6 +22,7 @@ import {
   type SalePayload,
   SALE_PAYLOAD_HQ_BRANCH_CODE,
   SALE_PAYLOAD_HQ_BRANCH_NAME,
+  SALE_PAYLOAD_HQ_WAREHOUSE,
 } from "@/lib/krs/salePayload";
 // FIX B — only formatOrderNumber is used here now; the Bangkok day is derived
 // from the Postgres transaction clock inside nextOrderNumber (no JS day stamp).
@@ -659,16 +660,40 @@ export async function POST(req: Request) {
     });
     const shiftId = openShift?.id ?? null;
 
-    // KRS outbox (krs-sync P2): resolve the seller branch BEFORE the $transaction —
-    // getSellerConfig() hits Prisma and MUST NOT run inside the tx. It is best-effort
-    // for the outbox snapshot: a null result (seller not configured) falls back to the
-    // HQ branch defaults so the SALE SyncJob is still well-formed and the future KRS
-    // write does not fail on a missing branch. A DB error here surfaces as the route's
-    // sanitized INTERNAL 500 (same as any other pre-tx Prisma read) — acceptable, since
-    // it only fires when the DB itself is unhealthy.
+    // KRS outbox (krs-sync P2): resolve the branch/warehouse BEFORE the $transaction —
+    // both Prisma reads MUST NOT run inside the tx. It is best-effort for the outbox
+    // snapshot.
+    //
+    // Branch/Warehouse Phase 4: ALL KRS docs scope to the LOGGED-IN cashier's
+    // warehouse + branch, resolved ENTIRELY from the SERVER session — never a
+    // client-sent value. The cashier's `session.user.warehouseCode` (stamped on the
+    // JWT at sign-in, Phase 3) keys the POS `Warehouse` master, whose row carries the
+    // KRS warehouseCode + branchCode + real branchName (pulled via the KRS Branch
+    // join, Phase 1). An UNASSIGNED user (no warehouseCode, e.g. admin) FALLS BACK to
+    // the seller config (then the HQ defaults), preserving the pre-Phase-4 behavior.
+    //
+    // The Warehouse lookup is wrapped to FALL BACK to config on a transient failure
+    // (never fail the sale on it). getSellerConfig() likewise falls back to the HQ
+    // defaults on null. A DB error on getSellerConfig surfaces as the route's
+    // sanitized INTERNAL 500 (same as any other pre-tx Prisma read) — acceptable,
+    // since it only fires when the DB itself is unhealthy.
     const sellerConfig = await getSellerConfig();
-    const outboxBranchCode = sellerConfig?.branchCode ?? SALE_PAYLOAD_HQ_BRANCH_CODE;
-    const outboxBranchName = sellerConfig?.branchLabel ?? SALE_PAYLOAD_HQ_BRANCH_NAME;
+    const cashierWh = session.user.warehouseCode
+      ? await prisma.warehouse
+          .findUnique({ where: { warehouseCode: session.user.warehouseCode } })
+          .catch(() => null)
+      : null;
+    // `||` (not `??`) across the WHOLE chain: warehouses.ts maps a blank KRS
+    // BranchCode to "" (the Prisma branchCode field is non-nullable String), and `??`
+    // would NOT fall through on "", emitting an empty BranchCode to KRS. These are KRS
+    // codes/names that must be non-empty, and no valid value is falsy ("00000"/"WH01"
+    // are truthy), so `||` correctly falls through on "", null, AND undefined.
+    const outboxWarehouseCode =
+      cashierWh?.warehouseCode || SALE_PAYLOAD_HQ_WAREHOUSE;
+    const outboxBranchCode =
+      cashierWh?.branchCode || sellerConfig?.branchCode || SALE_PAYLOAD_HQ_BRANCH_CODE;
+    const outboxBranchName =
+      cashierWh?.branchName || sellerConfig?.branchLabel || SALE_PAYLOAD_HQ_BRANCH_NAME;
 
     const order = await prisma.$transaction(async (tx) => {
       // Collision-safe orderNumber from the atomic daily counter (Sub-phase C),
@@ -781,6 +806,7 @@ export async function POST(req: Request) {
         customerAddress: created.customer?.address ?? null,
         branchCode: outboxBranchCode,
         branchName: outboxBranchName,
+        warehouseCode: outboxWarehouseCode,
         items: lineItems.map((l) => {
           const prod = snapshotProductById.get(l.productId);
           return {
