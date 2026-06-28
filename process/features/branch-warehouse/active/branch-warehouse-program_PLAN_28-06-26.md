@@ -1,6 +1,6 @@
 # Branch / Warehouse-per-User — Program Plan
 
-**Created:** 28-06-26 · **Type:** multi-phase program · **Status:** Phase 1+2 in progress
+**Created:** 28-06-26 · **Type:** multi-phase program · **Status:** Phases 1-5 DONE (1-3+5 deployed `2ec417e`; Phase 4 `6feb2e9` ready to deploy — vendor confirmed DeptCode='WHE' shared); Phase 6 out of scope
 
 ## Goal (owner)
 (a) Assign a **Branch + Warehouse** when creating/editing a user (editable).
@@ -25,11 +25,11 @@ Does KRS `InventoryFlow.DeptCode='WHE'` vary per warehouse, or is it shared by a
 ## Phases (low→high risk; each independently shippable)
 | # | Phase | Risk | Status |
 |---|-------|------|--------|
-| 1 | Warehouse master (POS `Warehouse` model + KRS pull + seed + GET) | low | IN PROGRESS |
-| 2 | User ↔ Warehouse assignment (create/edit UI+API; req a) | low | IN PROGRESS |
-| 3 | Session carries warehouseCode + derived branchCode (JWT/session plumbing; req b) | medium | pending |
-| 4 | Sale + KRS docs scoped to user's branch/warehouse (req b) — GATED on vendor DeptCode; run pricing-tester | medium | pending |
-| 5 | Per-warehouse stock storage+sync+**display** ("หมด" per warehouse; req c) — DISPLAY-ONLY | high | pending |
+| 1 | Warehouse master (POS `Warehouse` model + KRS pull + seed + GET) | low | ✅ DONE `3f342be` |
+| 2 | User ↔ Warehouse assignment (create/edit UI+API; req a) | low | ✅ DONE `c5079ce` |
+| 3 | Session carries warehouseCode + derived branchCode (JWT/session plumbing; req b) | medium | ✅ DONE `60266ff` |
+| 4 | Sale + KRS docs scoped to user's branch/warehouse (req b) — vendor confirmed DeptCode='WHE' shared; pricing-tester PASS + review SHIP | medium | ✅ DONE `6feb2e9` (Warehouse.branchName from KRS Branch; cashier branch on all docs; HQ fallback) |
+| 5 | Per-warehouse stock storage+sync+**display** ("หมด" per warehouse; req c) — DISPLAY-ONLY | high | ✅ DONE `2ec417e` (verified live: WH01=9 items) |
 | ~~6~~ | ~~Warehouse oversell guard at checkout~~ | ~~high~~ | **out of scope (display-only)** |
 
 ## Phase 1 — touchpoints
