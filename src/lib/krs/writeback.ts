@@ -167,14 +167,20 @@ export function formatVoucherNo(prefix: string, yymm: string, n: number): string
   return `${prefix}-${yymm}-${String(n).padStart(4, "0")}`;
 }
 
-/** Parse a sale ISO instant to a JS Date for the date columns (VoucherDate / DueDate /
- *  InOutDate). Throws on an unparseable value. Pure: no I/O. */
-function toDate(isoDate: string): Date {
+/** The sale's Asia/Bangkok CALENDAR DATE as a date-only JS Date (UTC-midnight of that
+ *  calendar day) for the KRS document-date columns (VoucherDate / DueDate / JnlDate /
+ *  ApprovedDate / InOutDate). Bound via sql.Date so KRS receives a pure DATE with no
+ *  time (the columns are datetime but treated as document dates). Asia/Bangkok (UTC+7,
+ *  no DST — a fixed offset is exact and dependency-free) matches deriveYYMM, so a
+ *  late-evening sale lands on the correct business day instead of slipping to the UTC
+ *  date. Throws on an unparseable value. Pure: no I/O. */
+function toBangkokDate(isoDate: string): Date {
   const d = new Date(isoDate);
   if (Number.isNaN(d.getTime())) {
     throw new KrsWriteError(`Invalid sale date "${isoDate}"`);
   }
-  return d;
+  const bkk = new Date(d.getTime() + 7 * 60 * 60 * 1000);
+  return new Date(Date.UTC(bkk.getUTCFullYear(), bkk.getUTCMonth(), bkk.getUTCDate()));
 }
 
 /** Bind a 2dp money string as DECIMAL(18,2). mssql accepts a JS number for a DECIMAL
@@ -394,7 +400,7 @@ export async function writeKrsSale(
 
   // (3) Derive the per-month tokens and the date columns (pure — no I/O).
   const yymm = deriveYYMM(payload.createdAt);
-  const saleDate = toDate(payload.createdAt);
+  const saleDate = toBangkokDate(payload.createdAt);
 
   let pool: sql.ConnectionPool | null = null;
   let burnTx: sql.Transaction | null = null;   // phase-0 short tx (READ COMMITTED)
@@ -488,13 +494,13 @@ export async function writeKrsSale(
       .input("TransactionTypeT", sql.Int, cfg.TRANSACTION_TYPE_T)
       .input("CompanyCode", sql.NVarChar, cfg.COMPANY_CODE)
       .input("VoucherNo", sql.NVarChar, saleVoucherNo)
-      .input("VoucherDate", sql.DateTime, saleDate)
+      .input("VoucherDate", sql.Date, saleDate)
       .input("DocuType", sql.NVarChar, cfg.DOCU_TYPE)
       .input("CustOrSuppCode", sql.NVarChar, custCode)
       .input("CustOrSuppName", sql.NVarChar, custName)
       .input("Address", sql.NVarChar, custAddress)
       .input("DeliveryAddress", sql.NVarChar, custAddress)
-      .input("DueDate", sql.DateTime, saleDate)
+      .input("DueDate", sql.Date, saleDate)
       .input("IsVAT", sql.Int, cfg.IS_VAT)
       .input("IsClosed", sql.Int, cfg.IS_CLOSED)
       .input("IsPaid", sql.Int, cfg.IS_PAID)
@@ -588,7 +594,7 @@ export async function writeKrsSale(
         .input("CompanyCode", sql.NVarChar, cfg.COMPANY_CODE)
         .input("Department", sql.NVarChar, cfg.JOURNAL_DEPARTMENT)
         .input("GLAccount", sql.NVarChar, jr.account)
-        .input("JnlDate", sql.DateTime, saleDate)
+        .input("JnlDate", sql.Date, saleDate)
         .input("Description", sql.NVarChar, cfg.JOURNAL_DESCRIPTION)
         .input("DrCr", sql.NVarChar, jr.drcr)
         .input("Currency", sql.NVarChar, cfg.JOURNAL_CURRENCY)
@@ -620,10 +626,10 @@ export async function writeKrsSale(
       .input("TransactionType", sql.Int, cfg.INV_TRANSACTION_TYPE)
       .input("Approved", sql.Int, cfg.INV_APPROVED)
       .input("ApprovedBy", sql.NVarChar, payload.cashierName)
-      .input("ApprovedDate", sql.DateTime, saleDate)
+      .input("ApprovedDate", sql.Date, saleDate)
       .input("IsAssetForm", sql.Int, cfg.INV_IS_ASSET_FORM)
       .input("IsClosed", sql.Int, cfg.INV_IS_CLOSED)
-      .input("InOutDate", sql.DateTime, saleDate)
+      .input("InOutDate", sql.Date, saleDate)
       .input("InOut", sql.Int, cfg.IN_OUT)
       .input("ReasonIndex", sql.Int, cfg.INV_REASON_INDEX)
       .input("ReasonName", sql.NVarChar, cfg.INV_REASON_NAME)
@@ -662,7 +668,7 @@ export async function writeKrsSale(
         .input("IsStock", sql.Int, cfg.INV_IS_STOCK)
         .input("IsClosed", sql.Int, cfg.INV_IS_CLOSED)
         .input("Approved", sql.Int, cfg.INV_APPROVED)
-        .input("InOutDate", sql.DateTime, saleDate)
+        .input("InOutDate", sql.Date, saleDate)
         .input("InOut", sql.Int, cfg.IN_OUT)
         .input("ReasonIndex", sql.Int, cfg.INV_REASON_INDEX)
         .input("ReasonName", sql.NVarChar, cfg.INV_REASON_NAME)
