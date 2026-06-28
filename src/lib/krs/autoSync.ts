@@ -400,11 +400,11 @@ export async function runAutoSync(
       // logged + collected and the run continues for the rest.
       try {
         await prisma.$transaction(async (tx) => {
-          await tx.product.update({
-            where: { id: posProduct.id },
-            data: { stock: newPosStock },
-            select: { id: true },
-          });
+          // LIVE atomic clamp: add the ERP delta to the CURRENT row value (not the
+          // stale findMany snapshot in posProduct.stock). A concurrent checkout decrement
+          // between the findMany above and this write is preserved instead of clobbered.
+          // Clamp to [0, POS_STOCK_MAX] mirrors the old JS Math.min/Math.max.
+          await tx.$executeRaw`UPDATE "Product" SET "stock" = LEAST(${POS_STOCK_MAX}, GREATEST(0, "stock" + ${intDelta})) WHERE "id" = ${posProduct.id}`;
           await tx.stockMovement.create({
             data: {
               productId: posProduct.id,
@@ -464,11 +464,9 @@ export async function runAutoSync(
       const appliedDelta = newPosStock - posProduct.stock;
       try {
         await prisma.$transaction(async (tx) => {
-          await tx.product.update({
-            where: { id: posProduct.id },
-            data: { stock: newPosStock },
-            select: { id: true },
-          });
+          // LIVE atomic clamp (same race fix as Step 8): apply the negative ERP delta to
+          // the CURRENT row value so a concurrent checkout decrement is not clobbered.
+          await tx.$executeRaw`UPDATE "Product" SET "stock" = LEAST(${POS_STOCK_MAX}, GREATEST(0, "stock" + ${intDelta})) WHERE "id" = ${posProduct.id}`;
           if (intDelta !== 0) {
             await tx.stockMovement.create({
               data: {
