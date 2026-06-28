@@ -21,6 +21,26 @@ async function main() {
     create: { id: "singleton" },
   });
 
+  // Warehouse master (Branch/Warehouse program, Phase 1) — the four known KRS
+  // warehouses (WH01–WH04) seeded as a FALLBACK so the feature works before the
+  // first `POST /api/krs/pull-warehouses`. Idempotent upsert on the natural key
+  // `warehouseCode` (re-run = no-op via update:{}); a real KRS pull later refreshes
+  // warehouseName/branchCode in place. warehouseCode = KRS WarehouseCode (NOT the
+  // POS internal branchId); branchCode = the KRS BranchCode it maps to.
+  const seedWarehouses = [
+    { warehouseCode: "WH01", warehouseName: "คลังปัตตานี", branchCode: "00000" },
+    { warehouseCode: "WH02", warehouseName: "คลังยะรัง", branchCode: "00002" },
+    { warehouseCode: "WH03", warehouseName: "คลังสุไหงโก-ลก", branchCode: "00003" },
+    { warehouseCode: "WH04", warehouseName: "คลังเขต8หาดใหญ่", branchCode: "00004" },
+  ];
+  for (const w of seedWarehouses) {
+    await prisma.warehouse.upsert({
+      where: { warehouseCode: w.warehouseCode },
+      update: {},
+      create: w,
+    });
+  }
+
   // Categories — 4 categories matching the Taste catalog
   // (drink / food / dessert / goods). The UI maps these names to slugs+icons.
   const drink = await prisma.category.upsert({

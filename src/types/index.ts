@@ -14,6 +14,19 @@ export type Product = {
   category?: { id: string; name: string } | null;
 };
 
+/**
+ * A warehouse as returned by GET /api/warehouses (Branch/Warehouse program, Phase
+ * 1). Mirrors the POS `Warehouse` master pulled from KRS `dbo.Warehouse`. Feeds the
+ * Phase-2 user warehouse picker. ⚠️ ID namespaces (never conflate): `warehouseCode`
+ * is the KRS WarehouseCode ("WH01"), NOT the POS internal branchId ("BR-01");
+ * `branchCode` is the KRS 5-digit BranchCode ("00000") the warehouse maps to.
+ */
+export type Warehouse = {
+  warehouseCode: string;
+  warehouseName: string;
+  branchCode: string;
+};
+
 export type CartItem = {
   product: Product;
   quantity: number;

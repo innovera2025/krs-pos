@@ -175,6 +175,14 @@ model User {
   // a branch. Single-branch deployments use the BR-01 default. Surfaced in the
   // Users & Roles table and selected by the users API.
   branchId  String   @default("BR-01")
+  // Branch/Warehouse program (Phase 2): the user's assigned KRS WarehouseCode
+  // (e.g. "WH01"), or null = unassigned. ⚠️ ID namespaces — this stores the KRS
+  // WarehouseCode ONLY; the branch is DERIVED from the Warehouse master (WH→branch
+  // is 1:1 in KRS), so branchCode is NEVER stored or conflated here. Plain nullable
+  // string (no FK) — the users API validates it against the Warehouse table on
+  // every write (never trust the client). Additive + inert downstream: nothing in
+  // checkout/auth/session/stock reads it yet (that is Phase 3+).
+  warehouseCode String?
   orders    Order[]
   // Shifts this user opened/owns as cashier (Phase 5: flow-shift-lifecycle).
   shifts    Shift[]
@@ -520,4 +528,28 @@ model KrsStockSnapshot {
   lastQty   Decimal   @db.Decimal(12, 4) // last seen sp_Onhand Balqty (raw fractional)
   lockedAt  DateTime?                   // run-lock sentinel (only itemCode="__LOCK__")
   updatedAt DateTime  @updatedAt
+}
+
+// Warehouse master (Branch/Warehouse program, Phase 1). Mirrors the KRS
+// `dbo.Warehouse` table, pulled into POS the SAME way products are pulled
+// (src/lib/krs/warehouses.ts → importWarehouses.ts → POST /api/krs/pull-warehouses).
+// Seeded with the four known KRS warehouses (WH01–WH04) as a FALLBACK so the
+// feature works before the first KRS pull.
+//
+//  - warehouseCode : the KRS WarehouseCode (e.g. "WH01") — the natural PK. NOTE the
+//                    ID namespaces (never conflate): this is the KRS WarehouseCode,
+//                    NOT the POS internal `branchId` ("BR-01") and NOT the KRS
+//                    `branchCode` below.
+//  - warehouseName : the KRS WarehouseName (Thai, e.g. "คลังปัตตานี").
+//  - branchCode    : the KRS BranchCode this warehouse maps to (e.g. "00000"). The
+//                    user's branch is DERIVED from this 1:1 WH→branch mapping
+//                    (Phase 2+). 5-digit KRS branch code, distinct from POS branchId.
+//
+// ADDITIVE ONLY — no existing table altered; no existing flow touched.
+model Warehouse {
+  warehouseCode String   @id            // KRS WarehouseCode (e.g. "WH01")
+  warehouseName String                  // KRS WarehouseName (Thai)
+  branchCode    String                  // KRS BranchCode this warehouse maps to
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }

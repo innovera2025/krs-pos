@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Database, RefreshCw, Boxes, Eye, EyeOff, Save, PackageSearch } from "lucide-react";
+import { Database, RefreshCw, Boxes, Eye, EyeOff, Save, PackageSearch, Warehouse } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
 import type { KrsConnectionSettingsDTO } from "@/types";
 import type { DbState, SyncMode } from "./connectionTypes";
@@ -56,6 +56,9 @@ export function ConnectionTab({
   // Inbound "pull products from KRS" busy flag (krs-sync). Disables the button +
   // drives its label while the POST is in flight.
   const [pulling, setPulling] = useState(false);
+  // Inbound "pull warehouses from KRS" busy flag (Branch/Warehouse Phase 1). Mirrors
+  // `pulling` — disables the button + drives its label while the POST is in flight.
+  const [pullingWh, setPullingWh] = useState(false);
 
   // Guard against a deferred setState after unmount (load/save/test are async).
   const mountedRef = useRef(true);
@@ -256,6 +259,46 @@ export function ConnectionTab({
     }
   }, [pulling, showToast]);
 
+  // ---- Pull warehouses from KRS (inbound, POST) ----
+  //
+  // Reads the KRS warehouse master (dbo.Warehouse) and upserts it into the POS
+  // Warehouse model via /api/krs/pull-warehouses. Admin-only on the server (same
+  // requireAdmin gate as pull-products). Shows a result summary (created / updated)
+  // via toast. Mirrors onPullProducts' loading/result/toast handling exactly.
+  const onPullWarehouses = useCallback(async () => {
+    if (pullingWh) return;
+    setPullingWh(true);
+    showToast("กำลังดึง Warehouse จาก KRS · Pulling warehouses from KRS...");
+    try {
+      const res = await fetch("/api/krs/pull-warehouses", { method: "POST" });
+      const body = (await res.json().catch(() => null)) as
+        | {
+            ok?: boolean;
+            created?: number;
+            updated?: number;
+            total?: number;
+            error?: string;
+          }
+        | null;
+      if (!res.ok || !body?.ok) {
+        const msg = body?.error ?? "Unknown error";
+        if (mountedRef.current) showToast("ดึง Warehouse ไม่สำเร็จ: " + msg);
+        return;
+      }
+      const created = body.created ?? 0;
+      const updated = body.updated ?? 0;
+      if (mountedRef.current) {
+        showToast(
+          `ดึง Warehouse จาก KRS สำเร็จ · ใหม่ ${created} · อัปเดต ${updated}`
+        );
+      }
+    } catch {
+      if (mountedRef.current) showToast("ดึง Warehouse ไม่สำเร็จ · Pull failed");
+    } finally {
+      if (mountedRef.current) setPullingWh(false);
+    }
+  }, [pullingWh, showToast]);
+
   // Tri-state status card meta.
   const stMeta = testing
     ? { label: "กำลังทดสอบ · Testing", color: "#b45309", bg: "#fffbeb", dot: "#d97706" }
@@ -343,6 +386,18 @@ export function ConnectionTab({
           >
             <PackageSearch size={16} strokeWidth={2} />
             {pulling ? "กำลังดึงสินค้า..." : "ดึงสินค้าจาก KRS · Pull products"}
+          </button>
+          {/* Inbound pull: read the KRS warehouse master into POS. Same mint pill
+              language as the product pull to mark it as an inbound PULL action. */}
+          <button
+            type="button"
+            onClick={onPullWarehouses}
+            disabled={pullingWh}
+            className="flex h-[42px] items-center gap-2 rounded-[11px] px-4 text-[13px] font-semibold transition hover:brightness-105 disabled:opacity-60"
+            style={{ background: "#ecfdf5", color: "#047857", boxShadow: "inset 0 0 0 1px #a7f3d0" }}
+          >
+            <Warehouse size={16} strokeWidth={2} />
+            {pullingWh ? "กำลังดึง Warehouse..." : "ดึง Warehouse จาก KRS · Pull warehouses"}
           </button>
         </div>
       </div>
