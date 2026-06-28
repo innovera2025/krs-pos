@@ -26,6 +26,17 @@ type RoleContextValue = {
   role: AppRole;
   /** The logged-in user's display name, when available (shown in the NavRail). */
   userName: string | null;
+  /**
+   * Branch/Warehouse program (Phase 3): the logged-in user's KRS WarehouseCode
+   * (or null when unassigned), read from the session. Inert plumbing for now — the
+   * POS client consumes it for per-warehouse stock display in Phase 5.
+   */
+  warehouseCode: string | null;
+  /**
+   * Branch/Warehouse program (Phase 3): the branch DERIVED from the Warehouse
+   * master (or null), read from the session. Consumed by Phase 4/5 client surfaces.
+   */
+  branchCode: string | null;
   // false until the session status is resolved (not "loading"). Guards
   // (AdminOnly) wait for this before trusting `role`, so a seller never sees an
   // admin screen flash while the session is still loading.
@@ -50,8 +61,16 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
 
   const userName = session?.user?.name ?? null;
 
+  // Branch/Warehouse program (Phase 3): surface the user's warehouse + derived
+  // branch from the session so the POS client can scope stock display in Phase 5.
+  // null when unassigned or before the session resolves.
+  const warehouseCode = session?.user?.warehouseCode ?? null;
+  const branchCode = session?.user?.branchCode ?? null;
+
   return (
-    <RoleContext.Provider value={{ role, userName, hydrated }}>
+    <RoleContext.Provider
+      value={{ role, userName, warehouseCode, branchCode, hydrated }}
+    >
       {children}
     </RoleContext.Provider>
   );

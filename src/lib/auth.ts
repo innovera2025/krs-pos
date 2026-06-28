@@ -18,6 +18,14 @@ import { isAdminRole } from "@/lib/authRole";
  *   if ("response" in gate) return gate.response;
  *   const { session } = gate;  // session.user.id / session.user.role available
  *
+ * Branch/Warehouse program (Phase 3): the returned `session.user` ALSO carries the
+ * caller's `warehouseCode` (KRS WarehouseCode, or null when unassigned) and the
+ * DERIVED `branchCode` (from the Warehouse master, or null) — stamped onto the JWT
+ * in src/auth.ts and copied onto the session in src/auth.config.ts. The returned
+ * shape is unchanged (still `{ session }`); these are additive fields on
+ * `session.user` that Phase 4 checkout reads as `gate.session.user.warehouseCode`
+ * / `gate.session.user.branchCode`.
+ *
  * The jwt callback already invalidates tokens for deactivated/removed users, so a
  * non-null session here implies a live, active user.
  */

@@ -63,6 +63,12 @@ export const authConfig: NextAuthConfig = {
     session({ session, token }) {
       if (token.sub) session.user.id = token.sub;
       if (token.role) session.user.role = token.role;
+      // Branch/Warehouse program (Phase 3): copy the warehouse + derived branch
+      // from the token onto the client session. PURE field copy — NO DB read here
+      // (this file is imported by the EDGE middleware and must stay prisma-free).
+      // null is meaningful (unassigned user), so copy it through unconditionally.
+      session.user.warehouseCode = token.warehouseCode ?? null;
+      session.user.branchCode = token.branchCode ?? null;
       return session;
     },
 

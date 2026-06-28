@@ -17,6 +17,18 @@ declare module "next-auth" {
     user: {
       id: string;
       role: Role;
+      /**
+       * Branch/Warehouse program (Phase 3): the user's KRS WarehouseCode (e.g.
+       * "WH01"), or null when unassigned. Copied from the JWT in the (edge-safe)
+       * session callback — NO DB read there.
+       */
+      warehouseCode?: string | null;
+      /**
+       * Branch/Warehouse program (Phase 3): the branch DERIVED from the Warehouse
+       * master (WH→branch is 1:1 in KRS), or null. NEVER stored on User — always
+       * derived from the Warehouse table in src/auth.ts.
+       */
+      branchCode?: string | null;
     } & DefaultSession["user"];
   }
 
@@ -29,6 +41,16 @@ declare module "next-auth" {
      * invalidates every existing JWT for the user on its next request.
      */
     tokenVersion?: number;
+    /**
+     * Branch/Warehouse program (Phase 3): the user's KRS WarehouseCode (or null),
+     * carried from authorize() so the jwt callback can stamp it onto the token.
+     */
+    warehouseCode?: string | null;
+    /**
+     * Branch/Warehouse program (Phase 3): branch derived from the Warehouse master
+     * inside authorize(), carried to the jwt callback. Null when unassigned.
+     */
+    branchCode?: string | null;
   }
 }
 
@@ -54,5 +76,17 @@ declare module "@auth/core/jwt" {
      * request runs a full check and stamps it.
      */
     lastCheckedAt?: number;
+    /**
+     * Branch/Warehouse program (Phase 3): the user's KRS WarehouseCode (or null).
+     * Stamped at sign-in and refreshed on the throttled liveness re-read so a
+     * mid-shift reassignment propagates within SESSION_REVALIDATE_MS.
+     */
+    warehouseCode?: string | null;
+    /**
+     * Branch/Warehouse program (Phase 3): branch DERIVED from the Warehouse master
+     * (single source of truth), stamped + refreshed alongside warehouseCode. Null
+     * when unassigned.
+     */
+    branchCode?: string | null;
   }
 }

@@ -148,6 +148,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             failedLoginAttempts: true,
             lockedUntil: true,
             tokenVersion: true,
+            // Branch/Warehouse program (Phase 3): the user's assigned KRS
+            // WarehouseCode (or null). branchCode is NOT stored here — it is
+            // derived from the Warehouse master below.
+            warehouseCode: true,
           },
         });
 
@@ -279,15 +283,45 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           ip: auditIp,
         });
 
+        // Branch/Warehouse program (Phase 3): derive the user's branch from the
+        // Warehouse master — the SINGLE SOURCE OF TRUTH (WH→branch is 1:1 in KRS;
+        // branchCode is NEVER stored on User). A user with no warehouseCode
+        // (legacy / unassigned) resolves to branchCode = null and still logs in.
+        //
+        // FAIL-OPEN (hardening): branchCode is DISPLAY plumbing, NOT an authz input,
+        // and the user is ALREADY authenticated at this point. A transient
+        // Warehouse-table error must NOT fail the login (would otherwise propagate
+        // uncaught → 500 on the auth hotpath for warehouse-assigned users), so on
+        // any error we fall back to branchCode = null and proceed.
+        let branchCode: string | null = null;
+        if (user.warehouseCode) {
+          try {
+            const wh = await prisma.warehouse.findUnique({
+              where: { warehouseCode: user.warehouseCode },
+              select: { branchCode: true },
+            });
+            branchCode = wh?.branchCode ?? null;
+          } catch (err) {
+            logger.error(
+              { err },
+              "branch derivation failed at sign-in (fail-open: branchCode=null)"
+            );
+          }
+        }
+
         // The returned object becomes `user` in the jwt callback. The password
         // hash is deliberately excluded. `tokenVersion` is carried so the jwt
         // callback can stamp it onto the token for force-logout-all.
+        // `warehouseCode` + the derived `branchCode` are carried for Phase 3 so the
+        // jwt callback can stamp them onto the token.
         return {
           id: user.id,
           name: user.name,
           email: user.email,
           role: user.role,
           tokenVersion: user.tokenVersion,
+          warehouseCode: user.warehouseCode,
+          branchCode,
         };
       },
     }),
@@ -327,6 +361,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.id = user.id;
         token.role = user.role;
         token.tokenVersion = user.tokenVersion;
+        // Branch/Warehouse program (Phase 3): stamp the warehouse + derived branch
+        // from authorize(). Null is a valid, meaningful value (unassigned user).
+        token.warehouseCode = user.warehouseCode ?? null;
+        token.branchCode = user.branchCode ?? null;
         token.lastCheckedAt = Date.now();
         return token;
       }
@@ -348,10 +386,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!due) return token;
 
         // Due: re-read. The same single query also fetches tokenVersion for the
-        // force-logout check (no extra DB round-trip).
+        // force-logout check (no extra DB round-trip). Branch/Warehouse program
+        // (Phase 3) also re-selects warehouseCode so a mid-shift reassignment
+        // propagates within SESSION_REVALIDATE_MS.
         const fresh = await prisma.user.findUnique({
           where: { id: token.sub },
-          select: { isActive: true, role: true, tokenVersion: true },
+          select: {
+            isActive: true,
+            role: true,
+            tokenVersion: true,
+            warehouseCode: true,
+          },
         });
         if (!fresh || !fresh.isActive) {
           // Invalidate the token: drop identity so authorized()/requireUser fail.
@@ -374,6 +419,34 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // Keep the role fresh too (e.g. an admin demotion takes effect promptly)
         // and re-stamp the check time to reschedule the next throttled re-check.
         token.role = fresh.role;
+        // Branch/Warehouse program (Phase 3): refresh the warehouse + re-derive the
+        // branch from the Warehouse master (single source of truth) so a mid-shift
+        // reassignment propagates within the ~10s window. Null when unassigned.
+        //
+        // `fresh.warehouseCode` is already loaded by the query above (cannot throw),
+        // so sync it unconditionally. The branch lookup hits the DB, so it is
+        // FAIL-OPEN: on a transient error we KEEP the existing token.branchCode and
+        // never throw — the authoritative isActive/tokenVersion/role checks already
+        // ran above and stay decisive. branchCode is DISPLAY plumbing, not an authz
+        // input, and self-heals on the next throttled re-read.
+        token.warehouseCode = fresh.warehouseCode ?? null;
+        if (fresh.warehouseCode) {
+          try {
+            const wh = await prisma.warehouse.findUnique({
+              where: { warehouseCode: fresh.warehouseCode },
+              select: { branchCode: true },
+            });
+            token.branchCode = wh?.branchCode ?? null;
+          } catch (err) {
+            logger.error(
+              { err },
+              "branch re-derivation failed (fail-open: keeping prior token.branchCode)"
+            );
+          }
+        } else {
+          // No warehouse assigned → branch is definitively null (no DB call needed).
+          token.branchCode = null;
+        }
         token.lastCheckedAt = now;
       }
 
