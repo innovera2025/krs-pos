@@ -62,7 +62,7 @@ export const ProductCard = React.memo(function ProductCard({
     >
       {/* Thumbnail — enlarged so the product image dominates the card */}
       <div
-        className="relative grid h-[160px] place-items-center overflow-hidden rounded-[17px]"
+        className="product-thumb relative grid place-items-center overflow-hidden rounded-[17px]"
         style={{ background: showImg ? "#fff" : meta.gradient, color: "#0b8060" }}
       >
         {showImg ? (

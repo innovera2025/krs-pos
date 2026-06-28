@@ -851,7 +851,7 @@ export default function POSPage() {
           A <div> (not <main>) — the (shell) layout already provides the single
           <main> landmark, so exactly one main exists per page (a11y). */}
       <div className="flex min-w-0 flex-1 flex-col gap-3.5 p-[18px] pl-5">
-        <header className="flex h-[68px] items-center gap-3.5">
+        <header className="pos-header flex items-center gap-3.5">
           <div className="flex-1">
             <h1 className="m-0 text-[24px] font-bold leading-[1.08] tracking-tight">
               ขายหน้าร้าน
@@ -865,7 +865,7 @@ export default function POSPage() {
         {/* Search / scan */}
         <section>
           <label
-            className="flex h-[58px] items-center gap-[11px] rounded-[18px] border bg-white px-4"
+            className="pos-search flex items-center gap-[11px] rounded-[18px] border bg-white px-4"
             style={{ borderColor: "var(--line)", boxShadow: "var(--shadow-sm)" }}
           >
             <span className="sr-only">ค้นหาสินค้า หรือสแกนบาร์โค้ด</span>
@@ -932,10 +932,7 @@ export default function POSPage() {
                 ไม่พบสินค้า · No matching products
               </div>
             ) : (
-              <div
-                className="grid gap-3"
-                style={{ gridTemplateColumns: "repeat(auto-fill,minmax(184px,1fr))" }}
-              >
+              <div className="product-grid grid">
                 {displayProducts.map((p) => (
                   <ProductCard
                     key={p.id}

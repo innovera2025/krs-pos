@@ -136,6 +136,73 @@ textarea:focus-visible,
   gap: 14px;
 }
 
+/* Product grid — desktop default column template (equal to the original inline
+   `repeat(auto-fill, minmax(184px, 1fr))` + `gap-3` = 12px). Moved onto a class
+   so the compact breakpoint below can override it; an inline `style` cannot be
+   overridden by a media query. */
+.product-grid {
+  grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
+  gap: 12px;
+}
+
+/* POS surface base sizes — desktop defaults equal to the original hard-coded
+   Tailwind values, so desktop (>1080px) stays byte-identical; the compact
+   breakpoint below overrides only these on the 1024px touch panel. */
+.product-thumb {
+  height: 160px;
+}
+.pos-grand-total {
+  font-size: 32px;
+}
+.pos-header {
+  height: 68px;
+}
+.pos-search {
+  height: 58px;
+}
+
+/* ── Compact capacitive touch panel (≤1080px) — Winmax-T1502C 1024×768 15" 4:3 ─
+   The desktop shell leaves the product grid only ~1 column at 1024px (76px rail +
+   408px cart). This breakpoint shrinks the rail/cart/category column and re-flows
+   the product grid to multiple columns, while enlarging touch targets. Width proof
+   at 1024px: rail 60 + cart 300 = 360; workspace 664 − 38 padding = 626; minus
+   category 140 + gap 10 = 150 → product area 476px; floor(476/148) = 3 columns;
+   60 + 300 + 664 = 1024 exactly (no horizontal scroll). Desktop (>1080px) is
+   untouched because every property here has a >1080px base value above. */
+@media (max-width: 1080px) {
+  .nav-rail {
+    width: 60px;
+    padding: 12px 4px;
+  }
+  .pos-cart {
+    width: 300px;
+  }
+  .pos-grid {
+    grid-template-columns: 140px minmax(0, 1fr);
+    gap: 10px;
+  }
+  .product-grid {
+    grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+    gap: 8px;
+  }
+  .cart-qty-btn {
+    width: 40px;
+    height: 40px;
+  }
+  .product-thumb {
+    height: 110px;
+  }
+  .pos-grand-total {
+    font-size: 26px;
+  }
+  .pos-header {
+    height: 50px;
+  }
+  .pos-search {
+    height: 48px;
+  }
+}
+
 @media (max-width: 900px) {
   /* Shrink the rail to an icon-only 64px (labels already live in each button's
      `title` tooltip, so usability holds). Tighter horizontal padding keeps the

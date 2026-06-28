@@ -109,7 +109,7 @@ export function TotalsBar({
         <div className="mt-2 flex items-end justify-between">
           <span className="text-[13px] font-bold">ยอดสุทธิ · Total</span>
           <strong
-            className="mono text-[32px] font-bold leading-none"
+            className="mono pos-grand-total font-bold leading-none"
             style={{ letterSpacing: "-.04em" }}
           >
             {formatSatang(totals.totalSatang)}

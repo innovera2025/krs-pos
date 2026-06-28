@@ -99,7 +99,7 @@ export function CartLine({
           type="button"
           onClick={() => onDec(product.id)}
           aria-label={`ลดจำนวน ${product.name}`}
-          className="grid h-[30px] w-[30px] place-items-center rounded-[10px] border"
+          className="cart-qty-btn grid h-[30px] w-[30px] place-items-center rounded-[10px] border"
           style={{ background: "#f8fafc", borderColor: "var(--line)" }}
         >
           <Minus size={15} strokeWidth={2} />
@@ -114,7 +114,7 @@ export function CartLine({
           type="button"
           onClick={() => onInc(product.id)}
           aria-label={`เพิ่มจำนวน ${product.name}`}
-          className="grid h-[30px] w-[30px] place-items-center rounded-[10px] border"
+          className="cart-qty-btn grid h-[30px] w-[30px] place-items-center rounded-[10px] border"
           style={{ background: "#f8fafc", borderColor: "var(--line)" }}
         >
           <Plus size={15} strokeWidth={2} />
@@ -123,7 +123,7 @@ export function CartLine({
           type="button"
           onClick={() => onRemove(product.id)}
           aria-label={`นำ ${product.name} ออกจากตะกร้า`}
-          className="grid h-[30px] w-[30px] place-items-center rounded-[10px] border"
+          className="cart-qty-btn grid h-[30px] w-[30px] place-items-center rounded-[10px] border"
           style={{ background: "#fffafa", borderColor: "#fecaca", color: "#dc2626" }}
         >
           <Trash2 size={15} strokeWidth={2} />
