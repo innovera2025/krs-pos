@@ -638,6 +638,15 @@ model HeldBill {
   taxRequested  Boolean  @default(false)
   createdById   String   // cashier = session.user.id
   branchId      String   @default("BR-01")
+  // SOFT-DELETE marker (least-privilege). The app DB role `krs_app` holds only
+  // SELECT/INSERT/UPDATE — NOT DELETE (deliberate least-privilege; db/init/01-app-role.sh).
+  // HeldBill is the first feature that would hard-DELETE, which fails with Postgres 42501.
+  // Instead, "discard" and "consume-on-resume" set `resolvedAt` via UPDATE (allowed):
+  //   null     = ACTIVE / open / still resumable (the default for every existing row)
+  //   non-null = consumed (resumed) OR discarded — excluded from the GET list, never
+  //              re-claimable by the atomic resume UPDATE. Resolved rows simply
+  //              accumulate (small volume; a future cleanup job can purge — out of scope).
+  resolvedAt    DateTime?
   createdAt     DateTime @default(now())
 
   // GET lists a cashier's parked bills ordered by createdAt — composite index serves

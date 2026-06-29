@@ -137,7 +137,9 @@ export async function GET(req: Request) {
 
     try {
       const rows = await prisma.heldBill.findMany({
-        where: { createdById: session.user.id },
+        // `resolvedAt: null` lists only ACTIVE held bills — soft-deleted (discarded or
+        // consumed-on-resume) rows carry a non-null resolvedAt and are excluded.
+        where: { createdById: session.user.id, resolvedAt: null },
         orderBy: { createdAt: "asc" },
       });
       // The list total (totalSatang) is recomputed from the snapshot via the SAME pure
