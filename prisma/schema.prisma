@@ -601,3 +601,46 @@ model WarehouseStock {
   // filter — index warehouseCode explicitly to avoid a per-request seq scan.
   @@index([warehouseCode])
 }
+
+// Parked / held bill ("พักบิล") — a server-side SNAPSHOT of an in-progress cart so a
+// cashier can set a sale aside (e.g. customer fetches a forgotten item) and resume it
+// later, surviving a page reload or a different terminal. ADDITIVE ONLY — no existing
+// table altered; checkout/orders/money/stock/auth are untouched.
+//
+//  - label         : display label minted at park time ("HH:MM · {N} รายการ" — Thai
+//                    24h time + total piece count).
+//  - cartJson       : Json snapshot of the cart (HeldBillCartSnapshot): the line items
+//                    (productId + qty + per-line discount, plus the product name/price/
+//                    sku captured for list display) and the selected customer (or null
+//                    walk-in). ⚠️ DISPLAY/RESTORE SNAPSHOT ONLY — checkout STILL
+//                    recomputes ALL money/stock server-side from live DB prices on the
+//                    resumed bill; the snapshot's prices are never trusted as authority.
+//  - customerId     : plain TEXT (NOT a relation FK — no cascade): the customer the bill
+//                    was parked with, or null (walk-in). Kept denormalized alongside the
+//                    cartJson snapshot so a later customer edit/delete never mutates or
+//                    breaks a parked bill.
+//  - discountType /
+//    discountValue  : the bill-level discount INPUT (฿/% mode + raw value) at park time,
+//                    restored verbatim into the discount field on resume.
+//  - taxRequested   : whether the tax-invoice toggle was on at park time.
+//  - createdById    : the cashier who parked it (= session.user.id). Held bills are
+//                    SCOPED PER-CASHIER — every read/delete filters by this so one
+//                    cashier never sees or discards another's parked bill.
+//  - branchId       : multi-branch-ready (domain-multi-branch-ready); single-branch
+//                    deployments use the BR-01 default.
+model HeldBill {
+  id            String   @id @default(cuid())
+  label         String
+  cartJson      Json     // HeldBillCartSnapshot (see src/types/index.ts)
+  customerId    String?  // plain TEXT, NOT a relation FK (no cascade)
+  discountType  String   // "amount" | "percent"
+  discountValue Float
+  taxRequested  Boolean  @default(false)
+  createdById   String   // cashier = session.user.id
+  branchId      String   @default("BR-01")
+  createdAt     DateTime @default(now())
+
+  // GET lists a cashier's parked bills ordered by createdAt — composite index serves
+  // the per-cashier filter + sort in one scan.
+  @@index([createdById, createdAt])
+}

@@ -7,6 +7,7 @@ import type {
   CartItem,
   CustomerDTO,
   DiscountType,
+  HeldBillDTO,
   PayLine,
   PayMethod,
   OrderDTO,
@@ -31,6 +32,7 @@ import {
   type CustomerFormInput,
 } from "@/components/pos/CustomerFormModal";
 import { ReceiptModal } from "@/components/pos/ReceiptModal";
+import { HeldBillsModal } from "@/components/pos/HeldBillsModal";
 import { methodToEnum } from "@/components/pos/paymentMeta";
 
 /**
@@ -131,6 +133,18 @@ export default function POSPage() {
     null
   );
 
+  // ---- held bills (พักบิล) ----
+  // `heldBillsOpen` toggles the held-bills list modal; `heldCount` is the cashier's
+  // parked-bill count (drives the "บิลที่พักไว้ (N)" link under พักบิล). The count is
+  // seeded on mount from GET /api/held-bills so the badge is correct after a reload,
+  // then kept in sync optimistically by hold/resume/discard.
+  const [heldBillsOpen, setHeldBillsOpen] = useState(false);
+  const [heldCount, setHeldCount] = useState(0);
+  // In-flight guard for พักบิล (M1): a double-tap before the POST returns would write
+  // two identical HeldBill rows (the cart isn't cleared until res.ok) and
+  // double-increment heldCount. While true, the hold button is disabled.
+  const [isHolding, setIsHolding] = useState(false);
+
   const searchRef = useRef<HTMLInputElement>(null);
 
   // ---- barcode-scanner cadence capture (scan-thai-ime-fix) ----
@@ -200,6 +214,24 @@ export default function POSPage() {
       })
       .catch(() => {
         /* ignore — leave settings null → 80mm fallback */
+      });
+    return () => ctrl.abort();
+  }, []);
+
+  // Held-bill count (พักบิล). Fetched once on mount so the "บิลที่พักไว้ (N)" link is
+  // correct after a reload (parked bills live on the server, scoped per-cashier).
+  // Best-effort — a failed/slow load just leaves the count at 0; the list modal
+  // re-fetches the authoritative list when opened.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetch("/api/held-bills", { signal: ctrl.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: HeldBillDTO[] | null) => {
+        if (ctrl.signal.aborted || !Array.isArray(data)) return;
+        setHeldCount(data.length);
+      })
+      .catch(() => {
+        /* ignore — leave the count at 0 */
       });
     return () => ctrl.abort();
   }, []);
@@ -505,13 +537,136 @@ export default function POSPage() {
     showToast("ยกเลิกบิลแล้ว");
   }
 
-  function holdBill() {
+  // Park the current cart to the server (พักบิล). Builds a SNAPSHOT of the cart (line
+  // items + the product name/price/sku for list display) + the selected customer + the
+  // bill-discount/tax state, POSTs it, and on success clears the cart for the next sale.
+  // The snapshot is display/restore only — checkout still recomputes all money/stock on
+  // resume, so the captured prices are never trusted. On failure the cart is NOT cleared
+  // so the cashier doesn't lose the bill.
+  async function holdBill() {
+    if (isHolding) return;
     if (cart.length === 0) {
       showToast("ตะกร้าว่าง ไม่สามารถพักบิลได้");
       return;
     }
-    clearBill();
-    showToast("พักบิลไว้แล้ว");
+    const items = cart.map((i) => ({
+      productId: i.product.id,
+      quantity: i.quantity,
+      lineDiscountSatang: i.lineDiscountSatang,
+      // Captured for the held-bills list display only (NOT a price source).
+      productName: i.product.name,
+      productPrice: i.product.price,
+      productSku: i.product.sku,
+    }));
+    const totalQty = cart.reduce((s, i) => s + i.quantity, 0);
+    const discountValue = Number(discountDraft.trim()) || 0;
+    const label = `${new Date().toLocaleTimeString("th-TH", {
+      hour: "2-digit",
+      minute: "2-digit",
+    })} · ${totalQty} รายการ`;
+    setIsHolding(true);
+    try {
+      const res = await fetch("/api/held-bills", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          label,
+          cartJson: { items, customer },
+          customerId: customer?.id ?? null,
+          discountType,
+          discountValue,
+          taxRequested,
+          totalSatang: totals.totalSatang,
+        }),
+      });
+      if (!res.ok) {
+        showToast("พักบิลไม่สำเร็จ ลองใหม่อีกครั้ง");
+        return;
+      }
+      clearBill();
+      setHeldCount((c) => c + 1);
+      showToast("พักบิลไว้แล้ว");
+    } catch {
+      showToast("พักบิลไม่สำเร็จ ลองใหม่อีกครั้ง");
+    } finally {
+      setIsHolding(false);
+    }
+  }
+
+  // Resume a parked bill back into the cart (เรียกคืนบิล). DELETE the held bill FIRST
+  // (atomic claim) so two terminals can't restore the same bill twice — a 404 means it
+  // was already resumed/discarded elsewhere. On a successful claim, rebuild the cart from
+  // the snapshot: lines whose product is still in the loaded products list are restored;
+  // lines whose product is gone (deactivated/removed) are DROPPED and reported by SKU.
+  async function resumeBill(id: string, bill: HeldBillDTO) {
+    try {
+      const res = await fetch(`/api/held-bills/${id}`, { method: "DELETE" });
+      if (res.status === 404) {
+        showToast("บิลนี้ถูกเรียกคืนไปแล้ว");
+        setHeldCount((c) => Math.max(c - 1, 0));
+        return;
+      }
+      if (!res.ok) {
+        showToast("เรียกคืนบิลไม่สำเร็จ ลองใหม่อีกครั้ง");
+        return;
+      }
+    } catch {
+      showToast("เรียกคืนบิลไม่สำเร็จ ลองใหม่อีกครั้ง");
+      return;
+    }
+
+    const restored: CartItem[] = [];
+    const dropped: string[] = [];
+    for (const item of bill.cartJson.items) {
+      const product = products.find((p) => p.id === item.productId);
+      if (product) {
+        restored.push({
+          product,
+          quantity: item.quantity,
+          lineDiscountSatang: item.lineDiscountSatang,
+        });
+      } else {
+        dropped.push(item.productSku);
+      }
+    }
+
+    setCart(restored);
+    setDiscountType(bill.discountType);
+    setDiscountDraft(bill.discountValue > 0 ? String(bill.discountValue) : "");
+    setCustomer(bill.cartJson.customer ?? null);
+    setTaxRequested(bill.taxRequested);
+    // A resumed bill is a fresh checkout attempt — drop any stale idempotency key so the
+    // next pay mints a new one (and never replays a previous order).
+    idemKeyRef.current = null;
+    setHeldBillsOpen(false);
+    setHeldCount((c) => Math.max(c - 1, 0));
+    showToast(
+      dropped.length > 0
+        ? `เรียกคืนบิลแล้ว (ข้าม ${dropped.length} รายการที่ปิดการขาย: ${dropped.join(
+            ", "
+          )})`
+        : "เรียกคืนบิลแล้ว"
+    );
+  }
+
+  // Discard a parked bill without resuming it (ลบบิลที่พักไว้). A 404 (already gone) is
+  // treated the same as a successful delete — either way the bill is no longer parked.
+  // Returns true on success (so the modal keeps its optimistic removal) or false on
+  // failure (so the modal can roll the row back — M2/L1).
+  async function discardHeldBill(id: string): Promise<boolean> {
+    try {
+      const res = await fetch(`/api/held-bills/${id}`, { method: "DELETE" });
+      if (res.ok || res.status === 404) {
+        setHeldCount((c) => Math.max(c - 1, 0));
+        showToast("ลบบิลที่พักไว้แล้ว");
+        return true;
+      }
+      showToast("ลบบิลไม่สำเร็จ ลองใหม่อีกครั้ง");
+      return false;
+    } catch {
+      showToast("ลบบิลไม่สำเร็จ ลองใหม่อีกครั้ง");
+      return false;
+    }
   }
 
   // Enter on an exact SKU/barcode match = scan-to-cart, PLUS cadence-based
@@ -1050,6 +1205,9 @@ export default function POSPage() {
           }
           onHoldBill={holdBill}
           onCancelBill={cancelBill}
+          isHolding={isHolding}
+          heldCount={heldCount}
+          onOpenHeldBills={() => setHeldBillsOpen(true)}
           onPay={openPayment}
           payDisabled={cart.length === 0 || submitting}
           checkingOut={submitting}
@@ -1108,6 +1266,14 @@ export default function POSPage() {
         onPrint={printReceipt}
         onEmail={emailReceipt}
         onNewSale={newSale}
+      />
+
+      {/* Held-bills (พักบิล) list — resume / discard a parked bill */}
+      <HeldBillsModal
+        open={heldBillsOpen}
+        onClose={() => setHeldBillsOpen(false)}
+        onResume={resumeBill}
+        onDiscard={discardHeldBill}
       />
     </div>
   );

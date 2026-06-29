@@ -144,6 +144,62 @@ export type CustomerDTO = {
 };
 
 /**
+ * One line of a parked/held-bill cart SNAPSHOT (พักบิล). Carries the restore-time
+ * essentials (productId + quantity + per-line discount in integer satang) PLUS the
+ * product's name/price/sku captured at park time so the held-bills list can render a
+ * row without re-fetching products. ⚠️ `productPrice` is a 2dp string (the Decimal wire
+ * format) and is DISPLAY-ONLY — checkout recomputes money from live DB prices on resume.
+ */
+export type HeldBillCartItem = {
+  productId: string;
+  quantity: number;
+  lineDiscountSatang: number;
+  productName: string;
+  productPrice: string;
+  productSku: string;
+};
+
+/**
+ * The full cart SNAPSHOT stored in HeldBill.cartJson: the line items plus the selected
+ * customer (null = walk-in). The customer block mirrors the CustomerDTO fields needed to
+ * restore the selection on resume.
+ */
+export type HeldBillCartSnapshot = {
+  items: HeldBillCartItem[];
+  customer: {
+    id: string;
+    name: string;
+    taxId?: string | null;
+    phone?: string | null;
+    address?: string | null;
+    buyerBranchCode: string;
+    branchId: string;
+  } | null;
+};
+
+/**
+ * A parked/held bill as returned by the held-bills API (พักบิล). `itemCount` is Σ
+ * quantities and `totalSatang` is the bill total captured at park time — both for the
+ * list display only. `cartJson` is the full snapshot the POS replays into the cart on
+ * resume. Held bills are scoped per-cashier (createdById = session.user.id).
+ */
+export type HeldBillDTO = {
+  id: string;
+  label: string;
+  customerId: string | null;
+  customerName: string | null;
+  discountType: DiscountType;
+  discountValue: number;
+  taxRequested: boolean;
+  itemCount: number;
+  totalSatang: number;
+  createdById: string;
+  branchId: string;
+  createdAt: string;
+  cartJson: HeldBillCartSnapshot;
+};
+
+/**
  * Seller identity block for the A4 full tax invoice (Phase 4, §86/4). Mirrors
  * `SellerConfig` in src/lib/sellerConfig.ts (which reads it from env, NODE-only).
  * Declared here so the client document + the GET /api/seller-config fetch share

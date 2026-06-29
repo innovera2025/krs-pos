@@ -14,6 +14,13 @@ type TotalsBarProps = {
   onToggleDiscountType: () => void;
   onHoldBill: () => void;
   onCancelBill: () => void;
+  /** In-flight park (พักบิล) POST — disables the hold button so a double-tap can't
+   *  write two identical held bills (M1). */
+  isHolding: boolean;
+  /** Number of bills the current cashier has parked (drives the "บิลที่พักไว้" link). */
+  heldCount: number;
+  /** Open the held-bills (พักบิล) list modal. */
+  onOpenHeldBills: () => void;
   onPay: () => void;
   /** Disable pay (empty cart or in-flight checkout). */
   payDisabled: boolean;
@@ -35,6 +42,9 @@ export function TotalsBar({
   onToggleDiscountType,
   onHoldBill,
   onCancelBill,
+  isHolding,
+  heldCount,
+  onOpenHeldBills,
   onPay,
   payDisabled,
   checkingOut,
@@ -117,16 +127,30 @@ export function TotalsBar({
         </div>
       </div>
 
-      {/* Actions — hold (พักบิล) + cancel (ยกเลิกบิล), side by side per Taste */}
-      <div className="mt-[15px] grid grid-cols-2 gap-[9px]">
-        <button
-          type="button"
-          onClick={onHoldBill}
-          className="h-[46px] w-full rounded-[15px] border bg-white text-[13px] font-bold"
-          style={{ borderColor: "var(--line)", color: "#475569" }}
-        >
-          พักบิล
-        </button>
+      {/* Actions — hold (พักบิล) + cancel (ยกเลิกบิล), side by side per Taste. The
+          "บิลที่พักไว้" link sits under พักบิล when the cashier has parked bills. */}
+      <div className="mt-[15px] grid grid-cols-2 items-start gap-[9px]">
+        <div className="flex flex-col items-center gap-1">
+          <button
+            type="button"
+            onClick={onHoldBill}
+            disabled={isHolding || payDisabled}
+            className="h-[46px] w-full rounded-[15px] border bg-white text-[13px] font-bold disabled:cursor-not-allowed disabled:opacity-50"
+            style={{ borderColor: "var(--line)", color: "#475569" }}
+          >
+            {isHolding ? "กำลังพักบิล…" : "พักบิล"}
+          </button>
+          {heldCount > 0 && (
+            <button
+              type="button"
+              onClick={onOpenHeldBills}
+              className="text-[11px] font-semibold underline-offset-2 hover:underline"
+              style={{ color: "var(--brand)" }}
+            >
+              บิลที่พักไว้ ({heldCount})
+            </button>
+          )}
+        </div>
         <button
           type="button"
           onClick={onCancelBill}
