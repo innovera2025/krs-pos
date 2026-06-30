@@ -936,6 +936,31 @@ export default function POSPage() {
         return;
       }
       const order = (await res.json()) as OrderDTO;
+      // Optimistic display-only stock decrement (pos-instant-stock): subtract each
+      // just-sold line's quantity from that product's `stock` in local state so the
+      // grid's คงเหลือ/หมด badge updates instantly. Sold quantities are captured
+      // from the current `cart` HERE, BEFORE clearBill() empties it below. This is
+      // display-only — the authoritative per-warehouse stock reconciles on the next
+      // /api/products fetch (page reload / navigation) after the 60s auto-sync; that
+      // eventual consistency is acceptable, instant feedback is the goal.
+      const soldById = new Map<string, number>();
+      for (const i of cart) {
+        soldById.set(i.product.id, (soldById.get(i.product.id) ?? 0) + i.quantity);
+      }
+      setProducts((prev) =>
+        prev.map((p) => {
+          const soldQty = soldById.get(p.id) ?? 0;
+          return soldQty > 0
+            ? {
+                ...p,
+                stock: Math.max(
+                  0,
+                  (typeof p.stock === "number" ? p.stock : 0) - soldQty
+                ),
+              }
+            : p;
+        })
+      );
       // Success: open the receipt, clear the cart + payment state.
       setReceiptOrder(order);
       setReceiptOpen(true);
