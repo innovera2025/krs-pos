@@ -39,6 +39,11 @@ const MIN_PASSWORD_LEN = 8;
 const MAX_PASSWORD_LEN = 72;
 /** bcrypt cost factor — matches the seed/auth cost (12). */
 const BCRYPT_COST = 12;
+/**
+ * Maximum display-name length on an edit. Mirrors POST /api/users (which caps at
+ * 200) so the create and rename paths agree on the same bound.
+ */
+const MAX_NAME_LEN = 200;
 
 type PatchUserBody = {
   isActive?: unknown;
@@ -47,6 +52,8 @@ type PatchUserBody = {
   // Branch/Warehouse program (Phase 2): assign (string) or clear (null) the user's
   // KRS WarehouseCode.
   warehouseCode?: unknown;
+  // Edit-display-name variant: the user's new `name` (trimmed/validated below).
+  name?: unknown;
 };
 
 /**
@@ -61,6 +68,9 @@ type PatchUserBody = {
  *                              — assign (validated against the Warehouse master)
  *                                or clear (null) the user's KRS WarehouseCode
  *                                (Branch/Warehouse program, Phase 2).
+ *   { name: string }           — rename the user's display name (trimmed, non-empty,
+ *                                max 200). Display-name only — never touches
+ *                                email/role/auth/stock.
  *
  * An unrecognized shape → 400 BAD_VARIANT. The password hash is never selected
  * or returned by any branch.
@@ -264,11 +274,43 @@ export async function PATCH(
     }
   }
 
+  // --- variant: edit display name ---
+  // Body { name: string }. Renames the user's display `name` only. Trimmed +
+  // non-empty + bounded (mirrors the POST /api/users create rule) — NEVER trust the
+  // raw client value beyond the validated, trimmed name. Does not touch
+  // email/role/auth/session/stock.
+  if (typeof body.name === "string") {
+    const name = body.name.trim();
+    if (name.length === 0) {
+      return NextResponse.json(
+        { error: "กรุณากรอกชื่อผู้ใช้", code: "NAME_REQUIRED" },
+        { status: 400 }
+      );
+    }
+    if (name.length > MAX_NAME_LEN) {
+      return NextResponse.json(
+        { error: "ชื่อผู้ใช้ยาวเกินไป", code: "NAME_TOO_LONG" },
+        { status: 400 }
+      );
+    }
+    try {
+      const user = await prisma.user.update({
+        where: { id },
+        data: { name },
+        select: USER_PUBLIC_SELECT,
+      });
+      logSuccess("name");
+      return NextResponse.json(user);
+    } catch (err) {
+      return handlePatchError(err);
+    }
+  }
+
   // No recognized variant.
   return NextResponse.json(
     {
       error:
-        "body must be one of {isActive}, {password}, {action:'forceLogout'}, {action:'unlock'}, {warehouseCode}",
+        "body must be one of {isActive}, {password}, {action:'forceLogout'}, {action:'unlock'}, {warehouseCode}, {name}",
       code: "BAD_VARIANT",
     },
     { status: 400 }

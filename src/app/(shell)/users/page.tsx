@@ -15,6 +15,7 @@ import {
   Eye,
   EyeOff,
   Warehouse as WarehouseIcon,
+  Pencil,
 } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
 import { AdminOnly } from "@/components/AdminOnly";
@@ -62,6 +63,10 @@ function UsersScreen() {
   // Edit-warehouse modal (Phase 2): the user whose warehouse is being reassigned.
   const [warehouseTarget, setWarehouseTarget] = useState<UserDTO | null>(null);
   const [warehouseSubmitting, setWarehouseSubmitting] = useState(false);
+
+  // Edit-name modal: the user whose display name is being renamed.
+  const [nameTarget, setNameTarget] = useState<UserDTO | null>(null);
+  const [nameSubmitting, setNameSubmitting] = useState(false);
 
   // Add-user modal.
   const [addOpen, setAddOpen] = useState(false);
@@ -306,6 +311,40 @@ function UsersScreen() {
     }
   }
 
+  // ---- admin edit display name (PATCH {name}) ----
+  // Renames the target user's display name only; the server re-validates (trimmed,
+  // non-empty, bounded) and returns the updated public user. Mirrors submitWarehouse.
+  async function submitName(name: string) {
+    if (!nameTarget) return;
+    setNameSubmitting(true);
+    try {
+      const res = await fetch(`/api/users/${nameTarget.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) {
+        let msg = "แก้ไขชื่อไม่สำเร็จ";
+        try {
+          const data = await res.json();
+          if (data?.error) msg = data.error;
+        } catch {
+          /* keep default */
+        }
+        showToast(msg);
+        return;
+      }
+      const updated = (await res.json()) as UserDTO;
+      setUsers((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
+      setNameTarget(null);
+      showToast("แก้ไขชื่อแล้ว");
+    } catch {
+      showToast("แก้ไขชื่อไม่สำเร็จ");
+    } finally {
+      setNameSubmitting(false);
+    }
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-auto p-[22px]">
       {/* Header */}
@@ -437,6 +476,16 @@ function UsersScreen() {
                         <span className="font-semibold" style={{ opacity: u.isActive ? 1 : 0.55 }}>
                           {u.name}
                         </span>
+                        <button
+                          type="button"
+                          onClick={() => setNameTarget(u)}
+                          aria-label={`แก้ไขชื่อ ${u.name}`}
+                          title="แก้ไขชื่อ"
+                          className="grid h-7 w-7 flex-shrink-0 place-items-center rounded-[9px] border"
+                          style={{ borderColor: "var(--line)", color: "var(--brand-2)" }}
+                        >
+                          <Pencil size={12} strokeWidth={2} aria-hidden="true" />
+                        </button>
                       </div>
                     </Td>
                     <Td>
@@ -604,6 +653,13 @@ function UsersScreen() {
         submitting={warehouseSubmitting}
         onClose={() => setWarehouseTarget(null)}
         onSubmit={submitWarehouse}
+      />
+
+      <EditNameModal
+        target={nameTarget}
+        submitting={nameSubmitting}
+        onClose={() => setNameTarget(null)}
+        onSubmit={submitName}
       />
     </div>
   );
@@ -861,6 +917,127 @@ function EditWarehouseModal({
           <button
             type="submit"
             disabled={submitting}
+            className="h-11 rounded-[12px] px-5 text-[13.5px] font-bold text-white disabled:opacity-50"
+            style={{ background: "var(--brand)" }}
+          >
+            {submitting ? "กำลังบันทึก…" : "บันทึก"}
+          </button>
+        </footer>
+      </form>
+    </Modal>
+  );
+}
+
+/**
+ * Edit-name modal. Renames the target user's display name via PATCH {name}; the
+ * input is prefilled with the current name and validated non-empty client-side
+ * (the server re-validates: trimmed, non-empty, bounded). Mirrors EditWarehouseModal.
+ * Admin-gated by the page wrapper (AdminOnly) and the requireAdmin PATCH route.
+ */
+function EditNameModal({
+  target,
+  submitting,
+  onClose,
+  onSubmit,
+}: {
+  target: UserDTO | null;
+  submitting: boolean;
+  onClose: () => void;
+  onSubmit: (name: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [touched, setTouched] = useState(false);
+
+  const open = target !== null;
+
+  useEffect(() => {
+    if (open) {
+      // Prefill with the user's current display name.
+      setName(target?.name ?? "");
+      setTouched(false);
+    }
+  }, [open, target]);
+
+  const nameOk = name.trim().length > 0;
+  const canSubmit = nameOk && !submitting;
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setTouched(true);
+    if (!canSubmit) return;
+    onSubmit(name.trim());
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} label="แก้ไขชื่อ">
+      <form
+        onSubmit={handleSubmit}
+        className="w-[min(440px,calc(100vw-32px))] rounded-[22px] bg-white"
+        style={{ boxShadow: "var(--shadow)" }}
+      >
+        <header
+          className="flex items-center gap-3 border-b px-5 py-4"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <span
+            className="grid h-10 w-10 place-items-center rounded-[14px]"
+            style={{ background: "var(--mint)", color: "var(--brand-2)" }}
+          >
+            <Pencil size={20} strokeWidth={2} />
+          </span>
+          <div className="flex-1">
+            <strong className="block text-[15px]">แก้ไขชื่อ</strong>
+            <span className="block text-[11.5px]" style={{ color: "var(--muted)" }}>
+              Edit name{target ? ` · ${target.name}` : ""}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="ปิด"
+            className="grid h-9 w-9 place-items-center rounded-[12px] border"
+            style={{ borderColor: "var(--line)", color: "var(--muted)" }}
+          >
+            <XIcon size={18} strokeWidth={2} />
+          </button>
+        </header>
+
+        <div className="flex flex-col gap-3.5 px-5 py-4">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[12.5px] font-semibold">ชื่อ-นามสกุล · Name</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="เช่น สมชาย ใจดี"
+              autoComplete="off"
+              aria-invalid={touched && !nameOk}
+              className="h-11 rounded-[12px] border px-3 text-[14px]"
+              style={{ borderColor: touched && !nameOk ? "#fca5a5" : "var(--line)" }}
+            />
+            {touched && !nameOk && (
+              <span className="text-[11.5px]" style={{ color: "#b42318" }}>
+                กรุณากรอกชื่อผู้ใช้
+              </span>
+            )}
+          </label>
+        </div>
+
+        <footer
+          className="flex justify-end gap-2.5 border-t px-5 py-4"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-11 rounded-[12px] border px-4 text-[13.5px] font-semibold"
+            style={{ borderColor: "var(--line)", color: "var(--ink)" }}
+          >
+            ยกเลิก
+          </button>
+          <button
+            type="submit"
+            disabled={!canSubmit}
             className="h-11 rounded-[12px] px-5 text-[13.5px] font-bold text-white disabled:opacity-50"
             style={{ background: "var(--brand)" }}
           >
