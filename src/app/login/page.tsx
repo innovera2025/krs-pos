@@ -68,8 +68,8 @@ function LoginForm() {
   function validate(): boolean {
     let valid = true;
 
-    if (!/.+@.+\..+/.test(email.trim())) {
-      setEmailError("กรุณากรอกอีเมลให้ถูกต้อง · Please enter a valid email");
+    if (email.trim().length === 0) {
+      setEmailError("กรุณากรอกชื่อผู้ใช้ · Please enter your username");
       valid = false;
     } else {
       setEmailError("");
@@ -122,7 +122,7 @@ function LoginForm() {
           // authorize() returns null for BOTH wrong credentials AND an inactive
           // user (we intentionally don't distinguish, to avoid account
           // enumeration) → a single generic message.
-          setFormError("อีเมลหรือรหัสผ่านไม่ถูกต้อง · Invalid email or password");
+          setFormError("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง · Invalid username or password");
         }
         setIsSubmitting(false);
         return;
@@ -437,17 +437,16 @@ function LoginForm() {
                   marginBottom: 8,
                 }}
               >
-                อีเมล · Email
+                ชื่อผู้ใช้ · Username
               </label>
               <input
                 id={emailId}
-                type="email"
-                // Start the login flow with focus on the email field so a cashier
-                // can type immediately (a11y — initial focus).
+                type="text"
+                // Start the login flow with focus on the username field so a
+                // cashier can type immediately (a11y — initial focus).
                 autoFocus
-                autoComplete="email"
-                inputMode="email"
-                placeholder="you@example.com"
+                autoComplete="username"
+                placeholder="ชื่อผู้ใช้ของคุณ"
                 value={email}
                 onChange={(e) => {
                   setEmail(e.target.value);

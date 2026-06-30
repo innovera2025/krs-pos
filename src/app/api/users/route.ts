@@ -17,7 +17,12 @@ const MIN_PASSWORD_LEN = 8;
  * BCRYPT_COST=12. Reject (→ 400 BAD_PASSWORD) at the boundary instead.
  */
 const MAX_PASSWORD_LEN = 72;
-/** RFC 5321 maximum email length (theme #3). */
+/**
+ * Maximum username length. The login identifier is stored in the `User.email`
+ * column (kept for the @unique constraint — no migration), but the value is now a
+ * free-form username, not required to be an email. 254 (RFC 5321's max email
+ * length) is reused as a generous upper bound.
+ */
 const MAX_EMAIL_LEN = 254;
 /** bcrypt cost factor — matches the seed/auth cost (12). */
 const BCRYPT_COST = 12;
@@ -78,10 +83,6 @@ type CreateUserBody = {
   warehouseCode?: unknown;
 };
 
-// Email shape check — same loose pattern as the Simple POS add-user form.
-// (Strict RFC validation is owned by the production-readiness program.)
-const EMAIL_RE = /.+@.+\..+/;
-
 function isRole(v: unknown): v is Role {
   return typeof v === "string" && (Object.values(Role) as string[]).includes(v);
 }
@@ -120,10 +121,16 @@ export async function POST(req: Request) {
     );
   }
 
-  const email = typeof body.email === "string" ? body.email.trim() : "";
-  if (!EMAIL_RE.test(email) || email.length > MAX_EMAIL_LEN) {
+  // Username (stored in the `email` column — see note above). Normalize to
+  // lowercase so create + sign-in agree: authorize() looks up with
+  // `.trim().toLowerCase()`, so the stored value MUST also be lowercased here or
+  // a username with any uppercase would never match at login. Validate as
+  // non-empty within the generous length bound; format is intentionally free-form.
+  const email =
+    typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  if (email.length === 0 || email.length > MAX_EMAIL_LEN) {
     return NextResponse.json(
-      { error: "อีเมลไม่ถูกต้อง", code: "BAD_EMAIL" },
+      { error: "กรุณากรอกชื่อผู้ใช้", code: "BAD_EMAIL" },
       { status: 422 }
     );
   }
@@ -227,7 +234,7 @@ export async function POST(req: Request) {
       err.code === "P2002"
     ) {
       return NextResponse.json(
-        { error: "อีเมลนี้ถูกใช้งานแล้ว", code: "EMAIL_TAKEN" },
+        { error: "ชื่อผู้ใช้นี้ถูกใช้งานแล้ว", code: "EMAIL_TAKEN" },
         { status: 409 }
       );
     }

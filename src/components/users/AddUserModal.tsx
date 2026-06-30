@@ -24,8 +24,6 @@ type AddUserModalProps = {
   }) => void;
 };
 
-// Same loose email shape as the server (and Simple POS add-user form).
-const EMAIL_RE = /.+@.+\..+/;
 /** Minimum password length — mirrors the server (auth Phase 3). */
 const MIN_PASSWORD_LEN = 8;
 
@@ -66,7 +64,7 @@ export function AddUserModal({
   }, [open]);
 
   const nameOk = name.trim().length > 0;
-  const emailOk = EMAIL_RE.test(email.trim());
+  const emailOk = email.trim().length > 0;
   const passwordOk = password.length >= MIN_PASSWORD_LEN;
   const canSubmit = nameOk && emailOk && passwordOk && !submitting;
 
@@ -139,20 +137,20 @@ export function AddUserModal({
           </label>
 
           <label className="flex flex-col gap-1.5">
-            <span className="text-[12.5px] font-semibold">อีเมล · Email</span>
+            <span className="text-[12.5px] font-semibold">ชื่อผู้ใช้ · Username</span>
             <input
-              type="email"
+              type="text"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="name@krs-pos.local"
-              autoComplete="off"
+              placeholder="เช่น cashier1"
+              autoComplete="username"
               aria-invalid={touched && !emailOk}
               className="h-11 rounded-[12px] border px-3 text-[14px]"
               style={{ borderColor: touched && !emailOk ? "#fca5a5" : "var(--line)" }}
             />
             {touched && !emailOk && (
               <span className="text-[11.5px]" style={{ color: "#b42318" }}>
-                อีเมลไม่ถูกต้อง
+                กรุณากรอกชื่อผู้ใช้
               </span>
             )}
           </label>

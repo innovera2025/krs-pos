@@ -451,7 +451,7 @@ function UsersScreen() {
                   style={{ background: "var(--surface-2)", color: "var(--muted)" }}
                 >
                   <Th>ผู้ใช้</Th>
-                  <Th>อีเมล</Th>
+                  <Th>ชื่อผู้ใช้</Th>
                   <Th>บทบาท</Th>
                   <Th>สาขา</Th>
                   <Th>สถานะ</Th>
