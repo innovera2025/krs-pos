@@ -37,7 +37,7 @@ services:
   # We use a plain `sh` poll-loop (curl + sleep), NOT a cron daemon: curlimages/curl
   # runs as a NON-root user and busybox `crond` needs root + a crontab directory, so
   # it crash-loops. A sleep-loop only needs sh/curl/sleep (all present) and runs fine
-  # unprivileged. Interval = KRS_AUTO_SYNC_INTERVAL_SECONDS (default 300 = 5 min).
+  # unprivileged. Interval = KRS_AUTO_SYNC_INTERVAL_SECONDS (default 60 = 1 min).
   #
   # The endpoint itself is the real safety gate: it is bearer-authenticated, opt-in
   # (KRS_AUTO_SYNC_ENABLED), single-run-locked, and fail-safe. If
@@ -56,8 +56,8 @@ services:
       # Bearer secret for the auto-sync endpoint (from the git-ignored .env). Sent as
       # `Authorization: Bearer <value>`. NEVER committed; NEVER logged by the app.
       KRS_SYNC_TRIGGER_SECRET: ${KRS_SYNC_TRIGGER_SECRET:-}
-      # Poll interval in SECONDS. Default 300 (every 5 minutes).
-      KRS_AUTO_SYNC_INTERVAL_SECONDS: ${KRS_AUTO_SYNC_INTERVAL_SECONDS:-300}
+      # Poll interval in SECONDS. Default 60 (every 1 minute).
+      KRS_AUTO_SYNC_INTERVAL_SECONDS: ${KRS_AUTO_SYNC_INTERVAL_SECONDS:-60}
     # Poll loop: every interval, POST the internal endpoint (the app applies the delta,
     # idempotently). Only the HTTP status is logged — never the secret or response body.
     # No `set -e`: a transient curl failure must not kill the loop.

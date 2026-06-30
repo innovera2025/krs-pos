@@ -864,6 +864,30 @@ export async function POST(req: Request) {
       { method: "POST", path: "/api/orders", status: 201, durationMs: Date.now() - startedAt },
       "order created"
     );
+
+    // === KRS outbound REALTIME trigger (best-effort, fire-and-forget) ===
+    // The SALE SyncJob was durably committed INSIDE the checkout $transaction above,
+    // so the sale is already safe no matter what happens next. This non-blocking
+    // self-HTTP POST nudges the bearer-protected dispatch endpoint to drain the outbox
+    // NOW (~1-2s) instead of waiting up to 30s for the krs-dispatch-cron. Safety:
+    //   • NOT awaited and `.catch(() => {})` — it can NEVER throw, delay, or change the
+    //     checkout 201 response below.
+    //   • The dispatch route is idempotent + run-locked (runDispatch owns the atomic
+    //     claim/dedup/retry), so a concurrent cron + this trigger draining at the same
+    //     time is safe — no double-write to KRS.
+    //   • If KRS_DISPATCH_SECRET is unset, or the fetch fails / 401s, the 30s cron is
+    //     the guaranteed backstop — a lost or failed trigger only DELAYS dispatch to the
+    //     next cron tick, it never loses or duplicates the KRS write.
+    //   • Self-HTTP (127.0.0.1:3000 — the app calling itself in-container), NOT a direct
+    //     runDispatch/dispatcher import, so THIS checkout route stays mssql-free (the
+    //     driver lives behind the endpoint). Uses the SAME bearer the route validates
+    //     (KRS_DISPATCH_SECRET). Only fires on this NEW-sale path, not the idempotent
+    //     200 replays (the SyncJob already exists for a replayed order).
+    void fetch("http://127.0.0.1:3000/api/krs/dispatch", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.KRS_DISPATCH_SECRET ?? ""}` },
+    }).catch(() => {});
+
     return NextResponse.json(serializeOrder(order), { status: 201 });
   } catch (err) {
     if (
