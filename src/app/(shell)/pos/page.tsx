@@ -33,6 +33,7 @@ import {
 } from "@/components/pos/CustomerFormModal";
 import { ReceiptModal } from "@/components/pos/ReceiptModal";
 import { HeldBillsModal } from "@/components/pos/HeldBillsModal";
+import { BranchBadge } from "@/components/pos/BranchBadge";
 import { methodToEnum } from "@/components/pos/paymentMeta";
 
 /**
@@ -1015,6 +1016,9 @@ export default function POSPage() {
               POS Checkout · เลือกสินค้า, ปรับส่วนลด, ปิดการขาย
             </p>
           </div>
+          {/* Logged-in user's warehouse + branch by NAME (Branch/Warehouse).
+              Compact, self-degrading chip — never alters the .pos-header height. */}
+          <BranchBadge />
         </header>
 
         {/* Search / scan */}
