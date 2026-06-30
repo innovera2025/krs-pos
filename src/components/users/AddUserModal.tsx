@@ -255,9 +255,14 @@ export function AddUserModal({
           >
             ยกเลิก
           </button>
+          {/* The button is clickable whenever NOT submitting — so a click on an
+              incomplete form runs handleSubmit, which sets `touched` and surfaces
+              the per-field red hints (which field is wrong) instead of a silent
+              greyed-out button. handleSubmit still returns early if !canSubmit, so
+              an invalid form never POSTs. */}
           <button
             type="submit"
-            disabled={!canSubmit}
+            disabled={submitting}
             className="h-11 rounded-[12px] px-5 text-[13.5px] font-bold text-white disabled:opacity-50"
             style={{ background: "var(--brand)" }}
           >
