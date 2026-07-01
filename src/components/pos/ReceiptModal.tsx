@@ -111,8 +111,6 @@ export function ReceiptModal({
   const posNo = order.orderNumber;
   const shortId = posNo.slice(-6); // domain-receipt-shortid
   const totalNum = Number(order.total);
-  const vatNum = Number(order.tax);
-  const preVatNum = totalNum - vatNum;
   const changeNum = Number(order.change);
   const hasChange = changeNum > 0.01;
   const cashierName = order.cashier?.name ?? "นิดา ส.";
@@ -230,16 +228,8 @@ export function ReceiptModal({
             className="mt-3 border-t border-dashed pt-2.5 text-[11.5px] leading-[1.9]"
             style={{ borderColor: "#cbd5e1", color: "#475569" }}
           >
-            <div className="flex justify-between">
-              <span>ยอดก่อนภาษี</span>
-              <span>{money(preVatNum)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>VAT 7%</span>
-              <span>{money(vatNum)}</span>
-            </div>
             <div
-              className="flex justify-between pt-[5px] text-[15px] font-bold"
+              className="flex justify-between text-[15px] font-bold"
               style={{ fontFamily: "var(--font-sans)", color: "#0f172a" }}
             >
               <span>รวมสุทธิ</span>
@@ -291,8 +281,17 @@ export function ReceiptModal({
             </div>
           )}
 
+          {/* VAT-inclusive note — the 80mm receipt omits the VAT breakdown; state
+              that the shown prices already include 7% VAT (the full A4 tax invoice
+              still itemizes VAT for a legal §86/4 claim). */}
           <div
-            className="mt-4 text-center text-[11px]"
+            className="mt-3 text-center text-[11px] font-semibold"
+            style={{ color: "#475569", fontFamily: "var(--font-sans)" }}
+          >
+            ราคานี้รวมภาษีมูลค่าเพิ่ม 7% แล้ว
+          </div>
+          <div
+            className="mt-2 text-center text-[11px]"
             style={{ color: "var(--soft)", fontFamily: "var(--font-sans)" }}
           >
             ขอบคุณที่ใช้บริการ · Thank you
