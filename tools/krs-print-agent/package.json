@@ -1,0 +1,17 @@
+{
+  "name": "krs-print-agent",
+  "version": "1.0.0",
+  "description": "Local ESC/POS print bridge for KRS POS thermal receipts",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "build": "npx pkg . --target node20-win-x64 --output dist/krs-print-agent.exe"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "private": true,
+  "license": "UNLICENSED",
+  "dependencies": {},
+  "devDependencies": {}
+}
