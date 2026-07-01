@@ -37,10 +37,18 @@ keeps showing.
 
 ### How to set up a shop PC / วิธีตั้งค่าเครื่องในร้าน
 
+> **Recommended start / เริ่มจากในแอป:** open the POS in a normal browser first — a
+> first-run **in-app setup guide** appears with a one-click download of
+> `kiosk-print-setup.bat` (see *In-app setup guide* below). The manual steps here are
+> the equivalent if you already have the file. / เปิด POS ในเบราว์เซอร์ปกติก่อน จะมี
+> คู่มือตั้งค่าในแอปพร้อมปุ่มดาวน์โหลดไฟล์ตั้งค่าให้ทันที (ดูหัวข้อ *คู่มือตั้งค่าผ่านแอป* ด้านล่าง)
+
 1. Make sure the `XP-80C` printer is installed and prints a Windows test page.
    / ตรวจสอบว่าติดตั้งเครื่องพิมพ์ `XP-80C` แล้วและพิมพ์หน้าทดสอบของ Windows ได้
-2. Copy `kiosk-print-setup.bat` onto the PC and **double-click it once**.
+2. Copy `kiosk-print-setup.bat` onto the PC and **double-click it once**. The file is
+   also downloadable in-app at `/kiosk-print-setup.bat` (the in-app guide's button).
    / คัดลอกไฟล์ `kiosk-print-setup.bat` ไปที่เครื่อง แล้ว **ดับเบิลคลิกหนึ่งครั้ง**
+   (ดาวน์โหลดไฟล์ได้จากในแอปที่ `/kiosk-print-setup.bat` เช่นกัน)
 3. It sets `XP-80C` as the default printer and creates a Desktop icon named
    **"KRS POS"**. / ไฟล์จะตั้ง `XP-80C` เป็นเครื่องพิมพ์เริ่มต้น และสร้างไอคอน **"KRS POS"**
    บนเดสก์ท็อป
@@ -83,6 +91,46 @@ with no tabs/address bar.
 | **No "KRS POS" icon appeared / ไม่มีไอคอน** | Re-run the `.bat`. If the Desktop is redirected to OneDrive, the icon is created on the active Desktop folder. / รันไฟล์อีกครั้ง |
 | **Default printer did not change / เครื่องพิมพ์เริ่มต้นไม่เปลี่ยน** | The `XP-80C` driver may not be installed, or it needs elevation — install the driver, then run the `.bat` again or *Run as administrator* once. The script prints the current default printer at the end so you can confirm. / ติดตั้งไดรเวอร์ก่อน แล้วรันไฟล์ใหม่ หรือรันแบบ Run as administrator |
 | **Session logged out / ต้องล็อกอินใหม่ทุกครั้ง** | Don't delete `%LOCALAPPDATA%\KrsPosKiosk` — that isolated profile stores the POS login. / อย่าลบโฟลเดอร์โปรไฟล์ |
+
+---
+
+## In-app setup guide / คู่มือตั้งค่าผ่านแอป
+
+The POS now surfaces the silent-print setup **inside the web app** so operators no
+longer have to hunt for the `.bat` file. / ระบบ POS แสดงคู่มือตั้งค่าการพิมพ์เงียบ **ภายใน
+แอป** เพื่อไม่ต้องไปตามหาไฟล์ `.bat` เอง
+
+1. **First-run guide / คู่มือครั้งแรก —** The first time the POS is opened in a normal
+   browser, a bilingual setup guide appears automatically explaining why a print
+   dialog shows and how to enable silent printing. / เมื่อเปิด POS ในเบราว์เซอร์ปกติครั้งแรก
+   จะมีคู่มือสองภาษาขึ้นมาให้อัตโนมัติ
+2. **One-click download / ปุ่มดาวน์โหลด —** The guide has a **Download Setup File**
+   button that downloads `kiosk-print-setup.bat` directly from `/kiosk-print-setup.bat`
+   (served with `Content-Disposition: attachment` so it always downloads, never renders
+   as text). / ปุ่มในคู่มือดาวน์โหลด `kiosk-print-setup.bat` จาก `/kiosk-print-setup.bat` โดยตรง
+3. **Permanent dismiss / ปิดถาวร —** Clicking **"ตั้งค่าเสร็จแล้ว · ไม่ต้องแสดงอีก"** hides the
+   guide forever on that browser (persists `localStorage['krspos_silentprint_dismissed'] = '1'`).
+   Closing via the **X** / backdrop is temporary — the guide re-appears on the next load.
+   / กด **"ตั้งค่าเสร็จแล้ว · ไม่ต้องแสดงอีก"** เพื่อซ่อนถาวร (กด X เป็นการปิดชั่วคราว จะขึ้นใหม่รอบหน้า)
+4. **Kiosk auto-suppress / ปิดอัตโนมัติในโหมดคีออส —** The kiosk shortcut created by the
+   `.bat` now launches the app with `?kiosk=1`. On the first kiosk load the app sets
+   `localStorage['krspos_kiosk_mode'] = '1'`, which suppresses the guide automatically —
+   the cashier never sees it in the kiosk window (even after later in-app navigations
+   that drop the query param, because the flag is persisted). / ชอร์ตคัตคีออสจะเปิดแอปด้วย
+   `?kiosk=1` แอปจะจำค่าไว้แล้วซ่อนคู่มือให้เองในหน้าต่างคีออส
+5. **Trust model / ข้อจำกัด —** The web app **cannot** verify that `--kiosk-printing` is
+   actually active. It trusts the `?kiosk=1` signal and the operator's explicit
+   "setup complete" action. Real capability detection is a future upgrade (the local
+   print agent, `PrintAgentService`). / แอปตรวจสอบไม่ได้ว่า `--kiosk-printing` ทำงานจริงหรือไม่
+   จึงเชื่อสัญญาณ `?kiosk=1` และการกดยืนยันของผู้ใช้
+6. **LocalStorage keys / คีย์ที่ใช้ —** `krspos_kiosk_mode` (kiosk session seen) and
+   `krspos_silentprint_dismissed` (operator dismissed the guide). Clearing browser
+   storage just makes the guide appear once more; no data is lost.
+7. **SmartScreen / คำเตือนความปลอดภัย —** A `.bat` downloaded from the internet triggers
+   Windows SmartScreen ("Windows protected your PC"). This is expected and cannot be
+   bypassed server-side. Click **"More info" → "Run anyway"** to run it. The in-app
+   guide shows this note next to the download button. / ไฟล์ `.bat` ที่ดาวน์โหลดจากอินเทอร์เน็ต
+   จะขึ้นคำเตือน SmartScreen ให้กด **"More info" แล้ว "Run anyway"** เพื่อรันไฟล์
 
 ---
 

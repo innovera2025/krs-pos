@@ -34,7 +34,13 @@ import {
 import { ReceiptModal } from "@/components/pos/ReceiptModal";
 import { HeldBillsModal } from "@/components/pos/HeldBillsModal";
 import { BranchBadge } from "@/components/pos/BranchBadge";
+import { SilentPrintOnboardingModal } from "@/components/pos/SilentPrintOnboardingModal";
 import { methodToEnum } from "@/components/pos/paymentMeta";
+import {
+  persistKioskModeIfFlagged,
+  markDismissed,
+  shouldShowOnboardingModal,
+} from "@/lib/kioskMode";
 
 /**
  * Default stock fallback (domain-stock-default-50): the schema always carries
@@ -151,6 +157,13 @@ export default function POSPage() {
   // double-increment heldCount. While true, the hold button is disabled.
   const [isHolding, setIsHolding] = useState(false);
 
+  // ---- silent-print onboarding (Plan A) ----
+  // First-run guide surfacing the kiosk-print setup file. Gated by localStorage
+  // via @/lib/kioskMode: shown once on a normal browser, suppressed after the
+  // operator dismisses it, and suppressed whenever the app was opened via the
+  // kiosk shortcut (?kiosk=1 persisted on first load).
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+
   const searchRef = useRef<HTMLInputElement>(null);
 
   // ---- barcode-scanner cadence capture (scan-thai-ime-fix) ----
@@ -240,6 +253,17 @@ export default function POSPage() {
         /* ignore — leave the count at 0 */
       });
     return () => ctrl.abort();
+  }, []);
+
+  // Silent-print onboarding (Plan A). Runs once on mount: persist the ?kiosk=1
+  // shortcut signal FIRST (so a kiosk session is recognized before the read),
+  // then show the first-run guide only on a normal browser that has neither been
+  // opened via the kiosk shortcut nor previously dismissed the modal.
+  useEffect(() => {
+    persistKioskModeIfFlagged();
+    if (shouldShowOnboardingModal()) {
+      setOnboardingOpen(true);
+    }
   }, []);
 
   // Auto-focus the search/scan input on mount so a barcode scanner can fire immediately.
@@ -397,6 +421,20 @@ export default function POSPage() {
     // cancel/hold). Without this, the next sale would replay the just-completed
     // order (200) and never actually record the new sale.
     idemKeyRef.current = null;
+  }
+
+  // ---- silent-print onboarding handlers (Plan A) ----
+  // Temporary close (X / backdrop): no flag written, so the guide re-appears on the
+  // next page load unless the operator dismisses it or opens via the kiosk shortcut.
+  function handleOnboardingClose() {
+    setOnboardingOpen(false);
+  }
+
+  // Permanent dismiss ("ตั้งค่าเสร็จแล้ว"): persist the dismissed flag so the guide
+  // never re-appears on this browser.
+  function handleOnboardingDismiss() {
+    markDismissed();
+    setOnboardingOpen(false);
   }
 
   // ---- customer picker (Phase 6a) ----
@@ -1331,6 +1369,15 @@ export default function POSPage() {
         onClose={() => setHeldBillsOpen(false)}
         onResume={resumeBill}
         onDiscard={discardHeldBill}
+      />
+
+      {/* Silent-print onboarding (Plan A) — first-run guide + .bat download.
+          Suppressed after permanent dismiss or when opened via the kiosk shortcut
+          (?kiosk=1). Purely client-side UI; does not touch the checkout/print path. */}
+      <SilentPrintOnboardingModal
+        open={onboardingOpen}
+        onClose={handleOnboardingClose}
+        onDismissPermanently={handleOnboardingDismiss}
       />
     </div>
   );

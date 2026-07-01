@@ -2,6 +2,8 @@
 chcp 65001 >nul
 setlocal EnableExtensions
 title KRS POS - Kiosk Print Setup
+REM  *** IN-PRODUCT COPY — served at /kiosk-print-setup.bat by Next.js static asset ***
+REM  *** Keep in sync with deploy/kiosk-print-setup.bat (the canonical source). ***
 
 REM ============================================================================
 REM  KRS POS - One-click silent thermal-receipt printing setup (Windows)
