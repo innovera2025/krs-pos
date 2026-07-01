@@ -13,23 +13,32 @@ browser/kiosk print path, so the cashier experience is unchanged.
 
 ## Status
 
-- **Phase B1 (this code): scaffold + detection contract — DONE.**
-  HTTP server, `GET /health`, `POST /print-receipt` **stub** (validates + logs,
-  does **not** print yet), and CORS / Private Network Access preflight handling.
-- Phase B2 adds real ESC/POS receipt rendering to the XP-80C (Thai codepage work).
+- **Phase B1: scaffold + detection contract — DONE.**
+  HTTP server, `GET /health`, CORS / Private Network Access preflight handling.
+- **Phase B2: ESC/POS receipt rendering — CODE DONE (owner hardware test pending).**
+  `POST /print-receipt` now renders the full receipt (`printer.js` + `encoding.js`)
+  and spools it to the Windows printer. Developer gates pass (buffer builds, Thai
+  encodes to TIS-620, server never crashes). **Real Thai rendering + cut + alignment
+  on the physical XP-80C is owner-verified** — see "Phase B2 — printing & Thai
+  codepage" below.
 - Phase B3 packages a Windows `.exe` (`npm run build`) + one-click installer.
 - Phase B4 wires the web app to detect and use the agent.
 
 ## Requirements
 
 - **Node.js 20+** for development/testing (any OS — macOS/Linux/Windows).
-- Windows is only required for the production `.exe` and real printing (Phase B2/B3).
-- **Zero npm dependencies** in B1: it uses only the Node.js built-in `http` module.
+- **Windows** is required for **real printing**: the agent spools ESC/POS bytes to the
+  Windows print queue via the built-in print spooler (no native/node-gyp modules). On
+  macOS/Linux the receipt bytes still build (for inspection) but cannot be spooled.
+- Dependencies (installed into this package's own git-ignored `node_modules`):
+  `node-thermal-printer` (ESC/POS buffer assembly) and `iconv-lite` (Thai TIS-620).
+  The HTTP layer itself uses only Node's built-in `http` module.
 
 ## Quick start
 
 ```bash
 cd tools/krs-print-agent
+npm install        # installs node-thermal-printer + iconv-lite (local, git-ignored)
 npm start          # or: node index.js
 ```
 
@@ -39,15 +48,12 @@ You should see:
 [krs-print-agent] listening on http://127.0.0.1:9100
 ```
 
-(There is nothing to `npm install` for B1 — dependencies arrive with the ESC/POS
-library in Phase B2.)
-
 ## Endpoints
 
 | Method | Path              | B1 behavior |
 |--------|-------------------|-------------|
 | `GET`  | `/health`         | `200` `{ "name": "krs-print-agent", "version": "1.0.0", "status": "ok" }` — the detection probe the web app pings. |
-| `POST` | `/print-receipt`  | Accepts `ReceiptData` JSON `{ order, seller, sizeSettings }`. Validates, logs `order=<n> items=<n>`, returns `200` `{ "ok": true, "stubbed": true }`. **Does not print yet** (Phase B2). Bodies over 128 KB are rejected with `413`. |
+| `POST` | `/print-receipt`  | Accepts `ReceiptData` JSON `{ order, seller, sizeSettings }`. Renders ESC/POS and spools to the Windows printer. Returns `200` `{ "ok": true }` on success, `500` `{ "ok": false, "error": "..." }` on any print failure (a spooler/printer error never crashes the server). Malformed JSON or a missing `order` → `400`; bodies over 128 KB → `413`. |
 | `OPTIONS` | (any path)     | `204` with CORS + Private Network Access preflight headers. |
 | (other) | (any path)      | `404` `{ "error": "not found" }`. |
 
@@ -83,8 +89,9 @@ Defaults live in `config.js` (committed, no secrets). Common overrides:
 | Setting | Env var | Default | Notes |
 |---------|---------|---------|-------|
 | Port | `KRS_PRINT_AGENT_PORT` (or `PORT`) | `9100` | |
-| Printer name | `KRS_PRINTER_NAME` | `""` (Windows default printer) | Used in Phase B2. |
-| Thai codepage | `KRS_THAI_CODEPAGE` | `20` (TIS-620) | ESC `t` code-table; used in Phase B2. |
+| Printer name | `KRS_PRINTER_NAME` | `""` (Windows default printer) | Target a specific queue, e.g. `XP-80C`. |
+| Thai codepage | `KRS_THAI_CODEPAGE` | `20` (TIS-620) | `ESC t <n>` code-table; iterate `20 → 21 → 18 → 17` on the real printer. |
+| Baht fallback | `KRS_BAHT_FALLBACK` | `0` | Set `1` to print `B` instead of `฿` if the firmware maps 0xDF wrong. |
 
 For persistent per-shop settings without editing the committed file, create a
 git-ignored **`config.local.js`** that re-exports overrides:
@@ -109,9 +116,56 @@ module.exports = { ...base, PRINTER_NAME: 'XP-80C', THAI_CODEPAGE: 21 };
 `dist/krs-print-agent.exe` (via `pkg`). `dist/`, `*.exe`, `node_modules/`, and
 `config.local.js` are all git-ignored.
 
-## Thai codepage note (Phase B2)
+## Phase B2 — printing & Thai codepage (owner test)
 
-Thai glyphs on the XP-80C are selected with the ESC `t <n>` code-table command.
-The default is table `20` (TIS-620); the exact number is firmware-specific on
-XP-80 OEM clones. Override with `KRS_THAI_CODEPAGE` (candidates: 20 → 21 → 18 → 17)
-without a code change once the owner confirms the correct value on the real printer.
+`POST /print-receipt` (and `npm run test-print`) build an 80mm / 48-column (Font A)
+ESC/POS stream in `printer.js` that mirrors the web receipt
+(`src/components/pos/ReceiptModal.tsx`): centred bold header + `ใบเสร็จรับเงินสด`
+title, meta rows, line items (`name … lineTotal`, then indented `qty x unitPrice`),
+`รวมสุทธิ` total, payment lines + `เงินทอน` change, the optional taxpayer block, the
+`ราคานี้รวมภาษีมูลค่าเพิ่ม 7% แล้ว` note, footer, and a partial cut.
+
+**How Thai is printed.** node-thermal-printer's `CharacterSet` enum has no Thai
+entry, so the agent selects the printer's Thai code table itself with
+`ESC t <KRS_THAI_CODEPAGE>` and sends every Thai string as **TIS-620 bytes**
+(`encoding.js`, via `iconv-lite`). `×`, `·` and `…` (absent from TIS-620) are
+transliterated to `x`, `-`, `...` so nothing prints as `?`.
+
+**How the job reaches the printer.** The ESC/POS buffer is spooled to Windows as a
+`RAW` job through the print spooler (winspool, via a generated PowerShell helper) —
+**no native/node-gyp module**, which keeps the Phase-B3 `pkg` single-exe build clean.
+`KRS_PRINTER_NAME` targets a specific queue; empty = the Windows default printer.
+
+### Owner test on the real XP-80C
+
+The correct Thai `ESC t` table number is firmware-specific on XP-80 OEM clones and
+can only be confirmed on the physical printer. Run this on the shop Windows PC:
+
+```bat
+npm install
+npm run test-print
+```
+
+Then inspect the printed sample and iterate as needed (no code change — just env):
+
+1. **Thai garbled?** Try the next code table, reprint after each:
+   ```bat
+   set KRS_THAI_CODEPAGE=21 && npm run test-print
+   set KRS_THAI_CODEPAGE=18 && npm run test-print
+   set KRS_THAI_CODEPAGE=17 && npm run test-print
+   ```
+   (PowerShell: `$env:KRS_THAI_CODEPAGE=21; npm run test-print`.) Record the value
+   that prints correct Thai and set it permanently in a git-ignored `config.local.js`
+   or as a machine env var.
+2. **`฿` shows garbage?** `set KRS_BAHT_FALLBACK=1 && npm run test-print` (prints `B`).
+3. **Wrong / no printer?** `set KRS_PRINTER_NAME=XP-80C && npm run test-print`.
+4. Confirm: the `-`/`=` rules fill the width without wrapping, the partial cut
+   separates the receipt cleanly, and a long Thai product name truncates with `...`
+   instead of overflowing the line.
+
+If none of `20 → 21 → 18 → 17` produce correct Thai, request the firmware code-table
+spec from Xprinter before shipping the agent.
+
+> **Real-print correctness (Thai glyphs, cut, alignment on the XP-80C) is
+> owner-verified.** A headless/dev host can only prove the bytes build correctly and
+> that Thai encodes to TIS-620 — it cannot prove how the physical printer renders them.

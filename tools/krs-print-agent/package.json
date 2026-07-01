@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "test-print": "node scripts/test-print.js",
     "build": "npx pkg . --target node20-win-x64 --output dist/krs-print-agent.exe"
   },
   "engines": {
@@ -12,6 +13,8 @@
   },
   "private": true,
   "license": "UNLICENSED",
-  "dependencies": {},
-  "devDependencies": {}
+  "dependencies": {
+    "iconv-lite": "^0.7.2",
+    "node-thermal-printer": "^4.6.0"
+  }
 }

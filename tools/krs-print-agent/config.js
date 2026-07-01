@@ -43,9 +43,23 @@ module.exports = {
   // rejected with HTTP 413 before any parsing.
   MAX_BODY_BYTES: 131072, // 128 KB
 
-  // ESC t code-table selector for Thai glyphs on the thermal printer. Default 20
-  // (TIS-620) is the most common on Xprinter/XP-80 OEM firmware. Override via
-  // KRS_THAI_CODEPAGE without a code change once the owner confirms the printer's
-  // actual table. (Used in B2 — not referenced by the B1 HTTP server.)
+  // ESC t code-table selector for Thai glyphs on the thermal printer (printer.js
+  // emits `ESC t <n>` = 0x1B 0x74 <n> before any Thai text). The correct table
+  // number is firmware-specific on XP-80 OEM clones and is NOT standardised, so the
+  // owner iterates the candidates below on the real XP-80C via `npm run test-print`
+  // and sets the winning value with KRS_THAI_CODEPAGE (no code change needed):
+  //
+  //   20  (0x14)  most common TIS-620 on Chinese OEM thermal printers  ← default
+  //   21  (0x15)  sometimes used for CP874
+  //   18  (0x12)  found in some Xprinter firmware revisions
+  //   17  (0x11)  occasional alternate
+  //
+  // If none of 20 → 21 → 18 → 17 produce correct Thai, request the firmware
+  // code-table spec from Xprinter (see README "Thai codepage" section).
   THAI_CODEPAGE: parseInt(process.env.KRS_THAI_CODEPAGE ?? '20', 10),
+
+  // Print an ASCII "B" instead of the baht sign ฿ (U+0E3F → 0xDF in TIS-620). Some
+  // firmware maps 0xDF to a different glyph; if the test receipt shows garbage where
+  // ฿ should be, set KRS_BAHT_FALLBACK=1. Default off (print the real ฿). (Used in B2.)
+  BAHT_FALLBACK: process.env.KRS_BAHT_FALLBACK === '1',
 };

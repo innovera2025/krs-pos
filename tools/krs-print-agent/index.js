@@ -1,17 +1,18 @@
 'use strict';
 
-// index.js — KRS Print Agent HTTP server (Phase B1: scaffold + detection contract).
+// index.js — KRS Print Agent HTTP server (Phase B2: real ESC/POS printing).
 //
 // A tiny loopback-only HTTP service that runs on the cashier's shop PC. The POS
 // web app (served over HTTPS from krspos.innoveraappcenter.com) pings GET /health
-// on page load to detect this agent; when present it will route receipt printing
-// here as ESC/POS bytes (no browser print dialog). B1 is the scaffold only:
-// /print-receipt validates and logs but does NOT print — real ESC/POS is Phase B2.
+// on page load to detect this agent; when present it routes receipt printing here
+// as ESC/POS bytes (no browser print dialog). POST /print-receipt now renders the
+// receipt and spools it to the Windows printer (see printer.js) — the B1 stub is gone.
 //
-// ZERO npm dependencies: this uses only the Node.js built-in `http` module so it
-// runs with a plain `node index.js` and needs no `npm install`.
+// Dependencies (installed under this package's own node_modules, git-ignored):
+// `node-thermal-printer` (ESC/POS buffer assembly) and `iconv-lite` (Thai TIS-620).
+// The HTTP layer itself still uses only the Node.js built-in `http` module.
 //
-// SECURITY MODEL (B1):
+// SECURITY MODEL:
 //   1. Bind to 127.0.0.1 ONLY (config.HOST) — never reachable off this machine.
 //   2. Trust cross-origin browser requests only from config.ALLOWED_ORIGINS
 //      (exact-match echo, never a wildcard "*").
@@ -21,6 +22,7 @@
 const http = require('http');
 const config = require('./config');
 const pkg = require('./package.json');
+const { printReceipt, PrintError } = require('./printer');
 
 const { PORT, HOST, ALLOWED_ORIGINS, MAX_BODY_BYTES } = config;
 const AGENT_NAME = 'krs-print-agent';
@@ -80,10 +82,11 @@ function sendJson(res, status, payload) {
 }
 
 /**
- * POST /print-receipt handler (B1 STUB).
- * Streams and size-limits the body, parses/validates ReceiptData, logs a concise
- * summary, and returns { ok: true, stubbed: true } WITHOUT printing. Real ESC/POS
- * printing is added in Phase B2.
+ * POST /print-receipt handler (B2).
+ * Streams and size-limits the body, parses/validates ReceiptData, then renders the
+ * receipt to ESC/POS and spools it to the Windows printer via printer.printReceipt.
+ * Returns 200 { ok: true } on success and 500 { ok: false, error } on any print
+ * failure — a spooler/printer error must never crash the server.
  */
 function handlePrintReceipt(req, res) {
   // Fast reject when the client advertises an oversized body up front.
@@ -134,16 +137,28 @@ function handlePrintReceipt(req, res) {
       return;
     }
 
-    // B1 STUB: no printing. Log a concise summary the operator can eyeball.
+    // B2: render ESC/POS and spool to the Windows printer. A print failure must
+    // NEVER crash the server — printReceipt rejects with PrintError; we catch it and
+    // return 500 so the fail-open web client resolves and the sale is unaffected.
     const orderNumber = body.order.orderNumber ?? body.order.id ?? '(unknown)';
-    const itemCount = Array.isArray(body.order.items)
-      ? body.order.items.length
-      : 0;
+    const itemCount = Array.isArray(body.order.items) ? body.order.items.length : 0;
     console.log(
-      `[${AGENT_NAME}] print-receipt (stub) order=${orderNumber} items=${itemCount}`,
+      `[${AGENT_NAME}] print-receipt order=${orderNumber} items=${itemCount}`,
     );
 
-    sendJson(res, 200, { ok: true, stubbed: true });
+    printReceipt(body)
+      .then(() => {
+        sendJson(res, 200, { ok: true });
+      })
+      .catch((err) => {
+        const message = err instanceof PrintError ? err.message : 'internal error';
+        process.stderr.write(
+          `[${AGENT_NAME}] print failed order=${orderNumber}: ${
+            err && err.message ? err.message : err
+          }\n`,
+        );
+        sendJson(res, 500, { ok: false, error: message });
+      });
   });
 }
 
