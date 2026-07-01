@@ -8,6 +8,13 @@ type ModalProps = {
   onClose: () => void;
   /** Accessible name for the dialog (sets aria-label). */
   label?: string;
+  /**
+   * Screen-hidden print source (pos-autoprint-receipt): when true the portaled
+   * overlay carries the `print-source` class → `display:none` on screen but still
+   * printable (the `@media print [data-modal-portal]{display:block}` rule wins).
+   * Used by the POS auto-print receipt so it prints without ever being visible.
+   */
+  printSource?: boolean;
   children: React.ReactNode;
 };
 
@@ -46,7 +53,7 @@ function isTopModal(token: object) {
  *   is restored to the previously-focused element on close; Tab is trapped
  *   within the panel.
  */
-export function Modal({ open, onClose, label, children }: ModalProps) {
+export function Modal({ open, onClose, label, printSource, children }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
   // Stable per-instance token for the open-modal stack (stacked-escape fix).
@@ -140,7 +147,10 @@ export function Modal({ open, onClose, label, children }: ModalProps) {
   const overlay = (
     <div
       data-modal-portal
-      className="fixed inset-0 z-50 flex items-center justify-center"
+      className={
+        "fixed inset-0 z-50 flex items-center justify-center" +
+        (printSource ? " print-source" : "")
+      }
       style={{
         background: "rgba(8,20,15,.48)",
         backdropFilter: "blur(4px)",

@@ -224,6 +224,19 @@ textarea:focus-visible,
   }
 }
 
+/* Screen-hidden print source (pos-autoprint-receipt). The POS "confirm" path
+   mounts the receipt overlay SCREEN-INVISIBLE and prints it automatically, so
+   the cashier never sees a receipt page. `display:none` hides it on screen, yet
+   the `@media print { [data-modal-portal] { display:block !important } }` rule
+   BELOW re-shows it for printing — this rule is placed BEFORE that print block so
+   the print rule wins by source order (both are `!important`, equal specificity).
+   `!important` here also beats the overlay's Tailwind `flex` display on screen.
+   Applied ONLY to the POS auto-print overlay (Modal printSource); the visible
+   Sales-History reprint overlay never carries this class. */
+.print-source {
+  display: none !important;
+}
+
 /* 80mm thermal receipt print isolation (domain-receipt-80mm).
 
    Portal-based isolation (blank-page fix): every Modal now renders via

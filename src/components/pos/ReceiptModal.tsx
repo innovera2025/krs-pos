@@ -15,10 +15,28 @@ import { syncMeta } from "@/components/sales/saleMeta";
 type ReceiptModalProps = {
   open: boolean;
   order: OrderDTO | null;
-  onPrint: () => void;
-  onEmail: () => void;
-  /** Start a new sale — the ONLY way to dismiss the receipt. */
-  onNewSale: () => void;
+  /** Manual actions (Sales-History reprint path). Omitted in auto-print mode,
+   *  where the whole overlay is screen-hidden and these buttons are unreachable. */
+  onPrint?: () => void;
+  onEmail?: () => void;
+  /** Start a new sale — the ONLY way to dismiss the visible reprint receipt. */
+  onNewSale?: () => void;
+  /**
+   * Auto-print mode (pos-autoprint-receipt): render the receipt SCREEN-HIDDEN
+   * (via Modal `printSource`) so the POS confirm path can print it automatically
+   * without ever showing a receipt page. The parent triggers the actual print
+   * (once the `.print-receipt` paper is mounted) and resets to a new sale on
+   * `afterprint`. The visible Sales-History reprint path leaves this false.
+   */
+  autoPrint?: boolean;
+  /**
+   * Pre-loaded seller identity (pos-autoprint-receipt). The POS page passes its
+   * mount-fetched settings so the printed header (name/branch/phone/POS id) is
+   * populated on FIRST paint — eliminating the race where an auto-print fires
+   * before the modal's own `/api/settings` fetch resolves and prints the "KRS"
+   * fallback header. When omitted (reprint path) the modal fetches on open.
+   */
+  seller?: Partial<ShopSettingsDTO> | null;
 };
 
 /** Fallback branch line when no seller branch label is configured (DB or ENV). */
@@ -53,25 +71,34 @@ export function ReceiptModal({
   onPrint,
   onEmail,
   onNewSale,
+  autoPrint = false,
+  seller,
 }: ReceiptModalProps) {
   // Seller identity for the receipt header (seller-company-settings). Fetched
   // once when the modal opens; fire-and-catch so a failed fetch just leaves the
   // header on its safe fallbacks ("KRS", default branch, no phone/POS). Hooks must
   // run before the early `return null` below to satisfy the rules of hooks.
-  const [sellerInfo, setSellerInfo] = useState<Partial<ShopSettingsDTO>>({});
+  //
+  // When the parent supplies `seller` (pos-autoprint-receipt) the fetch is
+  // skipped and the header renders from the pre-loaded settings on first paint,
+  // so the auto-print never races the network and prints the fallback header.
+  const [fetchedSeller, setFetchedSeller] = useState<Partial<ShopSettingsDTO>>({});
   useEffect(() => {
-    if (!open) return;
+    if (!open || seller) return;
     let cancelled = false;
     fetch("/api/settings")
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
-        if (!cancelled && data?.settings) setSellerInfo(data.settings);
+        if (!cancelled && data?.settings) setFetchedSeller(data.settings);
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, seller]);
+
+  // Prefer the pre-loaded seller (auto-print) over the on-open fetch (reprint).
+  const sellerInfo: Partial<ShopSettingsDTO> = seller ?? fetchedSeller;
 
   if (!open || !order) return null;
 
@@ -118,7 +145,9 @@ export function ReceiptModal({
 
   return (
     // onClose is a no-op: receipt closes ONLY via New Sale (no X, no backdrop).
-    <Modal open={open} onClose={() => {}} label="ใบเสร็จ">
+    // printSource (auto-print): render screen-hidden but still printable so the
+    // POS confirm path prints without ever showing a receipt page.
+    <Modal open={open} onClose={() => {}} label="ใบเสร็จ" printSource={autoPrint}>
       <div
         className="flex max-h-[92vh] w-[720px] max-w-[94vw] overflow-hidden rounded-[18px]"
         style={{ background: "#f1f5f9", boxShadow: "0 30px 70px rgba(0,0,0,.35)" }}

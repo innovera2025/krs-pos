@@ -122,14 +122,19 @@ export default function POSPage() {
   const [payError, setPayError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  // ---- receipt modal state ----
+  // ---- receipt state (pos-autoprint-receipt) ----
+  // On a successful checkout the receipt is NOT shown as a page. Instead it is
+  // mounted SCREEN-HIDDEN and printed automatically, then the cashier goes
+  // straight to a fresh sale. `receiptOrder` holds the just-created order to
+  // render/print; `autoPrintOpen` gates the screen-hidden auto-print overlay.
   const [receiptOrder, setReceiptOrder] = useState<OrderDTO | null>(null);
-  const [receiptOpen, setReceiptOpen] = useState(false);
+  const [autoPrintOpen, setAutoPrintOpen] = useState(false);
 
   // ---- receipt print-size settings (Receipt print-size feature) ----
   // Fetched once on mount from GET /api/settings (requireUser). null until
-  // resolved; printReceipt() falls back to the globals.css 80mm default while
-  // null, so a slow/failed fetch never blocks printing.
+  // resolved; the auto-print path (printReceiptWithSize) falls back to the
+  // globals.css 80mm default while null, so a slow/failed fetch never blocks
+  // printing. Also passed to the receipt as its pre-loaded seller header.
   const [receiptSettings, setReceiptSettings] = useState<ShopSettingsDTO | null>(
     null
   );
@@ -203,8 +208,8 @@ export default function POSPage() {
 
   // Receipt print-size settings (Receipt print-size feature). Fetched once on
   // mount so the receipt print path can apply the admin-configured size. Errors
-  // are swallowed → receiptSettings stays null → printReceipt() falls back to the
-  // globals.css 80mm default (printing must never break on a settings load).
+  // are swallowed → receiptSettings stays null → the auto-print path falls back
+  // to the globals.css 80mm default (printing must never break on a settings load).
   useEffect(() => {
     const ctrl = new AbortController();
     fetch("/api/settings", { signal: ctrl.signal })
@@ -961,15 +966,22 @@ export default function POSPage() {
             : p;
         })
       );
-      // Success: open the receipt, clear the cart + payment state.
-      setReceiptOrder(order);
-      setReceiptOpen(true);
+      // Success (pos-autoprint-receipt): close payment, stash the order, and flip
+      // on the SCREEN-HIDDEN auto-print overlay — an effect prints the receipt
+      // once its paper mounts and resets to a fresh sale on afterprint. No visible
+      // receipt page, no manual "พิมพ์"/"เริ่มบิลใหม่". PaymentModal is closed HERE
+      // (same batched render) so only the receipt's portal is present at print
+      // time. The cart/payment state is cleared straight away = a new sale.
       setPayOpen(false);
+      setReceiptOrder(order);
+      setAutoPrintOpen(true);
       setPayLines([]);
       setCashReceived("");
       setReference("");
       setPayError("");
       clearBill();
+      // The only on-screen confirmation now that the receipt page is gone.
+      showToast("ชำระเงินสำเร็จ · กำลังพิมพ์ใบเสร็จ");
     } catch {
       setPayError("ชำระเงินไม่สำเร็จ ลองใหม่อีกครั้ง");
     } finally {
@@ -977,26 +989,63 @@ export default function POSPage() {
     }
   }
 
-  // ---- receipt actions ----
-  function printReceipt() {
-    showToast("กำลังเปิดหน้าต่างพิมพ์ใบเสร็จ");
-    setTimeout(() => {
-      // Inject the admin-configured @page size before printing (Receipt print-size
-      // feature). Falls back to the globals.css 80mm default when settings haven't
-      // loaded. The A4 tax-invoice path is untouched.
-      printReceiptWithSize(receiptSettings);
-    }, 120);
-  }
+  // ---- auto-print receipt (pos-autoprint-receipt) ----
+  // When `autoPrintOpen` flips true (checkout success), the screen-hidden
+  // ReceiptModal mounts its `.print-receipt` paper into the portal. This effect:
+  //   (a) waits (via rAF) for that paper to exist in the DOM, then fires
+  //       printReceiptWithSize(receiptSettings) ONCE — reusing the same print
+  //       path + injected @page size as the manual/reprint flows;
+  //   (b) resets to a fresh new sale on `afterprint` (with a timeout fallback so
+  //       a suppressed/cancelled print never leaves the app stuck).
+  // Fire-and-forget-safe: the sale is already recorded, so a print cancel/failure
+  // still returns to a usable new-sale state. The A4 tax-invoice path is untouched.
+  useEffect(() => {
+    if (!autoPrintOpen) return;
 
-  function emailReceipt() {
-    showToast("ส่งลิงก์ใบเสร็จให้ลูกค้าแล้ว");
-  }
+    let done = false;
+    let frames = 0;
+    let fallbackTimer = 0;
+    // ~1s of frames is ample for the receipt's two-commit portal mount.
+    const MAX_FRAMES = 60;
 
-  // New sale — the ONLY way to dismiss the receipt.
-  function newSale() {
-    setReceiptOpen(false);
-    setReceiptOrder(null);
-  }
+    // Reset to a fresh sale and stop listening. Idempotent (guarded by `done`).
+    const finish = () => {
+      if (done) return;
+      done = true;
+      window.removeEventListener("afterprint", finish);
+      window.clearTimeout(fallbackTimer);
+      setAutoPrintOpen(false);
+      setReceiptOrder(null);
+    };
+
+    // Print once the paper is actually in the DOM; retry next frame until then.
+    const tryPrint = () => {
+      if (done) return;
+      const paperReady = document.querySelector(".print-receipt") !== null;
+      if (!paperReady) {
+        if (frames < MAX_FRAMES) {
+          frames += 1;
+          requestAnimationFrame(tryPrint);
+        }
+        // If the paper never mounts, skip printing (sale is recorded); the
+        // afterprint/fallback below still resets to a new sale.
+        return;
+      }
+      // Inject the admin-configured @page size and print. Fire-and-forget — the
+      // result is intentionally ignored; failures reset via finish() below.
+      void printReceiptWithSize(receiptSettings);
+    };
+
+    window.addEventListener("afterprint", finish);
+    fallbackTimer = window.setTimeout(finish, 5000);
+    requestAnimationFrame(tryPrint);
+
+    return () => {
+      done = true;
+      window.removeEventListener("afterprint", finish);
+      window.clearTimeout(fallbackTimer);
+    };
+  }, [autoPrintOpen, receiptSettings]);
 
   // Total item count (physical pieces) for the payment summary.
   const itemCount = useMemo(
@@ -1288,13 +1337,17 @@ export default function POSPage() {
         onClose={closePayment}
       />
 
-      {/* Receipt modal — dismissal is New-Sale-only */}
+      {/* Receipt (pos-autoprint-receipt): screen-hidden + auto-printed on checkout
+          success, then straight back to a new sale — NO visible receipt page and
+          no manual print/new-sale clicks. `seller` is the page's mount-fetched
+          settings so the printed header is correct on first paint (no fetch race).
+          The visible manual actions are unused here (the overlay is display:none),
+          so onPrint/onEmail/onNewSale are intentionally omitted. */}
       <ReceiptModal
-        open={receiptOpen}
+        open={autoPrintOpen}
         order={receiptOrder}
-        onPrint={printReceipt}
-        onEmail={emailReceipt}
-        onNewSale={newSale}
+        autoPrint
+        seller={receiptSettings}
       />
 
       {/* Held-bills (พักบิล) list — resume / discard a parked bill */}
