@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 type ModalProps = {
   open: boolean;
@@ -50,6 +51,15 @@ export function Modal({ open, onClose, label, children }: ModalProps) {
   const previouslyFocused = useRef<HTMLElement | null>(null);
   // Stable per-instance token for the open-modal stack (stacked-escape fix).
   const stackToken = useRef<object>({});
+  // SSR/hydration guard for the body portal (print-isolation fix): the overlay is
+  // rendered via createPortal into document.body so it mounts as a DIRECT body
+  // child — OUTSIDE the app shell — which lets `@media print` hide the tall shell
+  // and print ONLY the receipt/tax-invoice paper (no blank pages, no repeats).
+  // document.body does not exist during SSR, so we defer the portal until after
+  // the first client commit to keep hydration deterministic (server + first
+  // client render both produce null).
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   // Effect A — depends on [open] ONLY so it never re-runs (and never yanks focus
   // back to the first focusable) when a parent passes a fresh onClose closure on
@@ -121,10 +131,15 @@ export function Modal({ open, onClose, label, children }: ModalProps) {
     };
   }, [open, onClose]);
 
-  if (!open) return null;
+  if (!open || !mounted) return null;
 
-  return (
+  // Portal the overlay to document.body so every modal mounts as a direct body
+  // child (`body > [data-modal-portal]`), outside the collapsible app shell.
+  // createPortal preserves React context + event bubbling through the component
+  // tree, so consumers, backdrop-click, and stopPropagation are unaffected.
+  const overlay = (
     <div
+      data-modal-portal
       className="fixed inset-0 z-50 flex items-center justify-center"
       style={{
         background: "rgba(8,20,15,.48)",
@@ -144,4 +159,6 @@ export function Modal({ open, onClose, label, children }: ModalProps) {
       </div>
     </div>
   );
+
+  return createPortal(overlay, document.body);
 }

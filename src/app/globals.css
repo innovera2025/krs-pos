@@ -225,50 +225,112 @@ textarea:focus-visible,
 }
 
 /* 80mm thermal receipt print isolation (domain-receipt-80mm).
-   Hide everything except the .print-receipt paper, then pin it full-bleed at
-   72mm so a thermal printer / PDF renders only the receipt.
 
-   Scoping: the DEFAULT @page is 80mm (the common case — a normal sale receipt).
-   The A4 full tax invoice (Phase 4) toggles `body.printing-tax-invoice` while its
-   modal is open; that body class overrides @page to A4 portrait and isolates the
-   .print-tax-invoice paper instead. Only one print modal is open at a time, so
-   the two paths never collide. */
+   Portal-based isolation (blank-page fix): every Modal now renders via
+   createPortal into <body>, so the open receipt/tax-invoice modal mounts as a
+   DIRECT body child marked `[data-modal-portal]` — OUTSIDE the collapsible app
+   shell. We therefore isolate the print document by *display:none-ing the whole
+   app shell* (so its tall product grid spawns NO blank pages) and dropping the
+   portal overlay into normal flow so the receipt paper alone defines the page.
+
+   Why not the old `visibility:hidden` + `position:fixed` approach: a hidden app
+   subtree still OCCUPIES page height (→ ~26 blank pages) and a fixed receipt
+   REPEATS on every page. Flowing the paper as the sole in-flow content makes the
+   `@page { size: 80mm auto }` box grow to exactly one receipt.
+
+   Scoping: the DEFAULT @page is 80mm (a normal sale receipt). The A4 full tax
+   invoice (Phase 4) toggles `body.printing-tax-invoice` while its modal is open;
+   that block below swaps which paper defines the page box. Only one print modal
+   is open at a time, so the two paths never collide. */
 @media print {
   @page {
     size: 80mm auto;
     margin: 4mm;
   }
-  body * {
-    visibility: hidden;
+
+  /* Hide the entire app shell — only the portaled modal prints. Because the
+     modal is a direct body child, everything ELSE under <body> (the app tree,
+     scripts, toast portals) is display:none and contributes no page height. */
+  body > *:not([data-modal-portal]) {
+    display: none !important;
   }
-  .print-receipt,
-  .print-receipt * {
-    visibility: visible;
+
+  /* Un-cap scroll/height on the whole portal subtree so the paper flows in full
+     (the on-screen card uses max-h + overflow:auto to scroll), and drop card
+     shadows. Applied broadly because it is safe for the paper's inner flex/table
+     layout — it only resets overflow/height/shadow, never display/position. */
+  [data-modal-portal],
+  [data-modal-portal] * {
+    max-height: none !important;
+    overflow: visible !important;
+    box-shadow: none !important;
   }
+
+  /* Neutralize the overlay chrome: no dark backdrop, no blur, no fixed
+     full-screen flex-centering — the overlay becomes a plain block at the page
+     top so the paper isn't vertically centered / pushed onto later pages. */
+  [data-modal-portal] {
+    position: static !important;
+    display: block !important;
+    background: none !important;
+    backdrop-filter: none !important;
+    inset: auto !important;
+    padding: 0 !important;
+  }
+
+  /* Collapse every WRAPPER between the portal root and a paper into a
+     transparent, unconstrained block so the paper alone defines size/position.
+     Without this the on-screen card's fixed px width (w-[720px]/w-[860px]) and
+     the tax-invoice scroll gutter (p-6) would offset/clip the paper once it is
+     in normal flow. The :not() chain excludes the papers themselves, their inner
+     content (must keep flex/table layout), and the .no-print chrome (must stay
+     hidden), so only the structural wrappers (dialog panel, card, scroll box)
+     are collapsed. */
+  [data-modal-portal]
+    *:not(.print-receipt):not(.print-receipt *):not(.print-tax-invoice):not(.print-tax-invoice *):not(.no-print):not(.no-print *) {
+    display: block !important;
+    position: static !important;
+    width: auto !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: none !important;
+    border: 0 !important;
+  }
+
+  /* Print only the receipt paper, in normal flow, as the sole page content → the
+     `size: 80mm auto` page grows to exactly one receipt (no blanks, no repeat).
+     NOTE: width is intentionally NOT !important so receiptPrint.ts's injected
+     `.print-receipt { width: <configured>mm }` (appended later to <head>) still
+     wins by source order; 72mm is only the default when no override is present. */
   .print-receipt {
-    position: fixed;
-    inset: 0;
+    position: static !important;
     width: 72mm;
+    margin: 0 auto !important;
   }
+
+  /* On-screen-only chrome (success/QR/sync side, print & new-sale buttons) adds
+     no page height. */
   .no-print {
-    display: none;
+    display: none !important;
   }
 }
 
 /* A4 full tax invoice print isolation (Phase 4 — Thai §86/4 full tax invoice,
    owner decision D4: a SEPARATE A4 document). Active only while the tax-invoice
-   modal is open (body.printing-tax-invoice). Renders ONLY the A4 invoice on an
-   A4-portrait page box, isolated from the 80mm thermal path above.
+   modal is open (body.printing-tax-invoice). The default block above already
+   hides the app shell + neutralizes the portal overlay (the tax-invoice modal
+   uses the SAME portaled Modal, so `[data-modal-portal]` covers it); here we
+   only swap which paper defines the page box.
 
    FIX 7 — reliable A4 page sizing. The `page` property on `body` does NOT
    reliably switch the page box in Chromium (per CSS Paged Media, the named-page
    association is honored on the element that actually generates the page box, not
    reliably when set on `body`). So the named page `tax-invoice` is assigned to
    the printed `.print-tax-invoice` ELEMENT itself — that element generates the
-   page box, so `@page tax-invoice { size: A4 portrait }` governs it. The default
-   `@page { size: 80mm auto }` (above) still governs the 80mm `.print-receipt`
-   path; the two are isolated by the `body.printing-tax-invoice` scope and the
-   fact that only one print modal is ever open at a time. */
+   page box, so `@page tax-invoice { size: A4 portrait }` governs it. Kept in
+   normal flow (position:static) so it defines the pages (no fixed-repeat), and
+   the 80mm `.print-receipt` is hidden under this scope. */
 @media print {
   @page tax-invoice {
     size: A4 portrait;
@@ -277,21 +339,16 @@ textarea:focus-visible,
   body.printing-tax-invoice .print-receipt,
   body.printing-tax-invoice .print-receipt * {
     /* A receipt modal is never open at the same time, but be explicit. */
-    visibility: hidden;
-  }
-  body.printing-tax-invoice .print-tax-invoice,
-  body.printing-tax-invoice .print-tax-invoice * {
-    visibility: visible;
+    display: none !important;
   }
   body.printing-tax-invoice .print-tax-invoice {
     /* Assign the named A4 page to the element that generates the page box (FIX 7)
        — this is what makes @page tax-invoice's A4 size reliably apply. */
     page: tax-invoice;
-    position: fixed;
-    inset: 0;
+    position: static !important;
     width: 210mm;
     /* Let the content flow across A4 pages for a long line-item list. */
     height: auto;
-    margin: 0;
+    margin: 0 auto !important;
   }
 }
