@@ -14,7 +14,7 @@ import type {
   ShopSettingsDTO,
 } from "@/types";
 import { useToast } from "@/components/ToastProvider";
-import { printReceiptWithSize } from "@/lib/receiptPrint";
+import { getReceiptPrintService } from "@/lib/print";
 import {
   bahtToSatang,
   computeTotals,
@@ -982,6 +982,30 @@ export default function POSPage() {
       clearBill();
       // The only on-screen confirmation now that the receipt page is gone.
       showToast("ชำระเงินสำเร็จ · กำลังพิมพ์ใบเสร็จ");
+      // Print via the swappable receipt-print service (receipt-print-service
+      // abstraction). BrowserPrintService rAF-waits for the screen-hidden
+      // `.print-receipt` paper (rendered by <ReceiptModal open={autoPrintOpen}>),
+      // fires the same printReceiptWithSize path as before, and resolves on
+      // `afterprint` (5s fallback). Fire-and-forget-safe: the sale is already
+      // recorded, so a cancelled/failed/suppressed print still resolves → reset
+      // to a fresh sale (autoPrintOpen=false, receiptOrder=null). Swapping to the
+      // silent localhost ESC/POS agent later is a ONE-LINE change inside
+      // getReceiptPrintService(); this call site does not change.
+      // Reset to a fresh sale once the print has SETTLED — resolve OR reject —
+      // so the POS never stays stuck on autoPrintOpen if a future backend (the
+      // localhost ESC/POS agent) rejects. Same handler for both outcomes
+      // (ES2015-safe, no Promise.finally dependency).
+      const backToNewSale = () => {
+        setAutoPrintOpen(false);
+        setReceiptOrder(null);
+      };
+      void getReceiptPrintService()
+        .printReceipt({
+          order,
+          seller: receiptSettings,
+          sizeSettings: receiptSettings,
+        })
+        .then(backToNewSale, backToNewSale);
     } catch {
       setPayError("ชำระเงินไม่สำเร็จ ลองใหม่อีกครั้ง");
     } finally {
@@ -990,62 +1014,13 @@ export default function POSPage() {
   }
 
   // ---- auto-print receipt (pos-autoprint-receipt) ----
-  // When `autoPrintOpen` flips true (checkout success), the screen-hidden
-  // ReceiptModal mounts its `.print-receipt` paper into the portal. This effect:
-  //   (a) waits (via rAF) for that paper to exist in the DOM, then fires
-  //       printReceiptWithSize(receiptSettings) ONCE — reusing the same print
-  //       path + injected @page size as the manual/reprint flows;
-  //   (b) resets to a fresh new sale on `afterprint` (with a timeout fallback so
-  //       a suppressed/cancelled print never leaves the app stuck).
-  // Fire-and-forget-safe: the sale is already recorded, so a print cancel/failure
-  // still returns to a usable new-sale state. The A4 tax-invoice path is untouched.
-  useEffect(() => {
-    if (!autoPrintOpen) return;
-
-    let done = false;
-    let frames = 0;
-    let fallbackTimer = 0;
-    // ~1s of frames is ample for the receipt's two-commit portal mount.
-    const MAX_FRAMES = 60;
-
-    // Reset to a fresh sale and stop listening. Idempotent (guarded by `done`).
-    const finish = () => {
-      if (done) return;
-      done = true;
-      window.removeEventListener("afterprint", finish);
-      window.clearTimeout(fallbackTimer);
-      setAutoPrintOpen(false);
-      setReceiptOrder(null);
-    };
-
-    // Print once the paper is actually in the DOM; retry next frame until then.
-    const tryPrint = () => {
-      if (done) return;
-      const paperReady = document.querySelector(".print-receipt") !== null;
-      if (!paperReady) {
-        if (frames < MAX_FRAMES) {
-          frames += 1;
-          requestAnimationFrame(tryPrint);
-        }
-        // If the paper never mounts, skip printing (sale is recorded); the
-        // afterprint/fallback below still resets to a new sale.
-        return;
-      }
-      // Inject the admin-configured @page size and print. Fire-and-forget — the
-      // result is intentionally ignored; failures reset via finish() below.
-      void printReceiptWithSize(receiptSettings);
-    };
-
-    window.addEventListener("afterprint", finish);
-    fallbackTimer = window.setTimeout(finish, 5000);
-    requestAnimationFrame(tryPrint);
-
-    return () => {
-      done = true;
-      window.removeEventListener("afterprint", finish);
-      window.clearTimeout(fallbackTimer);
-    };
-  }, [autoPrintOpen, receiptSettings]);
+  // The auto-print mechanism now lives behind the swappable ReceiptPrintService
+  // (see src/lib/print). On checkout success, confirmPayment renders the
+  // screen-hidden ReceiptModal (open={autoPrintOpen}) and calls
+  // getReceiptPrintService().printReceipt(...); BrowserPrintService rAF-waits for
+  // the `.print-receipt` paper, prints it via printReceiptWithSize, and resolves
+  // on afterprint (5s fallback), at which point the sale resets to a fresh bill.
+  // The former inline rAF/afterprint effect was moved into BrowserPrintService.
 
   // Total item count (physical pieces) for the payment summary.
   const itemCount = useMemo(
