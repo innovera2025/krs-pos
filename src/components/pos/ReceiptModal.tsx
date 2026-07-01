@@ -107,6 +107,8 @@ export function ReceiptModal({
   const branchLine = sellerInfo.sellerBranchLabel?.trim() || BRANCH_FALLBACK;
   const sellerPhone = sellerInfo.sellerPhone?.trim() || "";
   const sellerPosId = sellerInfo.sellerPosId?.trim() || "";
+  const sellerAddress = sellerInfo.sellerAddress?.trim() || "";
+  const sellerTaxId = sellerInfo.sellerTaxId?.trim() || "";
 
   const posNo = order.orderNumber;
   const shortId = posNo.slice(-6); // domain-receipt-shortid
@@ -153,34 +155,59 @@ export function ReceiptModal({
         {/* Receipt paper (80mm) — this is what @media print isolates */}
         <div
           className="print-receipt w-[330px] flex-shrink-0 overflow-y-auto bg-white"
-          style={{ padding: "26px 24px", fontFamily: "var(--font-mono), monospace" }}
+          style={{ padding: "4px 10px", fontFamily: "var(--font-mono), monospace" }}
         >
           {/* Header */}
           <div
-            className="border-b border-dashed pb-3.5 text-center"
+            className="border-b border-dashed pb-2 text-center"
             style={{ borderColor: "#cbd5e1" }}
           >
+            {/* Company name — single line at 72mm: no letter-spacing, tight
+                leading, smaller size so a long registered name fits one row. */}
             <div
-              className="text-[18px] font-bold"
-              style={{ fontFamily: "var(--font-sans)", letterSpacing: ".04em" }}
+              className="text-[14px] font-bold leading-tight"
+              style={{ fontFamily: "var(--font-sans)" }}
             >
               {sellerName}
             </div>
-            <div className="mt-0.5 text-[11px]" style={{ color: "#64748b" }}>
+            <div className="mt-0.5 text-[10.5px]" style={{ color: "#64748b" }}>
               {branchLine}
             </div>
             {/* Phone + POS ID render only when configured (KRS reference receipt
                 parity) — never show an empty/placeholder line. */}
             {sellerPhone && (
-              <div className="text-[11px]" style={{ color: "#64748b" }}>
+              <div className="text-[10.5px]" style={{ color: "#64748b" }}>
                 โทร {sellerPhone}
               </div>
             )}
             {sellerPosId && (
-              <div className="text-[11px]" style={{ color: "#64748b" }}>
+              <div className="text-[10.5px]" style={{ color: "#64748b" }}>
                 POS: {sellerPosId}
               </div>
             )}
+            {/* Registered address + seller TIN (seller-company-settings) — render
+                only when set in Settings, mirroring the phone/POS conditional. */}
+            {sellerAddress && (
+              <div
+                className="mt-0.5 text-[10.5px]"
+                style={{ color: "#64748b", fontFamily: "var(--font-sans)" }}
+              >
+                {sellerAddress}
+              </div>
+            )}
+            {sellerTaxId && (
+              <div className="text-[10.5px]" style={{ color: "#64748b" }}>
+                เลขประจำตัวผู้เสียภาษี {sellerTaxId}
+              </div>
+            )}
+            {/* Document title — the receipt's legal heading, sits at the bottom of
+                the header block just above the dashed rule / meta section. */}
+            <div
+              className="mt-1.5 text-[12.5px] font-bold"
+              style={{ color: "#0f172a", fontFamily: "var(--font-sans)" }}
+            >
+              ใบเสร็จรับเงินสด
+            </div>
           </div>
 
           {/* Meta */}
