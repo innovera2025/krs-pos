@@ -193,10 +193,15 @@ krs-print-agent.exe --test
 exits. Use it to confirm Thai rendering + the packaging on the real printer. Other flags:
 
 ```bat
+krs-print-agent.exe --scan       REM print a Thai codepage scan (ESC t 0..79), then exit
 krs-print-agent.exe --version    REM print the agent version and exit
 krs-print-agent.exe --help       REM usage + the runtime-config env/file summary
 krs-print-agent.exe              REM (no flag) start the server on 127.0.0.1:9100
 ```
+
+`--scan` prints ONE strip that renders a short Thai sample (`กขคงจ ๑๒๓`) under **every**
+`ESC t` code table from `0` to `79`, one per line (`n=<n>: <sample>`), after the same
+`FS .` Kanji-cancel. See "Find the Thai codepage with `--scan`" below for how to read it.
 
 ### 3. One-click install + autostart (`deploy/setup-print-agent.bat`)
 
@@ -263,6 +268,16 @@ entry, so the agent selects the printer's Thai code table itself with
 (`encoding.js`, via `iconv-lite`). `×`, `·` and `…` (absent from TIS-620) are
 transliterated to `x`, `-`, `...` so nothing prints as `?`.
 
+**Kanji mode must be OFF (`FS .`).** Chinese-firmware XP-80C units boot with
+**Kanji / multi-byte mode ON**, which consumes each *pair* of Thai high-bytes as one
+double-byte **Chinese** glyph — so Thai prints as Chinese and changing only the
+codepage number does nothing. `printer.js` therefore **always** emits `FS .`
+(`0x1C 0x2E`, "cancel Kanji character mode") right after `ESC @` and **before** the
+`ESC t` code-table selection, forcing single-byte mode so the Thai table applies to
+`0x80–0xFF`. This cancel is unconditional (no config toggle). Getting correct Thai on
+these units needs **both** Kanji mode off (now automatic) **and** the right `ESC t`
+number (below).
+
 **How the job reaches the printer.** The ESC/POS buffer is spooled to Windows as a
 `RAW` job through the print spooler (winspool, via a generated PowerShell helper) —
 **no native/node-gyp module**, which keeps the Phase-B3 `pkg` single-exe build clean.
@@ -277,6 +292,43 @@ can only be confirmed on the physical printer. Run this on the shop Windows PC:
 npm install
 npm run test-print
 ```
+
+#### Find the Thai codepage with `--scan` (fastest)
+
+If the test receipt prints **Chinese** (or other garbage) for Thai, the printer's
+`ESC t` table number is wrong. Instead of guessing one value at a time, print the
+whole sweep once:
+
+```bat
+krs-print-agent.exe --scan
+REM (from source: node index.js --scan)
+```
+
+This prints a single strip with a Thai sample (`กขคงจ ๑๒๓`) under **every** code table
+`0..79`, one per line:
+
+```
+=== THAI CODEPAGE SCAN ===
+Find the line with READABLE THAI -> that n = KRS_THAI_CODEPAGE
+sample = "กขคงจ ๑๒๓"
+n=0: <sample under table 0>
+n=1: <sample under table 1>
+...
+n=79: <sample under table 79>
+```
+
+Read the strip, find the `n=<n>:` line whose Thai is **readable**, and set that number
+permanently (no rebuild):
+
+```json
+// config.local.json (next to the .exe)
+{ "THAI_CODEPAGE": 21 }
+```
+
+or `set KRS_THAI_CODEPAGE=21`. The scan already sends `FS .` (Kanji-cancel) once up
+front, so its lines are a fair single-byte test of each table. If **no** line on the
+strip shows readable Thai, the firmware likely lacks a TIS-620 table — request the
+code-table spec from Xprinter.
 
 Then inspect the printed sample and iterate as needed (no code change — just env):
 

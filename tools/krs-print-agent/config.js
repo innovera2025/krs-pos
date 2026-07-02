@@ -150,8 +150,19 @@ module.exports = {
   //   18  (0x12)  found in some Xprinter firmware revisions
   //   17  (0x11)  occasional alternate
   //
-  // If none of 20 → 21 → 18 → 17 produce correct Thai, request the firmware
-  // code-table spec from Xprinter (see README "Thai codepage" section).
+  // KANJI MODE: printer.js ALWAYS sends `FS .` (0x1C 0x2E, cancel Kanji/multi-byte
+  // mode) right after ESC @, BEFORE this ESC t selection. Chinese-firmware XP-80C
+  // units default to Kanji mode ON, which consumes each PAIR of Thai high-bytes as
+  // one double-byte Chinese glyph (Thai prints as Chinese); FS . forces single-byte
+  // mode so this code table applies. Changing only the codepage number does nothing
+  // while Kanji mode is on — that fix is now unconditional.
+  //
+  // Not sure which number? Run `krs-print-agent.exe --scan` (or `node index.js
+  // --scan`): it prints ONE strip with a Thai sample under ESC t 0..79, one per line.
+  // Read the strip, find the `n=<n>:` line whose Thai is READABLE, and set that number
+  // as KRS_THAI_CODEPAGE (env) or "THAI_CODEPAGE" in config.local.json. If even the
+  // scan shows no readable Thai, request the firmware code-table spec from Xprinter
+  // (see README "Thai codepage" section).
   THAI_CODEPAGE: pickInt(['KRS_THAI_CODEPAGE'], 'THAI_CODEPAGE', 20),
 
   // Print an ASCII "B" instead of the baht sign ฿ (U+0E3F → 0xDF in TIS-620). Some

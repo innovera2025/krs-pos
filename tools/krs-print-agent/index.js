@@ -22,7 +22,8 @@
 const http = require('http');
 const config = require('./config');
 const pkg = require('./package.json');
-const { printReceipt, PrintError } = require('./printer');
+const { printReceipt, sendToWindowsPrinter, PrintError } = require('./printer');
+const { encodeThai } = require('./encoding');
 
 const { PORT, HOST, ALLOWED_ORIGINS, MAX_BODY_BYTES } = config;
 const AGENT_NAME = 'krs-print-agent';
@@ -223,6 +224,100 @@ function startServer() {
   return server;
 }
 
+// A short Thai sample with distinctive glyphs + Thai digits (๑๒๓), so a correct
+// code table is unmistakable on the printed strip. Kept to ONE printed line so the
+// full 0..79 scan is ~80 lines (a manageable paper strip).
+const SCAN_SAMPLE = 'กขคงจ ๑๒๓';
+
+// Lowest and highest ESC t code-table numbers probed by --scan (inclusive).
+const SCAN_MIN_CODEPAGE = 0;
+const SCAN_MAX_CODEPAGE = 79;
+
+/**
+ * Build ONE ESC/POS job that sweeps every candidate Thai code table so the operator
+ * can read the printed strip and find the number that renders readable Thai.
+ *
+ * Layout:
+ *   ESC @                init/reset
+ *   FS .                 CANCEL Kanji/multi-byte mode ONCE (Chinese-firmware default
+ *                        is Kanji ON → Thai high-byte pairs print as Chinese). Sent a
+ *                        single time up front; single-byte mode then holds for the run.
+ *   header               "=== THAI CODEPAGE SCAN ===" + a one-line reading hint
+ *   n=0..79 lines        each: ASCII "n=<n>: " label, then ESC t <n> (select the table
+ *                        for THIS line only), then the SCAN_SAMPLE as TIS-620 bytes
+ *   ESC t <default>      reset the code table back to a sane default
+ *   feed + partial cut
+ *
+ * @returns {Buffer} the raw ESC/POS byte stream (no device involved)
+ */
+function buildCodepageScanBuffer() {
+  const NL = Buffer.from([0x0a]);
+  const parts = [];
+
+  parts.push(Buffer.from([0x1b, 0x40])); // ESC @  reset printer
+  // FS .  (0x1C 0x2E) — cancel Kanji/multi-byte mode ONCE so every byte below is
+  // treated as SINGLE-byte and the per-line ESC t Thai table applies to 0x80–0xFF.
+  parts.push(Buffer.from([0x1c, 0x2e])); // FS .  cancel Kanji (single-byte mode)
+
+  // Header + reading hint (pure ASCII — renders under any code table).
+  parts.push(Buffer.from('=== THAI CODEPAGE SCAN ===\n', 'ascii'));
+  parts.push(
+    Buffer.from('Find the line with READABLE THAI -> that n = KRS_THAI_CODEPAGE\n', 'ascii'),
+  );
+  parts.push(Buffer.from(`sample = "${SCAN_SAMPLE}"\n`, 'ascii'));
+
+  // encodeThai returns a TIS-620 Buffer for non-ASCII input (SCAN_SAMPLE is Thai).
+  const thai = encodeThai(SCAN_SAMPLE);
+  const thaiBuf = Buffer.isBuffer(thai) ? thai : Buffer.from(String(thai), 'ascii');
+
+  for (let n = SCAN_MIN_CODEPAGE; n <= SCAN_MAX_CODEPAGE; n++) {
+    parts.push(Buffer.from(`n=${n}: `, 'ascii')); // ASCII label (always readable)
+    parts.push(Buffer.from([0x1b, 0x74, n & 0xff])); // ESC t <n>  select table for this line
+    parts.push(thaiBuf); // the same Thai sample bytes, rendered under table n
+    parts.push(NL);
+  }
+
+  // Reset the code table to a sane default, feed a little, then partial cut.
+  parts.push(Buffer.from([0x1b, 0x74, config.THAI_CODEPAGE & 0xff])); // ESC t <default>
+  parts.push(Buffer.from([0x0a, 0x0a, 0x0a])); // feed
+  parts.push(Buffer.from([0x1d, 0x56, 0x01])); // GS V 1  partial cut (EPSON)
+
+  return Buffer.concat(parts);
+}
+
+/**
+ * Build the codepage-scan job and spool it to the Windows printer. Reuses the shared
+ * winspool RAW send from printer.js (no duplicated spooler logic). Off-Windows the
+ * buffer still BUILDS and the byte count is reported; the send throws a clear error
+ * (handled here) instead of crashing. Returns a process exit code (0 ok, 1 failure).
+ * @returns {Promise<number>}
+ */
+async function runCodepageScan() {
+  const buffer = buildCodepageScanBuffer();
+  console.log(
+    `[${AGENT_NAME}] codepage scan: built ${buffer.length} ESC/POS bytes ` +
+      `(FS . Kanji-cancel + ESC t ${SCAN_MIN_CODEPAGE}..${SCAN_MAX_CODEPAGE}, ` +
+      `sample='${SCAN_SAMPLE}') PRINTER_NAME='${config.PRINTER_NAME || '(Windows default)'}'`,
+  );
+  try {
+    const result = await sendToWindowsPrinter(buffer, config.PRINTER_NAME);
+    console.log(`[${AGENT_NAME}] scan ${result}`);
+    console.log(
+      `[${AGENT_NAME}] read the strip: the n= line showing readable Thai is your ` +
+        `KRS_THAI_CODEPAGE (set it via env or config.local.json).`,
+    );
+    return 0;
+  } catch (err) {
+    console.error(
+      `[${AGENT_NAME}] scan could not print: ${err && err.message ? err.message : err}`,
+    );
+    console.error(
+      `[${AGENT_NAME}] (built ${buffer.length} ESC/POS bytes; spooling only works on Windows).`,
+    );
+    return 1;
+  }
+}
+
 /** Print the CLI usage banner (for --help / -h). */
 function printHelp() {
   process.stdout.write(
@@ -233,6 +328,9 @@ function printHelp() {
       `                                 -> listens on http://${HOST}:${PORT}\n` +
       '  krs-print-agent.exe --test     Print the sample receipt once, then exit\n' +
       '  krs-print-agent.exe --selftest (alias for --test)\n' +
+      '  krs-print-agent.exe --scan     Print a Thai codepage scan (ESC t 0..79) once,\n' +
+      '                                 then exit. Read the strip: the line showing\n' +
+      '                                 READABLE THAI is your KRS_THAI_CODEPAGE.\n' +
       '  krs-print-agent.exe --version  Print the agent version and exit\n' +
       '  krs-print-agent.exe --help     Show this help and exit\n' +
       '\n' +
@@ -265,6 +363,22 @@ function main() {
     return;
   }
 
+  if (has('--scan', '--scan-codepages')) {
+    // One-shot Thai code-table sweep: build ESC t 0..79 (with FS . Kanji-cancel) and
+    // spool it once so the operator can read the strip for the correct codepage.
+    runCodepageScan()
+      .then((code) => {
+        process.exitCode = code;
+      })
+      .catch((err) => {
+        process.stderr.write(
+          `[${AGENT_NAME}] scan error: ${err && err.message ? err.message : err}\n`,
+        );
+        process.exitCode = 1;
+      });
+    return;
+  }
+
   if (has('--test', '--selftest')) {
     // Reuse the EXACT sample receipt + runner from scripts/test-print.js so the
     // packaged .exe self-test matches `npm run test-print` byte-for-byte.
@@ -285,4 +399,17 @@ function main() {
   startServer();
 }
 
-main();
+// Run the CLI only when executed directly (`node index.js` / the packaged .exe, where
+// require.main === module). Guarding this lets tests `require('./index')` to inspect
+// the scan-buffer builder without binding a port — mirroring scripts/test-print.js.
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  buildCodepageScanBuffer,
+  runCodepageScan,
+  SCAN_SAMPLE,
+  SCAN_MIN_CODEPAGE,
+  SCAN_MAX_CODEPAGE,
+};

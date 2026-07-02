@@ -165,8 +165,14 @@ function renderReceipt(printer, data, opts) {
   const address = s(seller.sellerAddress);
   const taxId = s(seller.sellerTaxId);
 
-  // --- Initialize + select Thai code table (ESC @, then ESC t <n>). ---
+  // --- Initialize + select Thai code table (ESC @, FS ., then ESC t <n>). ---
   printer.append(Buffer.from([0x1b, 0x40])); // ESC @  reset printer
+  // FS .  (0x1C 0x2E) — CANCEL Kanji / multi-byte character mode. Chinese-firmware
+  // XP-80C units default to Kanji mode ON (FS &), which consumes each PAIR of high
+  // TIS-620 bytes as ONE double-byte Chinese glyph — so Thai prints as Chinese. We
+  // MUST cancel Kanji mode here (before the code table + any Thai) so the printer
+  // treats every byte as SINGLE-byte and the ESC t Thai table applies to 0x80–0xFF.
+  printer.append(Buffer.from([0x1c, 0x2e])); // FS .  cancel Kanji (single-byte mode)
   printer.append(Buffer.from([0x1b, 0x74, codepage & 0xff])); // ESC t <n>  Thai table
   printer.setTypeFontA(); // Font A → 48 columns
 
@@ -451,6 +457,10 @@ module.exports = {
   renderReceipt,
   methodLabel,
   formatDateTime,
+  // Shared native-free Windows RAW spooler send. Exported so other CLI paths
+  // (e.g. index.js `--scan`) can spool their own ESC/POS buffer to the same
+  // printer without duplicating the winspool/PowerShell logic. '' = default queue.
+  sendToWindowsPrinter,
   PrintError,
   RECEIPT_WIDTH,
 };
