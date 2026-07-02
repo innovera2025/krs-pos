@@ -14,7 +14,7 @@ import type {
   ShopSettingsDTO,
 } from "@/types";
 import { useToast } from "@/components/ToastProvider";
-import { getReceiptPrintService } from "@/lib/print";
+import { detectPrintAgent, resolveReceiptPrintService } from "@/lib/print";
 import {
   bahtToSatang,
   computeTotals,
@@ -164,6 +164,14 @@ export default function POSPage() {
   // kiosk shortcut (?kiosk=1 persisted on first load).
   const [onboardingOpen, setOnboardingOpen] = useState(false);
 
+  // ---- local print-agent detection (Plan B) ----
+  // Whether the silent localhost ESC/POS print agent answered its /health ping on
+  // this page load. Detected once on mount (fail-open false = agent absent →
+  // browser print path). Drives BOTH the receipt-print backend selection at
+  // checkout AND onboarding-modal suppression (an installed agent already gives
+  // dialog-free printing, so the setup guide is unnecessary).
+  const [agentAvailable, setAgentAvailable] = useState(false);
+
   const searchRef = useRef<HTMLInputElement>(null);
 
   // ---- barcode-scanner cadence capture (scan-thai-ime-fix) ----
@@ -255,15 +263,33 @@ export default function POSPage() {
     return () => ctrl.abort();
   }, []);
 
-  // Silent-print onboarding (Plan A). Runs once on mount: persist the ?kiosk=1
-  // shortcut signal FIRST (so a kiosk session is recognized before the read),
-  // then show the first-run guide only on a normal browser that has neither been
-  // opened via the kiosk shortcut nor previously dismissed the modal.
+  // Print-agent detection + silent-print onboarding (Plan B extends Plan A).
+  // Runs once on mount, in order:
+  //   1. persistKioskModeIfFlagged() — persist the ?kiosk=1 shortcut signal FIRST
+  //      so a kiosk session is recognized before the onboarding read below.
+  //   2. detectPrintAgent() — probe the localhost ESC/POS agent (cached, bounded
+  //      ~1500ms, fail-open false). NON-blocking: nothing waits on it except the
+  //      two state updates it triggers.
+  //   3. When it settles: record availability, and decide the onboarding modal.
+  //      The modal decision WAITS for detection so an installed agent SUPPRESSES
+  //      the guide and there is no first-run flash before the probe resolves
+  //      (onboardingOpen starts false and is only ever set true here).
+  // Suppression = agentAvailable OR kioskMode OR dismissed. Only a normal browser
+  // with NO agent, NOT a kiosk session, and NOT previously dismissed shows it.
   useEffect(() => {
     persistKioskModeIfFlagged();
-    if (shouldShowOnboardingModal()) {
-      setOnboardingOpen(true);
-    }
+    let cancelled = false;
+    // detectPrintAgent never rejects (fail-open) → a bare .then is safe.
+    void detectPrintAgent().then((available) => {
+      if (cancelled) return;
+      setAgentAvailable(available);
+      if (!available && shouldShowOnboardingModal()) {
+        setOnboardingOpen(true);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Auto-focus the search/scan input on mount so a barcode scanner can fire immediately.
@@ -1004,45 +1030,51 @@ export default function POSPage() {
             : p;
         })
       );
-      // Success (pos-autoprint-receipt): close payment, stash the order, and flip
-      // on the SCREEN-HIDDEN auto-print overlay — an effect prints the receipt
-      // once its paper mounts and resets to a fresh sale on afterprint. No visible
-      // receipt page, no manual "พิมพ์"/"เริ่มบิลใหม่". PaymentModal is closed HERE
-      // (same batched render) so only the receipt's portal is present at print
-      // time. The cart/payment state is cleared straight away = a new sale.
+      // Success (pos-autoprint-receipt): close payment, stash the order, clear the
+      // bill, and — for the BROWSER print path only — flip on the SCREEN-HIDDEN
+      // auto-print overlay. PaymentModal is closed HERE (same batched render) so
+      // only the receipt's portal is present at print time. The cart/payment state
+      // is cleared straight away = a new sale.
       setPayOpen(false);
       setReceiptOrder(order);
-      setAutoPrintOpen(true);
+      // Plan B: BrowserPrintService needs the screen-hidden `.print-receipt` DOM
+      // (rendered by <ReceiptModal open={autoPrintOpen} autoPrint/>) to drive
+      // window.print(). The local ESC/POS agent prints straight from the JSON
+      // payload and needs NO DOM, so mount the overlay ONLY when the agent is
+      // ABSENT — preserving today's exact browser/kiosk behavior in the fallback.
+      if (!agentAvailable) {
+        setAutoPrintOpen(true);
+      }
       setPayLines([]);
       setCashReceived("");
       setReference("");
       setPayError("");
       clearBill();
-      // The only on-screen confirmation now that the receipt page is gone.
+      // The only on-screen confirmation now that the receipt page is gone. Honest
+      // for BOTH paths (agent silent-print or browser dialog / kiosk print).
       showToast("ชำระเงินสำเร็จ · กำลังพิมพ์ใบเสร็จ");
       // Print via the swappable receipt-print service (receipt-print-service
-      // abstraction). BrowserPrintService rAF-waits for the screen-hidden
-      // `.print-receipt` paper (rendered by <ReceiptModal open={autoPrintOpen}>),
-      // fires the same printReceiptWithSize path as before, and resolves on
-      // `afterprint` (5s fallback). Fire-and-forget-safe: the sale is already
-      // recorded, so a cancelled/failed/suppressed print still resolves → reset
-      // to a fresh sale (autoPrintOpen=false, receiptOrder=null). Swapping to the
-      // silent localhost ESC/POS agent later is a ONE-LINE change inside
-      // getReceiptPrintService(); this call site does not change.
-      // Reset to a fresh sale once the print has SETTLED — resolve OR reject —
-      // so the POS never stays stuck on autoPrintOpen if a future backend (the
-      // localhost ESC/POS agent) rejects. Same handler for both outcomes
-      // (ES2015-safe, no Promise.finally dependency).
+      // abstraction). resolveReceiptPrintService() picks the ACTIVE backend from
+      // the CACHED mount-time detection (no re-ping):
+      //   • agent present → PrintAgentService (POST localhost:9100, failOpen, no DOM)
+      //   • agent absent  → BrowserPrintService (rAF-waits the `.print-receipt`
+      //     paper, printReceiptWithSize → window.print(), afterprint / 5s fallback)
+      // Fire-and-forget-safe: the sale is already recorded, so a cancelled/failed/
+      // suppressed print still settles → reset to a fresh sale. The reset runs on
+      // BOTH resolve AND reject (same handler, ES2015-safe, no Promise.finally) so
+      // a failed/absent/hung agent print never leaves autoPrintOpen stuck.
       const backToNewSale = () => {
         setAutoPrintOpen(false);
         setReceiptOrder(null);
       };
-      void getReceiptPrintService()
-        .printReceipt({
-          order,
-          seller: receiptSettings,
-          sizeSettings: receiptSettings,
-        })
+      void resolveReceiptPrintService()
+        .then((svc) =>
+          svc.printReceipt({
+            order,
+            seller: receiptSettings,
+            sizeSettings: receiptSettings,
+          })
+        )
         .then(backToNewSale, backToNewSale);
     } catch {
       setPayError("ชำระเงินไม่สำเร็จ ลองใหม่อีกครั้ง");
@@ -1052,13 +1084,17 @@ export default function POSPage() {
   }
 
   // ---- auto-print receipt (pos-autoprint-receipt) ----
-  // The auto-print mechanism now lives behind the swappable ReceiptPrintService
-  // (see src/lib/print). On checkout success, confirmPayment renders the
-  // screen-hidden ReceiptModal (open={autoPrintOpen}) and calls
-  // getReceiptPrintService().printReceipt(...); BrowserPrintService rAF-waits for
-  // the `.print-receipt` paper, prints it via printReceiptWithSize, and resolves
-  // on afterprint (5s fallback), at which point the sale resets to a fresh bill.
-  // The former inline rAF/afterprint effect was moved into BrowserPrintService.
+  // The auto-print mechanism lives behind the swappable ReceiptPrintService
+  // (see src/lib/print). On checkout success, confirmPayment calls
+  // resolveReceiptPrintService().printReceipt(...), which selects the ACTIVE
+  // backend from the cached mount-time detection (Plan B):
+  //   • agent present → PrintAgentService POSTs the payload to the localhost
+  //     ESC/POS bridge and prints silently — NO screen-hidden ReceiptModal.
+  //   • agent absent  → BrowserPrintService rAF-waits the `.print-receipt` paper
+  //     (ReceiptModal open={autoPrintOpen}), prints via printReceiptWithSize, and
+  //     resolves on afterprint (5s fallback).
+  // Either way the sale resets to a fresh bill once the print settles (resolve or
+  // reject). The former inline rAF/afterprint effect lives in BrowserPrintService.
 
   // Total item count (physical pieces) for the payment summary.
   const itemCount = useMemo(
