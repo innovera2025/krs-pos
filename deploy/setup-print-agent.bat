@@ -120,7 +120,7 @@ if not defined POS_BROWSER if exist "%ProgramFiles(x86)%\Google\Chrome\Applicati
 if not defined POS_BROWSER if exist "%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe" set "POS_BROWSER=%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"
 if not defined POS_BROWSER if exist "%ProgramFiles%\Microsoft\Edge\Application\msedge.exe" set "POS_BROWSER=%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"
 set "POS_LNK=%USERPROFILE%\Desktop\KRS POS.lnk"
-if defined POS_BROWSER powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $sc=$ws.CreateShortcut($env:POS_LNK); $sc.TargetPath=$env:POS_BROWSER; $sc.Arguments='--app=' + $env:POS_URL; $sc.WorkingDirectory=(Split-Path $env:POS_BROWSER); $sc.IconLocation=$env:POS_BROWSER + ',0'; $sc.Description='KRS POS'; $sc.Save(); Write-Host ('  Desktop  : ' + $env:POS_LNK)"
+if defined POS_BROWSER powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $sc=$ws.CreateShortcut($env:POS_LNK); $sc.TargetPath=$env:POS_BROWSER; $sc.Arguments='--new-window --start-fullscreen ' + $env:POS_URL; $sc.WorkingDirectory=(Split-Path $env:POS_BROWSER); $sc.IconLocation=$env:POS_BROWSER + ',0'; $sc.Description='KRS POS'; $sc.Save(); Write-Host ('  Desktop  : ' + $env:POS_LNK)"
 if not defined POS_BROWSER echo   ^(ไม่พบ Chrome/Edge - เปิด POS ในเบราว์เซอร์ปกติได้เลย / no Chrome or Edge found^)
 
 REM ---- Confirm the current default printer (non-silent verification) ---------
