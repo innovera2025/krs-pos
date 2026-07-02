@@ -3,10 +3,22 @@
   "version": "1.0.0",
   "description": "Local ESC/POS print bridge for KRS POS thermal receipts",
   "main": "index.js",
+  "bin": "index.js",
   "scripts": {
     "start": "node index.js",
     "test-print": "node scripts/test-print.js",
-    "build": "npx pkg . --target node20-win-x64 --output dist/krs-print-agent.exe"
+    "selftest": "node index.js --test",
+    "build": "pkg . --targets node22-win-x64 --output dist/krs-print-agent.exe"
+  },
+  "pkg": {
+    "targets": [
+      "node22-win-x64"
+    ],
+    "outputPath": "dist",
+    "assets": [
+      "node_modules/iconv-lite/encodings/tables/*.json",
+      "node_modules/node-thermal-printer/node_modules/iconv-lite/encodings/tables/*.json"
+    ]
   },
   "engines": {
     "node": ">=20"
@@ -16,5 +28,8 @@
   "dependencies": {
     "iconv-lite": "^0.7.2",
     "node-thermal-printer": "^4.6.0"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^6.21.0"
   }
 }

@@ -162,54 +162,127 @@ function handlePrintReceipt(req, res) {
   });
 }
 
-const server = http.createServer((req, res) => {
-  // CORS/PNA headers first, before any other response header, on EVERY request.
-  setCorsHeaders(req, res);
+/**
+ * Create the loopback HTTP server, start listening, and wire graceful shutdown.
+ * Split out from module top-level so the CLI flags (--test/--help/--version) can
+ * short-circuit BEFORE any port is bound.
+ */
+function startServer() {
+  const server = http.createServer((req, res) => {
+    // CORS/PNA headers first, before any other response header, on EVERY request.
+    setCorsHeaders(req, res);
 
-  const method = req.method || 'GET';
-  // Strip query string for path matching.
-  const path = (req.url || '/').split('?')[0];
+    const method = req.method || 'GET';
+    // Strip query string for path matching.
+    const path = (req.url || '/').split('?')[0];
 
-  // CORS + PNA preflight for any path.
-  if (method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
+    // CORS + PNA preflight for any path.
+    if (method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (method === 'GET' && path === '/health') {
+      sendJson(res, 200, {
+        name: AGENT_NAME,
+        version: AGENT_VERSION,
+        status: 'ok',
+      });
+      return;
+    }
+
+    if (method === 'POST' && path === '/print-receipt') {
+      handlePrintReceipt(req, res);
+      return;
+    }
+
+    // Everything else.
+    sendJson(res, 404, { error: 'not found' });
+  });
+
+  server.listen(PORT, HOST, () => {
+    console.log(`[${AGENT_NAME}] listening on http://${HOST}:${PORT}`);
+  });
+
+  server.on('error', (err) => {
+    process.stderr.write(`[${AGENT_NAME}] server error: ${err.message}\n`);
+    process.exit(1);
+  });
+
+  // Graceful shutdown so autostart/service managers can stop the agent cleanly.
+  function shutdown(signal) {
+    console.log(`[${AGENT_NAME}] received ${signal}, shutting down`);
+    server.close(() => process.exit(0));
+    // Safety net if connections do not drain promptly.
+    setTimeout(() => process.exit(0), 2000).unref();
   }
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 
-  if (method === 'GET' && path === '/health') {
-    sendJson(res, 200, {
-      name: AGENT_NAME,
-      version: AGENT_VERSION,
-      status: 'ok',
-    });
-    return;
-  }
-
-  if (method === 'POST' && path === '/print-receipt') {
-    handlePrintReceipt(req, res);
-    return;
-  }
-
-  // Everything else.
-  sendJson(res, 404, { error: 'not found' });
-});
-
-server.listen(PORT, HOST, () => {
-  console.log(`[${AGENT_NAME}] listening on http://${HOST}:${PORT}`);
-});
-
-server.on('error', (err) => {
-  process.stderr.write(`[${AGENT_NAME}] server error: ${err.message}\n`);
-  process.exit(1);
-});
-
-// Graceful shutdown so autostart/service managers can stop the agent cleanly.
-function shutdown(signal) {
-  console.log(`[${AGENT_NAME}] received ${signal}, shutting down`);
-  server.close(() => process.exit(0));
-  // Safety net if connections do not drain promptly.
-  setTimeout(() => process.exit(0), 2000).unref();
+  return server;
 }
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+
+/** Print the CLI usage banner (for --help / -h). */
+function printHelp() {
+  process.stdout.write(
+    `${AGENT_NAME} v${AGENT_VERSION} — local ESC/POS print bridge for KRS POS\n` +
+      '\n' +
+      'USAGE:\n' +
+      '  krs-print-agent.exe            Start the loopback print server (default)\n' +
+      `                                 -> listens on http://${HOST}:${PORT}\n` +
+      '  krs-print-agent.exe --test     Print the sample receipt once, then exit\n' +
+      '  krs-print-agent.exe --selftest (alias for --test)\n' +
+      '  krs-print-agent.exe --version  Print the agent version and exit\n' +
+      '  krs-print-agent.exe --help     Show this help and exit\n' +
+      '\n' +
+      'RUNTIME CONFIG (no rebuild required — set an env var OR a file next to the .exe):\n' +
+      '  KRS_PRINTER_NAME    Windows printer queue name (empty = system default)\n' +
+      '  KRS_THAI_CODEPAGE   ESC t code table for Thai (default 20; try 21/18/17)\n' +
+      '  KRS_BAHT_FALLBACK   1 = print "B" instead of the baht sign\n' +
+      '  KRS_PRINT_AGENT_PORT / PORT   Listen port (default 9100)\n' +
+      '  File overrides next to the .exe: config.local.json (JSON) or .env (KEY=VALUE)\n',
+  );
+}
+
+/**
+ * CLI entry point. Handle one-shot flags (help/version/self-test) before falling
+ * through to the long-running server. Top-level dispatch keeps `pkg` happy: the
+ * self-test module is required lazily so it (and the sample) are still bundled, but
+ * the server code path stays the default.
+ */
+function main() {
+  const argv = process.argv.slice(2);
+  const has = (...names) => argv.some((a) => names.includes(a));
+
+  if (has('--help', '-h', '/?')) {
+    printHelp();
+    return;
+  }
+
+  if (has('--version', '-v')) {
+    process.stdout.write(`${AGENT_VERSION}\n`);
+    return;
+  }
+
+  if (has('--test', '--selftest')) {
+    // Reuse the EXACT sample receipt + runner from scripts/test-print.js so the
+    // packaged .exe self-test matches `npm run test-print` byte-for-byte.
+    const { runSelfTest } = require('./scripts/test-print');
+    runSelfTest()
+      .then((code) => {
+        process.exitCode = code;
+      })
+      .catch((err) => {
+        process.stderr.write(
+          `[${AGENT_NAME}] self-test error: ${err && err.message ? err.message : err}\n`,
+        );
+        process.exitCode = 1;
+      });
+    return;
+  }
+
+  startServer();
+}
+
+main();

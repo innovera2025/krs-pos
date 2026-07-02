@@ -1,33 +1,128 @@
+'use strict';
+
 // config.js — KRS Print Agent configuration (CommonJS).
 //
 // This file is COMMITTED and must contain no secrets. Shop-specific overrides
-// (printer name, Thai codepage, non-default port) belong in a git-ignored
-// `config.local.js` that re-exports these values with overrides applied, e.g.:
+// (printer name, Thai codepage, non-default port) are applied at RUNTIME without a
+// rebuild via, in order of precedence (highest first):
 //
-//   // config.local.js  (git-ignored — see .gitignore)
-//   const base = require('./config');
-//   module.exports = { ...base, PRINTER_NAME: 'XP-80C', THAI_CODEPAGE: 21 };
+//   1. Environment variables ..... KRS_PRINTER_NAME / KRS_THAI_CODEPAGE / ... / PORT
+//   2. A `.env` file ............. KEY=VALUE lines, loaded into process.env for any
+//                                  key not already set (so real env still wins)
+//   3. `config.local.json` ....... a JSON object of overrides, e.g.
+//                                    { "PRINTER_NAME": "XP-80C", "THAI_CODEPAGE": 21 }
+//   4. The hardcoded defaults below.
 //
-// index.js loads `./config` directly in B1. A future phase may prefer
-// `config.local.js` when present; keep this file free of machine-specific state.
+// WHY DISK FILES: config.js is bundled INTO the Phase-B3 `krs-print-agent.exe`, so it
+// cannot be edited after packaging. The `.env` / `config.local.json` files are read
+// from disk NEXT TO THE EXECUTABLE at startup, letting the shop owner iterate the Thai
+// codepage / printer name on the real XP-80C without a rebuild. In plain-Node dev
+// (`node index.js`) the same files are read next to the source instead.
+//
+// A dev-only `config.local.js` (a CommonJS re-export) is also still git-ignored and
+// may be used when running from source, but it does NOT apply inside the packaged
+// .exe — use `.env` or `config.local.json` for the shipped agent.
+
+const fs = require('fs');
+const path = require('path');
+
+// When bundled by pkg, `process.pkg` is set and config.js lives inside the read-only
+// snapshot; disk overrides must be looked up next to the .exe (process.execPath).
+// In dev, look next to these source files.
+const IS_PKG = typeof process.pkg !== 'undefined';
+const EXTERNAL_DIR = IS_PKG ? path.dirname(process.execPath) : __dirname;
+
+/**
+ * Load a `.env` (or `agent.env`) file next to the agent, applying each KEY=VALUE line
+ * to process.env ONLY when that key is not already set — real environment variables
+ * always win. Comments (`#`) and blank lines are ignored; surrounding quotes stripped.
+ */
+function loadDotEnv(dir) {
+  for (const name of ['.env', 'agent.env']) {
+    const p = path.join(dir, name);
+    let text;
+    try {
+      text = fs.readFileSync(p, 'utf8');
+    } catch (_e) {
+      continue; // not present — fine
+    }
+    for (const rawLine of text.split(/\r?\n/)) {
+      const trimmed = rawLine.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq <= 0) continue;
+      const key = trimmed.slice(0, eq).trim();
+      let val = trimmed.slice(eq + 1).trim();
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      }
+      if (key && process.env[key] === undefined) process.env[key] = val;
+    }
+    process.stderr.write(`[krs-print-agent] loaded env overrides from ${p}\n`);
+  }
+}
+
+/**
+ * Load `config.local.json` next to the agent. Returns a plain object of overrides
+ * (used as a fallback under real/`.env` environment variables), or `{}` if absent.
+ */
+function loadJsonConfig(dir) {
+  const p = path.join(dir, 'config.local.json');
+  try {
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      process.stderr.write(`[krs-print-agent] loaded config overrides from ${p}\n`);
+      return parsed;
+    }
+    process.stderr.write(`[krs-print-agent] WARN: ${p} is not a JSON object — ignored\n`);
+  } catch (err) {
+    if (err && err.code !== 'ENOENT') {
+      process.stderr.write(`[krs-print-agent] WARN: could not read ${p}: ${err.message}\n`);
+    }
+  }
+  return {};
+}
+
+loadDotEnv(EXTERNAL_DIR);
+const FILE = loadJsonConfig(EXTERNAL_DIR);
+
+// Precedence resolvers: env var(s) > config.local.json > hardcoded default.
+function pickStr(envNames, fileKey, def) {
+  for (const n of envNames) if (process.env[n] != null) return process.env[n];
+  if (FILE[fileKey] != null) return String(FILE[fileKey]);
+  return def;
+}
+function pickInt(envNames, fileKey, def) {
+  for (const n of envNames) if (process.env[n] != null) return parseInt(process.env[n], 10);
+  if (FILE[fileKey] != null) return parseInt(String(FILE[fileKey]), 10);
+  return def;
+}
+function pickBool(envNames, fileKey, def) {
+  const truthy = (v) => v === true || v === '1' || String(v).toLowerCase() === 'true';
+  for (const n of envNames) if (process.env[n] != null) return truthy(process.env[n]);
+  if (FILE[fileKey] != null) return truthy(FILE[fileKey]);
+  return def;
+}
 
 module.exports = {
   // Port the agent listens on. Overridable via env for shops that already use 9100.
   // KRS_PRINT_AGENT_PORT takes precedence, then generic PORT, then the 9100 default.
-  PORT: parseInt(
-    process.env.KRS_PRINT_AGENT_PORT ?? process.env.PORT ?? '9100',
-    10,
-  ),
+  PORT: pickInt(['KRS_PRINT_AGENT_PORT', 'PORT'], 'PORT', 9100),
 
   // Bind to loopback ONLY. This agent must never be reachable off the shop PC.
   // NEVER change this to "0.0.0.0" — doing so would expose the print endpoint to
   // the local network / internet. Loopback binding is the primary security control.
+  // Intentionally NOT overridable from disk/env: it is a security invariant.
   HOST: '127.0.0.1',
 
   // Cross-origin browsers are only trusted from these exact origins. The POS web
   // app is served over HTTPS but must reach this http://127.0.0.1 agent, so the
   // browser performs a CORS (and Chrome Private Network Access) preflight. Only
   // origins in this list receive an Access-Control-Allow-Origin echo.
+  // Intentionally NOT overridable from disk/env: it is a security invariant.
   ALLOWED_ORIGINS: [
     'https://krspos.innoveraappcenter.com', // production POS
     'http://localhost:3000', // Next.js dev
@@ -35,8 +130,8 @@ module.exports = {
   ],
 
   // Windows printer name. Empty string = use the Windows default printer.
-  // Set per-shop via KRS_PRINTER_NAME env or config.local.js. (Used in B2.)
-  PRINTER_NAME: process.env.KRS_PRINTER_NAME ?? '',
+  // Set per-shop via KRS_PRINTER_NAME env, .env, or config.local.json.
+  PRINTER_NAME: pickStr(['KRS_PRINTER_NAME'], 'PRINTER_NAME', ''),
 
   // Max accepted request body size for POST /print-receipt. A receipt JSON is
   // ~2–5 KB; 128 KB is generous headroom and caps abuse. Bodies over this are
@@ -47,7 +142,8 @@ module.exports = {
   // emits `ESC t <n>` = 0x1B 0x74 <n> before any Thai text). The correct table
   // number is firmware-specific on XP-80 OEM clones and is NOT standardised, so the
   // owner iterates the candidates below on the real XP-80C via `npm run test-print`
-  // and sets the winning value with KRS_THAI_CODEPAGE (no code change needed):
+  // (or `krs-print-agent.exe --test`) and sets the winning value via KRS_THAI_CODEPAGE
+  // (env), a `.env` line, or config.local.json — NO code change / rebuild needed:
   //
   //   20  (0x14)  most common TIS-620 on Chinese OEM thermal printers  ← default
   //   21  (0x15)  sometimes used for CP874
@@ -56,10 +152,14 @@ module.exports = {
   //
   // If none of 20 → 21 → 18 → 17 produce correct Thai, request the firmware
   // code-table spec from Xprinter (see README "Thai codepage" section).
-  THAI_CODEPAGE: parseInt(process.env.KRS_THAI_CODEPAGE ?? '20', 10),
+  THAI_CODEPAGE: pickInt(['KRS_THAI_CODEPAGE'], 'THAI_CODEPAGE', 20),
 
   // Print an ASCII "B" instead of the baht sign ฿ (U+0E3F → 0xDF in TIS-620). Some
   // firmware maps 0xDF to a different glyph; if the test receipt shows garbage where
-  // ฿ should be, set KRS_BAHT_FALLBACK=1. Default off (print the real ฿). (Used in B2.)
-  BAHT_FALLBACK: process.env.KRS_BAHT_FALLBACK === '1',
+  // ฿ should be, set KRS_BAHT_FALLBACK=1 (or "BAHT_FALLBACK": true in the JSON file).
+  BAHT_FALLBACK: pickBool(['KRS_BAHT_FALLBACK'], 'BAHT_FALLBACK', false),
+
+  // The directory the disk overrides above were read from (next to the .exe when
+  // packaged). Exposed for logging/diagnostics only.
+  EXTERNAL_CONFIG_DIR: EXTERNAL_DIR,
 };

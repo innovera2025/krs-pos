@@ -21,7 +21,11 @@ browser/kiosk print path, so the cashier experience is unchanged.
   encodes to TIS-620, server never crashes). **Real Thai rendering + cut + alignment
   on the physical XP-80C is owner-verified** — see "Phase B2 — printing & Thai
   codepage" below.
-- Phase B3 packages a Windows `.exe` (`npm run build`) + one-click installer.
+- **Phase B3: packaging + one-click installer + autostart — CODE DONE (owner
+  Windows test pending).** `npm run build` produces a single Windows `.exe`
+  (`dist/krs-print-agent.exe`), `deploy/setup-print-agent.bat` installs it with
+  hidden autostart, and `krs-print-agent.exe --test` runs the self-test — see
+  "Phase B3 — build, install & autostart" below.
 - Phase B4 wires the web app to detect and use the agent.
 
 ## Requirements
@@ -93,11 +97,38 @@ Defaults live in `config.js` (committed, no secrets). Common overrides:
 | Thai codepage | `KRS_THAI_CODEPAGE` | `20` (TIS-620) | `ESC t <n>` code-table; iterate `20 → 21 → 18 → 17` on the real printer. |
 | Baht fallback | `KRS_BAHT_FALLBACK` | `0` | Set `1` to print `B` instead of `฿` if the firmware maps 0xDF wrong. |
 
-For persistent per-shop settings without editing the committed file, create a
-git-ignored **`config.local.js`** that re-exports overrides:
+### Runtime overrides (no rebuild — works inside the packaged `.exe`)
+
+`config.js` is bundled into `krs-print-agent.exe`, so it cannot be edited after
+packaging. Overrides are instead read at startup, in this precedence order (highest
+first). For the `.exe` the files are looked up **next to the executable**
+(`%LOCALAPPDATA%\KrsPrintAgent\`); in dev they are read next to the source files.
+
+1. **Environment variables** — `KRS_PRINTER_NAME`, `KRS_THAI_CODEPAGE`,
+   `KRS_BAHT_FALLBACK`, `KRS_PRINT_AGENT_PORT` / `PORT`.
+2. **`.env` file** (`.env` or `agent.env`) — `KEY=VALUE` lines, applied to any key
+   not already set in the real environment. Example:
+   ```
+   KRS_THAI_CODEPAGE=21
+   KRS_PRINTER_NAME=XP-80C
+   ```
+3. **`config.local.json`** — a JSON object of overrides. Example:
+   ```json
+   { "THAI_CODEPAGE": 21, "PRINTER_NAME": "XP-80C", "BAHT_FALLBACK": true }
+   ```
+4. The hardcoded defaults in `config.js`.
+
+This lets the owner iterate the Thai codepage on the real printer **without a
+rebuild** — drop a `config.local.json` (or `.env`) next to the `.exe`, then re-run
+the installer or reboot. `HOST` (loopback) and `ALLOWED_ORIGINS` are security
+invariants and are intentionally **not** overridable from disk/env.
+
+A dev-only git-ignored **`config.local.js`** (a CommonJS re-export) also still works
+when running from source, but does **not** apply inside the packaged `.exe` — use
+`.env` or `config.local.json` for the shipped agent:
 
 ```js
-// config.local.js  (git-ignored)
+// config.local.js  (git-ignored, dev-from-source only)
 const base = require('./config');
 module.exports = { ...base, PRINTER_NAME: 'XP-80C', THAI_CODEPAGE: 21 };
 ```
@@ -110,11 +141,112 @@ module.exports = { ...base, PRINTER_NAME: 'XP-80C', THAI_CODEPAGE: 21 };
 - No authentication tokens and no secrets — loopback + origin allow-list is the
   trust boundary.
 
-## Build (Phase B3)
+## Phase B3 — build, install & autostart
 
-`npm run build` will package the agent into a single Windows executable at
-`dist/krs-print-agent.exe` (via `pkg`). `dist/`, `*.exe`, `node_modules/`, and
-`config.local.js` are all git-ignored.
+### 1. Build the Windows `.exe`
+
+```bash
+cd tools/krs-print-agent
+npm install          # installs deps + the @yao-pkg/pkg devDependency
+npm run build        # -> dist/krs-print-agent.exe  (single-file, ~58 MB)
+```
+
+`npm run build` runs `pkg . --targets node22-win-x64 --output dist/krs-print-agent.exe`.
+
+- **Packager: [`@yao-pkg/pkg`](https://github.com/yao-pkg/pkg)** — the maintained fork
+  of the archived `vercel/pkg`. It cross-compiles a single `.exe` from macOS/Linux and
+  bundles the Node runtime + all deps, so the shop PC needs **no Node install**.
+- **Target `node22-win-x64`.** `pkg-fetch` currently ships prebuilt Windows base
+  binaries for node **22 / 24 / 26** only (not 18 / 20), and 22 matches the Node used
+  to build here — so `node22` is the correct win-x64 target. (Targeting `node20-win-x64`
+  fails with a `pkg-fetch` 404; if you must pin a different major, pick one that
+  `pkg-fetch` publishes a win-x64 prebuilt for.)
+- **`pkg` config** lives in `package.json` (`"bin"`, `"pkg".targets`, `"pkg".assets`).
+  The `assets` globs bundle `iconv-lite`'s `encodings/tables/*.json` from both
+  iconv-lite copies so no code path can crash at runtime for a missing encoding table.
+
+Verify the artifact is a real Windows PE:
+
+```bash
+file dist/krs-print-agent.exe
+# dist/krs-print-agent.exe: PE32+ executable (console) x86-64, for MS Windows
+```
+
+`dist/`, `*.exe`, `node_modules/`, `config.local.js`, `config.local.json`, `.env`, and
+`agent.env` are all git-ignored — the binary is distributed out-of-band (e.g. a GitHub
+Release), not committed.
+
+> The `.exe` is built and validated as a win-x64 PE on the dev machine, but **actually
+> running it, printing Thai on the XP-80C, and autostart on boot are owner-verified on
+> Windows** — a macOS/Linux dev host cannot execute a Windows `.exe`.
+
+### 2. Self-test the packaged `.exe` (no Node, no web app)
+
+On the shop Windows PC, with the XP-80C installed:
+
+```bat
+krs-print-agent.exe --test
+```
+
+`--test` (alias `--selftest`) prints the **same** sample receipt as
+`npm run test-print` — reusing the exact `SAMPLE` from `scripts/test-print.js` — then
+exits. Use it to confirm Thai rendering + the packaging on the real printer. Other flags:
+
+```bat
+krs-print-agent.exe --version    REM print the agent version and exit
+krs-print-agent.exe --help       REM usage + the runtime-config env/file summary
+krs-print-agent.exe              REM (no flag) start the server on 127.0.0.1:9100
+```
+
+### 3. One-click install + autostart (`deploy/setup-print-agent.bat`)
+
+Put `krs-print-agent.exe` and `deploy/setup-print-agent.bat` in the **same folder**,
+then double-click the `.bat`. It (idempotently, no admin needed):
+
+1. Stops any running agent, then copies the `.exe` to `%LOCALAPPDATA%\KrsPrintAgent\`.
+2. Sets **XP-80C** as the Windows default printer and **locks** it
+   (`LegacyDefaultPrinterMode=1`, same as `kiosk-print-setup.bat`) so it sticks.
+3. Registers **hidden autostart**: a `launch-hidden.vbs` (window mode `0`) in
+   `%LOCALAPPDATA%\KrsPrintAgent\`, launched by a Startup-folder shortcut at
+   `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\KRS Print Agent.lnk`
+   on every logon — **no console window**.
+4. Starts the agent now and pings `http://127.0.0.1:9100/health`, reporting RUNNING /
+   NOT RESPONDING.
+
+> **SmartScreen:** a `.bat`/`.exe` downloaded from the internet may show a security
+> warning. Click **"More info" → "Run anyway"**.
+
+After the shop PC reboots, the agent is already running (hidden) on logon — the cashier
+just opens the POS in any normal browser; receipts print with no dialog, no shortcut.
+
+### 4. Change the Thai codepage / printer on the installed agent
+
+No rebuild needed — drop a file next to the installed `.exe`
+(`%LOCALAPPDATA%\KrsPrintAgent\`), then reboot or re-run the installer:
+
+```json
+// %LOCALAPPDATA%\KrsPrintAgent\config.local.json
+{ "THAI_CODEPAGE": 21, "PRINTER_NAME": "XP-80C" }
+```
+
+or an env-style file:
+
+```
+REM %LOCALAPPDATA%\KrsPrintAgent\.env
+KRS_THAI_CODEPAGE=21
+```
+
+Iterate `20 → 21 → 18 → 17` (running `krs-print-agent.exe --test` after each) until the
+Thai prints correctly. See "Runtime overrides" above for full precedence.
+
+### 5. Uninstall
+
+Edit the top of `deploy/setup-print-agent.bat`, change `set "ACTION=install"` to
+`set "ACTION=uninstall"`, and run it again. It stops the agent and removes the Startup
+shortcut, the `launch-hidden.vbs`, the `.exe`, and the `%LOCALAPPDATA%\KrsPrintAgent\`
+folder. (The Windows default-printer setting is left as-is — change it manually if you
+wish.) To disable autostart only, just delete the Startup shortcut:
+`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\KRS Print Agent.lnk`.
 
 ## Phase B2 — printing & Thai codepage (owner test)
 

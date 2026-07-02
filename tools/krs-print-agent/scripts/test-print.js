@@ -1,6 +1,6 @@
 'use strict';
 
-// scripts/test-print.js — standalone owner test print (Phase B2).
+// scripts/test-print.js — standalone owner test print (Phase B2 + B3 self-test).
 //
 // Run this ON THE SHOP WINDOWS PC with the XP-80C installed to print a sample
 // receipt WITHOUT the web app or the HTTP server. Use it to iterate the Thai code
@@ -15,6 +15,12 @@
 // On a non-Windows dev host the receipt bytes are still BUILT (so layout/encoding
 // can be inspected) but cannot be spooled — the script reports that and dumps a byte
 // count instead of failing hard.
+//
+// Phase B3: this same SAMPLE + runSelfTest() is REUSED by the packaged .exe via
+// `krs-print-agent.exe --test` (index.js requires this module and calls runSelfTest
+// instead of starting the HTTP server). So the owner can verify Thai + packaging on
+// the printer with NO Node install and NO web app. The auto-run at the bottom only
+// fires when this file is executed directly (`node scripts/test-print.js`).
 
 const config = require('../config');
 const { printReceipt, buildReceiptBuffer } = require('../printer');
@@ -88,7 +94,15 @@ const SAMPLE = {
   sizeSettings: null,
 };
 
-(async () => {
+/**
+ * Print the SAMPLE receipt once and report the outcome. Returns a process exit code
+ * (0 = job submitted, 1 = could not print). Never throws — off-Windows and
+ * printer-missing paths are handled and the built byte count is reported so the
+ * layout/encoding can still be inspected. Shared by `npm run test-print` and by the
+ * packaged .exe's `--test` / `--selftest` flag (see index.js).
+ * @returns {Promise<number>} 0 on success, 1 on failure
+ */
+async function runSelfTest() {
   console.log(
     `[test-print] THAI_CODEPAGE=${config.THAI_CODEPAGE} ` +
       `PRINTER_NAME='${config.PRINTER_NAME || '(Windows default)'}' ` +
@@ -100,6 +114,7 @@ const SAMPLE = {
     console.log(
       '[test-print] If Thai is garbled, rerun with KRS_THAI_CODEPAGE=21 (then 18, then 17).',
     );
+    return 0;
   } catch (err) {
     console.error(`[test-print] could not print: ${err && err.message ? err.message : err}`);
     // Still prove the render path so layout/encoding can be inspected off-device.
@@ -113,6 +128,17 @@ const SAMPLE = {
         }`,
       );
     }
-    process.exitCode = 1;
+    return 1;
   }
-})();
+}
+
+module.exports = { SAMPLE, runSelfTest };
+
+// Auto-run only when executed directly (`node scripts/test-print.js` /
+// `npm run test-print`). When index.js requires this module for `--test`, this guard
+// prevents a second, unwanted run.
+if (require.main === module) {
+  runSelfTest().then((code) => {
+    process.exitCode = code;
+  });
+}
