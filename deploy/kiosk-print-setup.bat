@@ -64,7 +64,14 @@ echo ============================================================
 echo.
 
 REM ---- 1) Set the receipt printer as the Windows default printer -------------
-echo [1/3] Setting "%PRINTER%" as the Windows default printer ...
+REM  First DISABLE "Let Windows manage my default printer" so the default we set
+REM  below STICKS. Windows otherwise auto-switches the default to the last-used
+REM  printer, and --kiosk-printing then prints to the wrong/offline printer →
+REM  the "Printing failed" popup. LegacyDefaultPrinterMode=1 (HKCU, no admin
+REM  needed) is the classic manual-default mode. Takes effect for new default
+REM  assignments; if a machine STILL switches, sign out/in once after this runs.
+echo [1/3] Locking the default printer to "%PRINTER%" ...
+reg add "HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows" /v LegacyDefaultPrinterMode /t REG_DWORD /d 1 /f >nul
 rundll32 printui.dll,PrintUIEntry /y /n "%PRINTER%"
 
 REM ---- 2) Create the isolated browser profile directory ---------------------
