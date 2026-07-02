@@ -38,6 +38,7 @@ REM ---- CONFIG (edit per shop if needed) -------------------------------------
 set "ACTION=install"
 set "PRINTER=XP-80C"
 set "PORT=9100"
+set "POS_URL=https://krspos.innoveraappcenter.com/?kiosk=1"
 set "SRC_EXE=%~dp0krs-print-agent.exe"
 set "AGENT_DIR=%LOCALAPPDATA%\KrsPrintAgent"
 set "AGENT_EXE=%AGENT_DIR%\krs-print-agent.exe"
@@ -64,11 +65,11 @@ echo.
 REM ---- 1) Stop any running agent so the .exe can be replaced -----------------
 REM  On Windows a running .exe is file-locked; copying over it fails. Kill first
 REM  (also lets a re-run cleanly pick up a newer build). Ignore "not found".
-echo [1/6] Stopping any running agent ...
+echo [1/7] Stopping any running agent ...
 taskkill /F /IM krs-print-agent.exe /T >nul 2>&1
 
 REM ---- 2) Create the install folder + copy the .exe -------------------------
-echo [2/6] Installing agent to "%AGENT_DIR%" ...
+echo [2/7] Installing agent to "%AGENT_DIR%" ...
 if not exist "%AGENT_DIR%" mkdir "%AGENT_DIR%"
 copy /Y "%SRC_EXE%" "%AGENT_EXE%" >nul
 if not exist "%AGENT_EXE%" (
@@ -83,7 +84,7 @@ REM ---- 3) Set the receipt printer as the Windows default (and LOCK it) -------
 REM  Disable "Let Windows manage my default printer" so the default STICKS, then
 REM  set it. LegacyDefaultPrinterMode=1 (HKCU, no admin) is the classic manual
 REM  default mode; without it Windows auto-switches to the last-used printer.
-echo [3/6] Locking the default printer to "%PRINTER%" ...
+echo [3/7] Locking the default printer to "%PRINTER%" ...
 reg add "HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows" /v LegacyDefaultPrinterMode /t REG_DWORD /d 1 /f >nul
 rundll32 printui.dll,PrintUIEntry /y /n "%PRINTER%"
 
@@ -91,21 +92,36 @@ REM ---- 4) Write the hidden launcher + register autostart --------------------
 REM  A tiny .vbs launches the console .exe with window mode 0 (fully HIDDEN - no
 REM  console flash on boot), better than a WindowStyle=7 (minimised) shortcut.
 REM  The Startup .lnk runs wscript.exe on that .vbs at every logon.
-echo [4/6] Registering hidden autostart ...
+echo [4/7] Registering hidden autostart ...
 > "%LAUNCH_VBS%" echo Set sh = CreateObject("WScript.Shell")
 >>"%LAUNCH_VBS%" echo sh.CurrentDirectory = "%AGENT_DIR%"
 >>"%LAUNCH_VBS%" echo sh.Run """%AGENT_EXE%""", 0, False
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $sc=$ws.CreateShortcut($env:STARTUP_SHORTCUT); $sc.TargetPath='wscript.exe'; $sc.Arguments=[char]34 + $env:LAUNCH_VBS + [char]34; $sc.WindowStyle=7; $sc.WorkingDirectory=$env:AGENT_DIR; $sc.Description='KRS Print Agent'; $sc.Save(); Write-Host ('  Startup  : ' + $env:STARTUP_SHORTCUT)"
 
 REM ---- 5) Start the agent now (hidden, via the same launcher) ---------------
-echo [5/6] Starting the agent ...
+echo [5/7] Starting the agent ...
 wscript.exe "%LAUNCH_VBS%"
 
 REM ---- 6) Wait, then verify it answers on the health endpoint ---------------
-echo [6/6] Verifying the agent responds on port %PORT% ...
+echo [6/7] Verifying the agent responds on port %PORT% ...
 timeout /t 2 /nobreak >nul
 set "AGENT_OK="
 curl -s http://127.0.0.1:%PORT%/health 2>nul | findstr /C:"krs-print-agent" >nul 2>&1 && set "AGENT_OK=1"
+
+REM ---- 7) Create a clean cashier desktop icon "KRS POS" (normal browser) -----
+REM  A one-click icon that opens the POS in a NORMAL Chrome/Edge window (--app,
+REM  NO --kiosk-printing, NO isolated profile) so the agent's silent printing
+REM  works reliably. OVERWRITES any old kiosk "KRS POS" icon (same name) that
+REM  could hang/fail. Single-line IFs so (x86) can't break a batch block.
+echo [7/7] Creating cashier desktop icon "KRS POS" ...
+set "POS_BROWSER="
+if exist "%ProgramFiles%\Google\Chrome\Application\chrome.exe" set "POS_BROWSER=%ProgramFiles%\Google\Chrome\Application\chrome.exe"
+if not defined POS_BROWSER if exist "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" set "POS_BROWSER=%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"
+if not defined POS_BROWSER if exist "%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe" set "POS_BROWSER=%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"
+if not defined POS_BROWSER if exist "%ProgramFiles%\Microsoft\Edge\Application\msedge.exe" set "POS_BROWSER=%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"
+set "POS_LNK=%USERPROFILE%\Desktop\KRS POS.lnk"
+if defined POS_BROWSER powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $sc=$ws.CreateShortcut($env:POS_LNK); $sc.TargetPath=$env:POS_BROWSER; $sc.Arguments='--app=' + $env:POS_URL; $sc.WorkingDirectory=(Split-Path $env:POS_BROWSER); $sc.IconLocation=$env:POS_BROWSER + ',0'; $sc.Description='KRS POS'; $sc.Save(); Write-Host ('  Desktop  : ' + $env:POS_LNK)"
+if not defined POS_BROWSER echo   ^(ไม่พบ Chrome/Edge - เปิด POS ในเบราว์เซอร์ปกติได้เลย / no Chrome or Edge found^)
 
 REM ---- Confirm the current default printer (non-silent verification) ---------
 set "CURDEF="
@@ -126,13 +142,15 @@ if defined AGENT_OK (
   echo     - ลองรันไฟล์นี้อีกครั้ง / try running this file again
 )
 echo.
-echo  [TH] เปิดระบบขาย (POS) ในเบราว์เซอร์ปกติได้เลย - เมื่อกดยืนยันชำระเงิน
-echo       ใบเสร็จจะพิมพ์ออกเครื่อง "%PRINTER%" ทันที โดยไม่มีหน้าต่างสั่งพิมพ์
-echo       ไม่ต้องใช้ไอคอนพิเศษบนเดสก์ท็อปอีกต่อไป
+echo  [TH] แคชเชียร์เปิด POS จากไอคอน "KRS POS" บนเดสก์ท็อป (คลิกเดียว)
+echo       เมื่อกดยืนยันชำระเงิน ใบเสร็จจะพิมพ์ออกเครื่อง "%PRINTER%" ทันที
+echo       โดยไม่มีหน้าต่างสั่งพิมพ์ (จะเปิดในเบราว์เซอร์ปกติอื่นก็ได้เช่นกัน)
+echo       *** อย่าใช้ไอคอน kiosk เก่า - ไอคอนนี้ทับให้แล้ว ***
 echo.
-echo  [EN] Open the POS in ANY normal browser. On payment confirm the receipt
-echo       prints silently to "%PRINTER%" with no dialog. No special desktop
-echo       icon is needed anymore. The agent auto-starts hidden on every logon.
+echo  [EN] Cashiers open the POS from the "KRS POS" desktop icon (one click).
+echo       On payment confirm the receipt prints silently to "%PRINTER%" with no
+echo       dialog. Any normal browser works too. The agent auto-starts hidden.
+echo       (This icon REPLACES the old kiosk icon, which could hang.)
 echo.
 echo  ------------------------------------------------------------
 echo   ทดสอบการพิมพ์ / SELF-TEST (print a Thai sample receipt now):
@@ -185,6 +203,7 @@ echo.
 echo  Stopping agent, removing Startup entry, and deleting "%AGENT_DIR%" ...
 taskkill /F /IM krs-print-agent.exe /T >nul 2>&1
 if exist "%STARTUP_SHORTCUT%" del /Q "%STARTUP_SHORTCUT%" >nul 2>&1
+if exist "%USERPROFILE%\Desktop\KRS POS.lnk" del /Q "%USERPROFILE%\Desktop\KRS POS.lnk" >nul 2>&1
 if exist "%LAUNCH_VBS%" del /Q "%LAUNCH_VBS%" >nul 2>&1
 if exist "%AGENT_EXE%" del /Q "%AGENT_EXE%" >nul 2>&1
 if exist "%AGENT_DIR%" rmdir /S /Q "%AGENT_DIR%" >nul 2>&1
