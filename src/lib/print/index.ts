@@ -1,4 +1,5 @@
 import { BrowserPrintService } from "./browserPrintService";
+import type { LocalFetchInit } from "./localFetch";
 import { PrintAgentService } from "./printAgentService";
 import type { ReceiptPrintService } from "./types";
 
@@ -74,7 +75,10 @@ export async function detectPrintAgent(): Promise<boolean> {
       const res = await fetch(HEALTH_ENDPOINT, {
         method: "GET",
         signal: controller?.signal,
-      });
+        // Chrome Local Network Access: opt in to the loopback agent so a public
+        // HTTPS page is allowed to probe http://localhost:9100 over HTTP.
+        targetAddressSpace: "private",
+      } as LocalFetchInit);
       return res.ok === true;
     } catch {
       // Timeout/abort, connection refused, CORS/PNA rejection, DNS, etc.
