@@ -32,6 +32,21 @@ const nextConfig = {
           },
         ],
       },
+      {
+        // macOS counterpart. Same force-download treatment so a downloaded
+        // .command lands as an executable file rather than opening as text.
+        source: "/kiosk-print-setup-mac.command",
+        headers: [
+          {
+            key: "Content-Disposition",
+            value: 'attachment; filename="kiosk-print-setup-mac.command"',
+          },
+          {
+            key: "Content-Type",
+            value: "application/octet-stream",
+          },
+        ],
+      },
     ];
   },
 };
