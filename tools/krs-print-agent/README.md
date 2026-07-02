@@ -57,7 +57,8 @@ You should see:
 | Method | Path              | B1 behavior |
 |--------|-------------------|-------------|
 | `GET`  | `/health`         | `200` `{ "name": "krs-print-agent", "version": "1.0.0", "status": "ok" }` — the detection probe the web app pings. |
-| `POST` | `/print-receipt`  | Accepts `ReceiptData` JSON `{ order, seller, sizeSettings }`. Renders ESC/POS and spools to the Windows printer. Returns `200` `{ "ok": true }` on success, `500` `{ "ok": false, "error": "..." }` on any print failure (a spooler/printer error never crashes the server). Malformed JSON or a missing `order` → `400`; bodies over 128 KB → `413`. |
+| `POST` | `/print-receipt`  | **(text ESC/POS — diagnostics / back-compat)** Accepts `ReceiptData` JSON `{ order, seller, sizeSettings }`. Renders ESC/POS text and spools to the Windows printer. Returns `200` `{ "ok": true }` on success, `500` `{ "ok": false, "error": "..." }` on any print failure (a spooler/printer error never crashes the server). Malformed JSON or a missing `order` → `400`; bodies over 128 KB → `413`. |
+| `POST` | `/print-image`    | **(RASTER — the path the POS now uses)** Accepts `{ "imagePngBase64": "<base64 PNG>" }` (black content on a **white** background, ~576 px wide = 80 mm printable). The agent decodes the PNG, thresholds it to 1-bit, and prints it as ESC/POS **raster** (`GS v 0`) + feed + partial cut. Returns `200` `{ "ok": true }` on success, `500` `{ "ok": false, "error": "..." }` on any failure (bad PNG / spooler error never crashes the server). Malformed JSON or a missing/empty `imagePngBase64` → `400`; bodies over 2 MB → `413`. **Raster needs NO printer font, so Thai (rendered by the BROWSER) prints correctly on any ESC/POS printer.** |
 | `OPTIONS` | (any path)     | `204` with CORS + Private Network Access preflight headers. |
 | (other) | (any path)      | `404` `{ "error": "not found" }`. |
 
@@ -69,7 +70,30 @@ curl -s http://127.0.0.1:9100/health
 curl -s -X POST http://127.0.0.1:9100/print-receipt \
   -H 'Content-Type: application/json' \
   -d '{"order":{"orderNumber":"POS-TEST-1","items":[{}]},"seller":null,"sizeSettings":null}'
+
+# RASTER path (the one the POS uses): a base64 PNG, black-on-white, ~576 px wide.
+curl -s -X POST http://127.0.0.1:9100/print-image \
+  -H 'Content-Type: application/json' \
+  -d '{"imagePngBase64":"<base64 of a 576px-wide PNG>"}'
 ```
+
+## Raster image printing (Thai without a printer font)
+
+The POS now prints receipts as a **raster image**, not as text ESC/POS. The **browser**
+renders the receipt (Thai and all) to a `~576 px`-wide PNG (black content on a **white**
+background) and `POST`s it to `/print-image` as base64. The agent decodes the PNG with a
+**pure-JS** decoder (`pngjs` — no native/node-gyp modules, so the `pkg` single-exe build
+stays clean), thresholds it to 1-bit (black where luminance `< ~128`; `alpha = 0` → white),
+and emits it as ESC/POS **raster** via `GS v 0` (`0x1D 0x76 0x30`), followed by a feed and
+partial cut. Tall receipts are **banded** into vertical chunks (≤ 255 dot rows per `GS v 0`
+call, emitted back-to-back) so the whole receipt prints.
+
+**Why raster:** dot/raster printing needs **no on-board printer font or Thai code table**,
+so Thai renders correctly on **any** ESC/POS printer — this sidesteps the firmware-specific
+`ESC t` codepage / Kanji-mode problem entirely (see "Phase B2 — Thai codepage" below, kept
+for the legacy text path). The raster path does **not** send `FS .` or `ESC t` (irrelevant
+for dots). Prove it on the real printer with `krs-print-agent.exe --test-image`, which runs
+an in-code test bitmap through the same raster path — no browser needed.
 
 ## CORS & Private Network Access (why these headers exist)
 
@@ -193,11 +217,18 @@ krs-print-agent.exe --test
 exits. Use it to confirm Thai rendering + the packaging on the real printer. Other flags:
 
 ```bat
+krs-print-agent.exe --test-image REM print a self-contained RASTER test bitmap (GS v 0), then exit
 krs-print-agent.exe --scan       REM print a Thai codepage scan (ESC t 0..79), then exit
 krs-print-agent.exe --version    REM print the agent version and exit
 krs-print-agent.exe --help       REM usage + the runtime-config env/file summary
 krs-print-agent.exe              REM (no flag) start the server on 127.0.0.1:9100
 ```
+
+`--test-image` builds a small bitmap **in code** (a bordered box + diagonal — **no font,
+no Thai codepage**), runs it through the exact same PNG → 1-bit → `GS v 0` raster path as
+`POST /print-image`, and spools it once. Use it to confirm the printer accepts **raster**
+end-to-end without a browser. (Real Thai still comes from the browser via `/print-image`;
+`--test-image` only proves the printer renders raster dots.)
 
 `--scan` prints ONE strip that renders a short Thai sample (`กขคงจ ๑๒๓`) under **every**
 `ESC t` code table from `0` to `79`, one per line (`n=<n>: <sample>`), after the same

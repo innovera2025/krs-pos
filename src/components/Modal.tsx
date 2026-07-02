@@ -15,6 +15,17 @@ type ModalProps = {
    * Used by the POS auto-print receipt so it prints without ever being visible.
    */
   printSource?: boolean;
+  /**
+   * Off-screen CAPTURABLE source (pos-receipt-image): when true the portaled
+   * overlay is rendered OFF-SCREEN (`position:fixed; left:-10000px`) on a WHITE
+   * background but — unlike `printSource` — is NOT `display:none`, so html2canvas
+   * can rasterize the receipt DOM (the browser draws Thai correctly → correct
+   * glyphs). The cashier never sees it, and `@media print` hides it so it never
+   * prints. Mutually exclusive with `printSource`. In this mode the dialog's
+   * focus-trap / scroll-lock / Escape machinery is skipped — it is a render
+   * source, not an interactive dialog.
+   */
+  captureSource?: boolean;
   children: React.ReactNode;
 };
 
@@ -53,7 +64,14 @@ function isTopModal(token: object) {
  *   is restored to the previously-focused element on close; Tab is trapped
  *   within the panel.
  */
-export function Modal({ open, onClose, label, printSource, children }: ModalProps) {
+export function Modal({
+  open,
+  onClose,
+  label,
+  printSource,
+  captureSource,
+  children,
+}: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
   // Stable per-instance token for the open-modal stack (stacked-escape fix).
@@ -73,7 +91,10 @@ export function Modal({ open, onClose, label, printSource, children }: ModalProp
   // re-render (focus-steal fix). Handles: focus capture/move into the panel,
   // body-scroll-lock, previously-focused restore, and the Tab focus-trap.
   useEffect(() => {
-    if (!open) return;
+    // captureSource is an OFF-SCREEN render source, not an interactive dialog:
+    // skip focus-move + scroll-lock so rasterizing the receipt never steals focus
+    // from the cashier's search box or locks page scroll (pos-receipt-image).
+    if (!open || captureSource) return;
 
     previouslyFocused.current = document.activeElement as HTMLElement | null;
     const prevOverflow = document.body.style.overflow;
@@ -113,7 +134,7 @@ export function Modal({ open, onClose, label, printSource, children }: ModalProp
       document.body.style.overflow = prevOverflow;
       previouslyFocused.current?.focus?.();
     };
-  }, [open]);
+  }, [open, captureSource]);
 
   // Effect B — the Escape listener lives separately with deps [open, onClose] so
   // a fresh onClose closure only re-adds/removes this lightweight listener; it
@@ -122,7 +143,8 @@ export function Modal({ open, onClose, label, printSource, children }: ModalProp
   // open Modal, so a single Escape over stacked modals closes just the front one
   // (stacked-escape fix). Stack membership is cleaned up on close/unmount.
   useEffect(() => {
-    if (!open) return;
+    // Off-screen capture source: no Escape/close semantics (see Effect A note).
+    if (!open || captureSource) return;
     const token = stackToken.current;
     pushModal(token);
     const onEscape = (e: KeyboardEvent) => {
@@ -136,7 +158,7 @@ export function Modal({ open, onClose, label, printSource, children }: ModalProp
       document.removeEventListener("keydown", onEscape);
       removeModal(token);
     };
-  }, [open, onClose]);
+  }, [open, onClose, captureSource]);
 
   if (!open || !mounted) return null;
 
@@ -144,7 +166,26 @@ export function Modal({ open, onClose, label, printSource, children }: ModalProp
   // child (`body > [data-modal-portal]`), outside the collapsible app shell.
   // createPortal preserves React context + event bubbling through the component
   // tree, so consumers, backdrop-click, and stopPropagation are unaffected.
-  const overlay = (
+  // captureSource renders the overlay OFF-SCREEN on white (renderable, NOT
+  // display:none) so html2canvas can rasterize it; the normal path keeps the
+  // centered dark-backdrop dialog (printSource adds display:none for @media print).
+  const overlay = captureSource ? (
+    <div
+      data-modal-portal
+      className="capture-source"
+      style={{
+        position: "fixed",
+        left: "-10000px",
+        top: 0,
+        zIndex: -1,
+        background: "#ffffff",
+      }}
+    >
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-label={label} tabIndex={-1}>
+        {children}
+      </div>
+    </div>
+  ) : (
     <div
       data-modal-portal
       className={

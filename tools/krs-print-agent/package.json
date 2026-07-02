@@ -27,7 +27,8 @@
   "license": "UNLICENSED",
   "dependencies": {
     "iconv-lite": "^0.7.2",
-    "node-thermal-printer": "^4.6.0"
+    "node-thermal-printer": "^4.6.0",
+    "pngjs": "^7.0.0"
   },
   "devDependencies": {
     "@yao-pkg/pkg": "^6.21.0"

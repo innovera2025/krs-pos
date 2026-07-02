@@ -237,6 +237,20 @@ textarea:focus-visible,
   display: none !important;
 }
 
+/* Off-screen CAPTURABLE receipt source (pos-receipt-image). Unlike .print-source
+   (display:none, which html2canvas CANNOT rasterize), the agent image-print path
+   mounts the receipt OFF-SCREEN but fully rendered so the browser rasterizes it
+   (incl. Thai) to a PNG for the local print agent. The Modal already sets the
+   off-screen position/white background inline; this rule only guarantees it never
+   contributes a printed page if a browser print is ever triggered while it is
+   briefly mounted (it is [data-modal-portal], so the print isolation below would
+   otherwise show it). */
+@media print {
+  .capture-source {
+    display: none !important;
+  }
+}
+
 /* 80mm thermal receipt print isolation (domain-receipt-80mm).
 
    Portal-based isolation (blank-page fix): every Modal now renders via

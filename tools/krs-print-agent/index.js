@@ -23,9 +23,10 @@ const http = require('http');
 const config = require('./config');
 const pkg = require('./package.json');
 const { printReceipt, sendToWindowsPrinter, PrintError } = require('./printer');
+const { printImage, pngBufferToRaster, buildTestImagePng, MAX_BAND_HEIGHT } = require('./raster');
 const { encodeThai } = require('./encoding');
 
-const { PORT, HOST, ALLOWED_ORIGINS, MAX_BODY_BYTES } = config;
+const { PORT, HOST, ALLOWED_ORIGINS, MAX_BODY_BYTES, MAX_IMAGE_BODY_BYTES } = config;
 const AGENT_NAME = 'krs-print-agent';
 const AGENT_VERSION = pkg.version; // read from package.json (currently "1.0.0")
 
@@ -164,6 +165,86 @@ function handlePrintReceipt(req, res) {
 }
 
 /**
+ * POST /print-image handler (RASTER path).
+ * Mirrors handlePrintReceipt's stream/size-limit/parse/validate flow but with the
+ * larger MAX_IMAGE_BODY_BYTES cap (a base64 receipt PNG is ~200–500 KB). Body is
+ * { imagePngBase64 }; the PNG is decoded, thresholded to 1-bit, and printed as ESC/POS
+ * GS v 0 raster (see raster.js). Returns 200 { ok: true } on success and 500
+ * { ok: false, error } on any failure — a decode/spooler error must NEVER crash the
+ * server. Malformed JSON / missing field → 400; bodies over the cap → 413.
+ */
+function handlePrintImage(req, res) {
+  // Fast reject when the client advertises an oversized body up front.
+  const declaredLen = Number(req.headers['content-length']);
+  if (Number.isFinite(declaredLen) && declaredLen > MAX_IMAGE_BODY_BYTES) {
+    sendJson(res, 413, { ok: false, error: 'payload too large' });
+    req.destroy();
+    return;
+  }
+
+  const chunks = [];
+  let received = 0;
+  let aborted = false;
+
+  req.on('data', (chunk) => {
+    if (aborted) return;
+    received += chunk.length;
+    if (received > MAX_IMAGE_BODY_BYTES) {
+      aborted = true;
+      sendJson(res, 413, { ok: false, error: 'payload too large' });
+      req.destroy(); // stop reading further data
+      return;
+    }
+    chunks.push(chunk);
+  });
+
+  req.on('error', () => {
+    if (aborted) return;
+    aborted = true;
+    sendJson(res, 400, { ok: false, error: 'request stream error' });
+  });
+
+  req.on('end', () => {
+    if (aborted) return;
+
+    let body;
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch (_err) {
+      sendJson(res, 400, { ok: false, error: 'invalid JSON' });
+      return;
+    }
+
+    // Validate the shape: { imagePngBase64: "<non-empty base64 PNG>" }.
+    if (!body || typeof body.imagePngBase64 !== 'string' || body.imagePngBase64.length === 0) {
+      sendJson(res, 400, { ok: false, error: 'imagePngBase64 required' });
+      return;
+    }
+
+    console.log(
+      `[${AGENT_NAME}] print-image base64Len=${body.imagePngBase64.length}`,
+    );
+
+    // Decode → 1-bit → GS v 0 raster → Windows RAW spool. Any failure (bad PNG,
+    // off-Windows spool, printer error) rejects with PrintError; we catch it and
+    // return 500 so the fail-open web client resolves and the sale is unaffected.
+    printImage(body.imagePngBase64)
+      .then(() => {
+        sendJson(res, 200, { ok: true });
+      })
+      .catch((err) => {
+        const message = err instanceof PrintError ? err.message : 'internal error';
+        process.stderr.write(
+          `[${AGENT_NAME}] print-image failed: ${
+            err && err.message ? err.message : err
+          }\n`,
+        );
+        sendJson(res, 500, { ok: false, error: message });
+      });
+  });
+}
+
+/**
  * Create the loopback HTTP server, start listening, and wire graceful shutdown.
  * Split out from module top-level so the CLI flags (--test/--help/--version) can
  * short-circuit BEFORE any port is bound.
@@ -195,6 +276,11 @@ function startServer() {
 
     if (method === 'POST' && path === '/print-receipt') {
       handlePrintReceipt(req, res);
+      return;
+    }
+
+    if (method === 'POST' && path === '/print-image') {
+      handlePrintImage(req, res);
       return;
     }
 
@@ -318,6 +404,55 @@ async function runCodepageScan() {
   }
 }
 
+/**
+ * Build the self-contained RASTER test bitmap (border + filled box + diagonal, NO
+ * font), convert it through the SAME PNG→GS v 0 raster path as POST /print-image, and
+ * spool it once so the owner can confirm the printer accepts raster dots end-to-end
+ * WITHOUT a browser. Off-Windows the PNG + raster still BUILD and the byte counts are
+ * reported; the send throws a clear error (handled here) instead of crashing.
+ *
+ * NOTE: real Thai still comes from the BROWSER via POST /print-image — this only
+ * proves the printer renders GS v 0 raster. Returns a process exit code (0 ok, 1 fail).
+ * @returns {Promise<number>}
+ */
+async function runImageSelfTest() {
+  let png;
+  let raster;
+  try {
+    png = buildTestImagePng();
+    raster = pngBufferToRaster(png);
+  } catch (err) {
+    console.error(
+      `[${AGENT_NAME}] --test-image could not build raster: ${
+        err && err.message ? err.message : err
+      }`,
+    );
+    return 1;
+  }
+  console.log(
+    `[${AGENT_NAME}] --test-image: built test PNG (${png.length} bytes) -> ` +
+      `${raster.length} ESC/POS raster bytes (GS v 0, banded <=${MAX_BAND_HEIGHT} dot rows) ` +
+      `PRINTER_NAME='${config.PRINTER_NAME || '(Windows default)'}'`,
+  );
+  try {
+    const result = await sendToWindowsPrinter(raster, config.PRINTER_NAME);
+    console.log(`[${AGENT_NAME}] --test-image ${result}`);
+    console.log(
+      `[${AGENT_NAME}] inspect the strip: a bordered box + diagonal should print as ` +
+        `solid dots. (Real Thai comes from the browser via POST /print-image.)`,
+    );
+    return 0;
+  } catch (err) {
+    console.error(
+      `[${AGENT_NAME}] --test-image could not print: ${err && err.message ? err.message : err}`,
+    );
+    console.error(
+      `[${AGENT_NAME}] (built ${raster.length} raster bytes; spooling only works on Windows).`,
+    );
+    return 1;
+  }
+}
+
 /** Print the CLI usage banner (for --help / -h). */
 function printHelp() {
   process.stdout.write(
@@ -326,8 +461,13 @@ function printHelp() {
       'USAGE:\n' +
       '  krs-print-agent.exe            Start the loopback print server (default)\n' +
       `                                 -> listens on http://${HOST}:${PORT}\n` +
-      '  krs-print-agent.exe --test     Print the sample receipt once, then exit\n' +
+      '  krs-print-agent.exe --test     Print the sample receipt once (TEXT ESC/POS),\n' +
+      '                                 then exit\n' +
       '  krs-print-agent.exe --selftest (alias for --test)\n' +
+      '  krs-print-agent.exe --test-image  Print a self-contained RASTER test bitmap\n' +
+      '                                 (GS v 0 dots — NO font/codepage needed), then\n' +
+      '                                 exit. Proves the printer accepts raster; real\n' +
+      '                                 Thai comes from the browser via /print-image.\n' +
       '  krs-print-agent.exe --scan     Print a Thai codepage scan (ESC t 0..79) once,\n' +
       '                                 then exit. Read the strip: the line showing\n' +
       '                                 READABLE THAI is your KRS_THAI_CODEPAGE.\n' +
@@ -379,6 +519,22 @@ function main() {
     return;
   }
 
+  if (has('--test-image', '--test-raster')) {
+    // One-shot RASTER proof: build the in-code test bitmap, run it through the same
+    // PNG→GS v 0 path as POST /print-image, and spool it once. No font/codepage needed.
+    runImageSelfTest()
+      .then((code) => {
+        process.exitCode = code;
+      })
+      .catch((err) => {
+        process.stderr.write(
+          `[${AGENT_NAME}] test-image error: ${err && err.message ? err.message : err}\n`,
+        );
+        process.exitCode = 1;
+      });
+    return;
+  }
+
   if (has('--test', '--selftest')) {
     // Reuse the EXACT sample receipt + runner from scripts/test-print.js so the
     // packaged .exe self-test matches `npm run test-print` byte-for-byte.
@@ -409,6 +565,7 @@ if (require.main === module) {
 module.exports = {
   buildCodepageScanBuffer,
   runCodepageScan,
+  runImageSelfTest,
   SCAN_SAMPLE,
   SCAN_MIN_CODEPAGE,
   SCAN_MAX_CODEPAGE,

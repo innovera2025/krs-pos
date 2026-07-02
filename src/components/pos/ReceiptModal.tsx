@@ -30,6 +30,17 @@ type ReceiptModalProps = {
    */
   autoPrint?: boolean;
   /**
+   * Capture mode (pos-receipt-image): render the receipt OFF-SCREEN but fully
+   * laid out (via Modal `captureSource`) so the POS agent path can rasterize the
+   * `.print-receipt` DOM to a PNG with html2canvas — the browser draws Thai with
+   * its own font, so the printed raster has correct glyphs. Distinct from
+   * `autoPrint` (which renders display:none for `window.print()`): capture mode
+   * needs the paper VISIBLE-to-the-renderer and at FULL natural height (no
+   * scroll clip), so the paper drops its `max-h`/`overflow` and the on-screen
+   * action chrome is omitted. Mutually exclusive with `autoPrint`.
+   */
+  captureMode?: boolean;
+  /**
    * Pre-loaded seller identity (pos-autoprint-receipt). The POS page passes its
    * mount-fetched settings so the printed header (name/branch/phone/POS id) is
    * populated on FIRST paint — eliminating the race where an auto-print fires
@@ -72,6 +83,7 @@ export function ReceiptModal({
   onEmail,
   onNewSale,
   autoPrint = false,
+  captureMode = false,
   seller,
 }: ReceiptModalProps) {
   // Seller identity for the receipt header (seller-company-settings). Fetched
@@ -147,14 +159,32 @@ export function ReceiptModal({
     // onClose is a no-op: receipt closes ONLY via New Sale (no X, no backdrop).
     // printSource (auto-print): render screen-hidden but still printable so the
     // POS confirm path prints without ever showing a receipt page.
-    <Modal open={open} onClose={() => {}} label="ใบเสร็จ" printSource={autoPrint}>
+    <Modal
+      open={open}
+      onClose={() => {}}
+      label="ใบเสร็จ"
+      printSource={autoPrint && !captureMode}
+      captureSource={captureMode}
+    >
       <div
-        className="flex max-h-[92vh] w-[720px] max-w-[94vw] overflow-hidden rounded-[18px]"
-        style={{ background: "#f1f5f9", boxShadow: "0 30px 70px rgba(0,0,0,.35)" }}
+        className={
+          captureMode
+            ? "flex bg-white"
+            : "flex max-h-[92vh] w-[720px] max-w-[94vw] overflow-hidden rounded-[18px]"
+        }
+        style={
+          captureMode
+            ? { background: "#ffffff" }
+            : { background: "#f1f5f9", boxShadow: "0 30px 70px rgba(0,0,0,.35)" }
+        }
       >
-        {/* Receipt paper (80mm) — this is what @media print isolates */}
+        {/* Receipt paper (80mm) — @media print isolates it; capture mode drops the
+            overflow/scroll clip so html2canvas rasterizes the FULL height. */}
         <div
-          className="print-receipt w-[330px] flex-shrink-0 overflow-y-auto bg-white"
+          className={
+            "print-receipt w-[330px] flex-shrink-0 bg-white" +
+            (captureMode ? "" : " overflow-y-auto")
+          }
           style={{ padding: "4px 10px", fontFamily: "var(--font-mono), monospace" }}
         >
           {/* Header */}
@@ -325,7 +355,9 @@ export function ReceiptModal({
           </div>
         </div>
 
-        {/* Action side (hidden when printing via .no-print) */}
+        {/* Action side (hidden when printing via .no-print). Omitted entirely in
+            capture mode — only the receipt paper is rasterized (pos-receipt-image). */}
+        {!captureMode && (
         <div className="no-print flex min-w-0 flex-1 flex-col" style={{ padding: "26px 24px" }}>
           <div className="flex items-center gap-[11px]">
             <div
@@ -415,6 +447,7 @@ export function ReceiptModal({
             เริ่มบิลใหม่ · New sale
           </button>
         </div>
+        )}
       </div>
     </Modal>
   );

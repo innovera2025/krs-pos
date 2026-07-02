@@ -138,6 +138,12 @@ module.exports = {
   // rejected with HTTP 413 before any parsing.
   MAX_BODY_BYTES: 131072, // 128 KB
 
+  // Max accepted request body size for POST /print-image. The browser sends a
+  // ~576px-wide receipt PNG as base64 in { imagePngBase64 }, typically 200–500 KB;
+  // 2 MB gives generous headroom for tall receipts while still capping abuse. Bodies
+  // over this are rejected with HTTP 413 before any parsing.
+  MAX_IMAGE_BODY_BYTES: 2097152, // 2 MB
+
   // ESC t code-table selector for Thai glyphs on the thermal printer (printer.js
   // emits `ESC t <n>` = 0x1B 0x74 <n> before any Thai text). The correct table
   // number is firmware-specific on XP-80 OEM clones and is NOT standardised, so the

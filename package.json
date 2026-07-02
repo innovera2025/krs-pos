@@ -24,6 +24,7 @@
   "dependencies": {
     "@prisma/client": "^5.18.0",
     "bcryptjs": "^3.0.3",
+    "html2canvas": "^1.4.1",
     "lucide-react": "^1.21.0",
     "mssql": "^12.5.5",
     "next": "^14.2.35",

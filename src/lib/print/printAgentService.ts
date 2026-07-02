@@ -17,8 +17,16 @@ import type { ReceiptData, ReceiptPrintService } from "./types";
  * flow does NOT change: it depends only on `ReceiptPrintService`.
  */
 
-/** Default local ESC/POS bridge endpoint. */
+/** Default local ESC/POS bridge endpoint (TEXT/JSON receipt payload). */
 const DEFAULT_ENDPOINT = "http://localhost:9100/print-receipt";
+
+/**
+ * Default local ESC/POS bridge endpoint for the IMAGE receipt path
+ * (pos-receipt-image): the browser rasterizes the receipt DOM (incl. Thai) to a
+ * PNG and POSTs it here; the agent prints it as a raster (no printer font, so
+ * Thai always prints correctly). Same host/port as {@link DEFAULT_ENDPOINT}.
+ */
+const DEFAULT_IMAGE_ENDPOINT = "http://localhost:9100/print-image";
 
 /** Default POST timeout (ms). The agent is on localhost, so keep it short. */
 const DEFAULT_TIMEOUT_MS = 4000;
@@ -26,6 +34,12 @@ const DEFAULT_TIMEOUT_MS = 4000;
 export interface PrintAgentOptions {
   /** Print-agent endpoint. Defaults to the local ESC/POS bridge. */
   endpoint?: string;
+  /**
+   * Image print-agent endpoint (pos-receipt-image). Defaults to the local
+   * ESC/POS bridge's `/print-image`. The browser POSTs a rendered receipt PNG
+   * here so Thai (rasterized by the browser) always prints correctly.
+   */
+  imageEndpoint?: string;
   /** Abort the POST after this many ms (the agent is local → short). */
   timeoutMs?: number;
   /**
@@ -39,11 +53,13 @@ export interface PrintAgentOptions {
 
 export class PrintAgentService implements ReceiptPrintService {
   private readonly endpoint: string;
+  private readonly imageEndpoint: string;
   private readonly timeoutMs: number;
   private readonly failOpen: boolean;
 
   constructor(options: PrintAgentOptions = {}) {
     this.endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
+    this.imageEndpoint = options.imageEndpoint ?? DEFAULT_IMAGE_ENDPOINT;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.failOpen = options.failOpen ?? false;
   }
@@ -82,6 +98,58 @@ export class PrintAgentService implements ReceiptPrintService {
       throw err instanceof Error
         ? err
         : new Error("PrintAgentService: print request failed");
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * IMAGE receipt path (pos-receipt-image): POST a base64 PNG (black content on a
+   * WHITE background, ~576 px wide = 80mm printable width) to the agent's
+   * `/print-image` endpoint. The agent decodes it, thresholds to 1-bit, and prints
+   * it as an ESC/POS raster — needing NO printer font, so Thai (rendered by the
+   * browser) always prints correctly.
+   *
+   * Mirrors {@link printReceipt}'s guards/timeout/fail-open semantics exactly: a
+   * missing fetch, a hung/dead agent, or a non-OK status RESOLVES when
+   * `failOpen` is set, so a broken image print can never wedge checkout.
+   *
+   * @param imagePngBase64 Base64 PNG WITHOUT the `data:image/png;base64,` prefix.
+   */
+  async printReceiptImage(imagePngBase64: string): Promise<void> {
+    // No fetch in this environment (SSR without a polyfill) — nothing to do.
+    if (typeof fetch === "undefined") {
+      if (this.failOpen) return;
+      throw new Error(
+        "PrintAgentService: fetch is unavailable in this environment"
+      );
+    }
+
+    // Bound the request so a hung/missing agent can't stall checkout.
+    const controller =
+      typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer =
+      controller !== null && typeof setTimeout !== "undefined"
+        ? setTimeout(() => controller.abort(), this.timeoutMs)
+        : null;
+
+    try {
+      const res = await fetch(this.imageEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // The agent decodes this PNG and prints it as an ESC/POS raster.
+        body: JSON.stringify({ imagePngBase64 }),
+        signal: controller?.signal,
+      });
+      if (!res.ok) {
+        throw new Error(`PrintAgentService: agent responded ${res.status}`);
+      }
+    } catch (err) {
+      // Network error, timeout/abort, or non-OK status.
+      if (this.failOpen) return;
+      throw err instanceof Error
+        ? err
+        : new Error("PrintAgentService: image print request failed");
     } finally {
       if (timer !== null) clearTimeout(timer);
     }

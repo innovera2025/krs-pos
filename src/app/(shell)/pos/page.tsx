@@ -14,7 +14,11 @@ import type {
   ShopSettingsDTO,
 } from "@/types";
 import { useToast } from "@/components/ToastProvider";
-import { detectPrintAgent, resolveReceiptPrintService } from "@/lib/print";
+import {
+  detectPrintAgent,
+  resolveReceiptPrintService,
+  captureAndPrintReceiptImage,
+} from "@/lib/print";
 import {
   bahtToSatang,
   computeTotals,
@@ -135,6 +139,13 @@ export default function POSPage() {
   // render/print; `autoPrintOpen` gates the screen-hidden auto-print overlay.
   const [receiptOrder, setReceiptOrder] = useState<OrderDTO | null>(null);
   const [autoPrintOpen, setAutoPrintOpen] = useState(false);
+  // ---- agent image-print capture (pos-receipt-image) ----
+  // When the local ESC/POS agent is present the receipt is printed as a browser-
+  // rasterized PNG (so Thai always prints correctly). This gates the OFF-SCREEN,
+  // renderable `.print-receipt` DOM (<ReceiptModal captureMode/>) that html2canvas
+  // rasterizes — distinct from `autoPrintOpen`, which mounts the display:none
+  // paper for the browser `window.print()` fallback path.
+  const [captureOpen, setCaptureOpen] = useState(false);
 
   // ---- receipt print-size settings (Receipt print-size feature) ----
   // Fetched once on mount from GET /api/settings (requireUser). null until
@@ -1037,12 +1048,17 @@ export default function POSPage() {
       // is cleared straight away = a new sale.
       setPayOpen(false);
       setReceiptOrder(order);
-      // Plan B: BrowserPrintService needs the screen-hidden `.print-receipt` DOM
-      // (rendered by <ReceiptModal open={autoPrintOpen} autoPrint/>) to drive
-      // window.print(). The local ESC/POS agent prints straight from the JSON
-      // payload and needs NO DOM, so mount the overlay ONLY when the agent is
-      // ABSENT — preserving today's exact browser/kiosk behavior in the fallback.
-      if (!agentAvailable) {
+      // Mount the receipt DOM the active print path needs:
+      //   • agent present → the IMAGE path (pos-receipt-image) rasterizes the
+      //     receipt in the browser (so Thai prints correctly), so mount it
+      //     OFF-SCREEN but renderable via <ReceiptModal open={captureOpen}
+      //     captureMode/> — html2canvas needs a NON-display:none element.
+      //   • agent absent  → the browser window.print() fallback needs the
+      //     screen-hidden `.print-receipt` from <ReceiptModal open={autoPrintOpen}
+      //     autoPrint/> — today's exact behavior, unchanged.
+      if (agentAvailable) {
+        setCaptureOpen(true);
+      } else {
         setAutoPrintOpen(true);
       }
       setPayLines([]);
@@ -1053,29 +1069,41 @@ export default function POSPage() {
       // The only on-screen confirmation now that the receipt page is gone. Honest
       // for BOTH paths (agent silent-print or browser dialog / kiosk print).
       showToast("ชำระเงินสำเร็จ · กำลังพิมพ์ใบเสร็จ");
-      // Print via the swappable receipt-print service (receipt-print-service
-      // abstraction). resolveReceiptPrintService() picks the ACTIVE backend from
-      // the CACHED mount-time detection (no re-ping):
-      //   • agent present → PrintAgentService (POST localhost:9100, failOpen, no DOM)
-      //   • agent absent  → BrowserPrintService (rAF-waits the `.print-receipt`
-      //     paper, printReceiptWithSize → window.print(), afterprint / 5s fallback)
-      // Fire-and-forget-safe: the sale is already recorded, so a cancelled/failed/
-      // suppressed print still settles → reset to a fresh sale. The reset runs on
-      // BOTH resolve AND reject (same handler, ES2015-safe, no Promise.finally) so
-      // a failed/absent/hung agent print never leaves autoPrintOpen stuck.
+      // Print, then return to a fresh sale. Fire-and-forget-safe: the sale is
+      // already recorded, so a cancelled/failed/suppressed print still settles →
+      // reset. The reset runs on BOTH resolve AND reject (same handler, ES2015-
+      // safe, no Promise.finally) so a failed/absent/hung print never leaves the
+      // receipt overlays stuck. It clears BOTH overlays so either path resets.
       const backToNewSale = () => {
         setAutoPrintOpen(false);
+        setCaptureOpen(false);
         setReceiptOrder(null);
       };
-      void resolveReceiptPrintService()
-        .then((svc) =>
-          svc.printReceipt({
-            order,
-            seller: receiptSettings,
-            sizeSettings: receiptSettings,
-          })
-        )
-        .then(backToNewSale, backToNewSale);
+      if (agentAvailable) {
+        // AGENT IMAGE path (pos-receipt-image): rasterize the OFF-SCREEN
+        // `.print-receipt` DOM (mounted above via captureOpen) to a PNG in the
+        // browser and POST it to the agent's /print-image — Thai always prints
+        // correctly (raster, no printer font). Fully fail-open: a failed render or
+        // dead agent still resolves → backToNewSale. The receipt DOM stays mounted
+        // until the capture completes because backToNewSale runs on settle.
+        void captureAndPrintReceiptImage().then(backToNewSale, backToNewSale);
+      } else {
+        // BROWSER fallback (unchanged): resolveReceiptPrintService() returns the
+        // BrowserPrintService here (agent absent), which rAF-waits the screen-
+        // hidden `.print-receipt` paper and drives printReceiptWithSize →
+        // window.print(), resolving on afterprint / 5s fallback. The TEXT
+        // PrintAgentService remains available via resolveReceiptPrintService() for
+        // back-compat, but the POS agent path now prints via the IMAGE above.
+        void resolveReceiptPrintService()
+          .then((svc) =>
+            svc.printReceipt({
+              order,
+              seller: receiptSettings,
+              sizeSettings: receiptSettings,
+            })
+          )
+          .then(backToNewSale, backToNewSale);
+      }
     } catch {
       setPayError("ชำระเงินไม่สำเร็จ ลองใหม่อีกครั้ง");
     } finally {
@@ -1396,6 +1424,17 @@ export default function POSPage() {
         open={autoPrintOpen}
         order={receiptOrder}
         autoPrint
+        seller={receiptSettings}
+      />
+
+      {/* Agent image-print capture (pos-receipt-image): OFF-SCREEN but renderable
+          `.print-receipt` DOM (NOT display:none) so html2canvas can rasterize the
+          receipt — incl. Thai — to a PNG for the local ESC/POS agent. Mounted only
+          on the agent path (captureOpen). Same content as the auto-print receipt. */}
+      <ReceiptModal
+        open={captureOpen}
+        order={receiptOrder}
+        captureMode
         seller={receiptSettings}
       />
 

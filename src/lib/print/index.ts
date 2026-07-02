@@ -6,6 +6,13 @@ import type { ReceiptPrintService } from "./types";
 export type { ReceiptData, ReceiptPrintService } from "./types";
 export { BrowserPrintService } from "./browserPrintService";
 export { PrintAgentService, type PrintAgentOptions } from "./printAgentService";
+// Agent IMAGE-print path (pos-receipt-image): browser-rasterized receipt PNG →
+// local agent /print-image, so Thai always prints correctly (raster, no font).
+export {
+  captureAndPrintReceiptImage,
+  renderElementToPngBase64,
+  RECEIPT_IMAGE_WIDTH_PX,
+} from "./receiptImage";
 
 /**
  * Health endpoint of the LOCAL print agent (same host/port as the ESC/POS
