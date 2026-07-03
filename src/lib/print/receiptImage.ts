@@ -141,12 +141,28 @@ export async function renderElementToPngBase64(
       scale,
       logging: false,
       useCORS: true,
+      // html2canvas clones the WHOLE document before painting. The POS page
+      // behind the receipt holds a 2000+ product grid — cloning it made every
+      // render take seconds on the shop PC and could wedge the main thread
+      // outright (breadcrumb stopped at render:start, no render:done). Prune
+      // the clone to ONLY the receipt: skip every <body> subtree that is
+      // neither an ancestor nor a descendant of the receipt element. <head>
+      // (stylesheets/fonts) is outside <body> and stays intact; the receipt
+      // overlay is position:fixed, so dropping its siblings can't shift its
+      // layout.
+      ignoreElements: (el) =>
+        el instanceof HTMLElement &&
+        document.body.contains(el) &&
+        !el.contains(element) &&
+        !element.contains(el),
+      onclone: () => mark("render: document cloned"),
     });
     mark(
       `render: done ${canvas.width}x${canvas.height} in ${Math.round(performance.now() - t0)}ms`
     );
 
     const dataUrl = canvas.toDataURL("image/png");
+    mark(`png: encoded ~${Math.round((dataUrl.length * 3) / 4 / 1024)}KB`);
     const comma = dataUrl.indexOf(",");
     return comma >= 0 ? dataUrl.slice(comma + 1) : null;
   } catch (err) {
