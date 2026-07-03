@@ -110,11 +110,28 @@ export function PaymentModal({
     { label: "฿1,000", satang: 100000 },
   ];
 
+  // Keyboard checkout (owner request): Enter anywhere inside the payment modal
+  // confirms the sale, so scan → amount → Enter never touches the mouse. Scoped
+  // to THIS modal only — a page-level listener would collide with the barcode
+  // scanner's trailing Enter in the search box. Focused buttons/links keep
+  // their native Enter (so Enter on ยกเลิก doesn't pay), and an in-progress IME
+  // composition (Thai keyboard) is ignored. canConfirm already guards
+  // double-submit (submitting=true disables it).
+  const handleEnterConfirm = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "Enter" || !canConfirm) return;
+    if (e.nativeEvent.isComposing) return;
+    const tag = (e.target as HTMLElement).tagName;
+    if (tag === "BUTTON" || tag === "A" || tag === "TEXTAREA" || tag === "SELECT") return;
+    e.preventDefault();
+    onConfirm();
+  };
+
   return (
     <Modal open={open} onClose={onClose} label="วิธีชำระเงิน">
       <div
         className="flex max-h-[92vh] w-[760px] max-w-[94vw] overflow-hidden rounded-[18px] bg-white"
         style={{ boxShadow: "0 30px 70px rgba(0,0,0,.35)" }}
+        onKeyDown={handleEnterConfirm}
       >
         {/* Left: dark summary panel */}
         <div
@@ -389,6 +406,14 @@ export function PaymentModal({
           >
             <Check size={20} strokeWidth={2.4} />
             <span>{submitting ? "กำลังบันทึก…" : "ยืนยันการชำระเงิน · Confirm"}</span>
+            {!submitting && canConfirm && (
+              <span
+                className="rounded-[6px] border px-1.5 py-0.5 text-[11px] font-semibold"
+                style={{ borderColor: "rgba(255,255,255,.45)", opacity: 0.85 }}
+              >
+                Enter ↵
+              </span>
+            )}
           </button>
         </div>
       </div>
