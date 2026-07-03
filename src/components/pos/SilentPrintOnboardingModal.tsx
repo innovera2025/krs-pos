@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { Printer, Download, X } from "lucide-react";
 import { Modal } from "@/components/Modal";
 
@@ -12,82 +11,41 @@ type SilentPrintOnboardingModalProps = {
   onDismissPermanently: () => void;
 };
 
-/** Which platform the operator is on. Detection is client-side only (see the
- *  useEffect below); 'other' means we could not tell — we then show the Windows
- *  view but expose BOTH switch links so either file is one click away. */
-type OS = "windows" | "mac" | "other";
+/** A single setup step. */
+type SetupStep = { th: string; en: string };
 
-/** A single setup step. `code` (optional) renders as a small mono block for
- *  copy-pasteable Terminal commands (Mac Gatekeeper unquarantine). */
-type SetupStep = { th: string; en: string; code?: string };
-
-/** Windows steps — mirror what deploy/kiosk-print-setup.bat actually does:
- *  double-click the .bat (SmartScreen → Run anyway), it locks XP-80C as the
- *  default printer + creates the "KRS POS" desktop shortcut, then open the POS
- *  from that icon for silent printing. */
-const WINDOWS_STEPS: SetupStep[] = [
+/** Setup steps — mirror what the krs-print-agent-win.zip release actually does:
+ *  extract the zip on the Windows cashier PC, run setup-print-agent.bat
+ *  (SmartScreen → Run anyway), and the agent auto-starts + prints receipts
+ *  silently from then on. The shop runs Windows only. */
+const STEPS: SetupStep[] = [
   {
-    th: "ดาวน์โหลดแล้วดับเบิลคลิกไฟล์ .bat (ถ้า SmartScreen เตือน → กด More info → Run anyway)",
-    en: "Download and double-click the .bat file (if SmartScreen warns → More info → Run anyway).",
+    th: "ดาวน์โหลดไฟล์ zip (~22MB) แล้วแตกไฟล์ (Extract All) บนเครื่องแคชเชียร์ Windows",
+    en: "Download the zip (~22MB) and extract it (Extract All) on the Windows cashier PC.",
   },
   {
-    th: "ไฟล์จะตั้งเครื่องพิมพ์ XP-80C เป็นค่าเริ่มต้น และสร้างไอคอน 'KRS POS' บนเดสก์ท็อป",
-    en: "It sets XP-80C as the default printer and creates a 'KRS POS' desktop icon.",
+    th: "ดับเบิลคลิก setup-print-agent.bat ในโฟลเดอร์ที่แตกไฟล์ (ถ้า SmartScreen เตือน → กด More info → Run anyway)",
+    en: "Double-click setup-print-agent.bat in the extracted folder (if SmartScreen warns → More info → Run anyway).",
   },
   {
-    th: "เปิด POS จากไอคอน 'KRS POS' เท่านั้น → ใบเสร็จพิมพ์เงียบทันที",
-    en: "Open the POS from the 'KRS POS' icon only → receipts print silently.",
+    th: "ตัวติดตั้งจะติดตั้ง KRS Print Agent ให้ทำงานอัตโนมัติ → เปิด POS ใหม่ ใบเสร็จจะพิมพ์เงียบทันที",
+    en: "It installs the KRS Print Agent (auto-start) → reopen the POS and receipts print silently.",
   },
 ];
 
-/** Mac steps — mirror what deploy/kiosk-print-setup-mac.command actually does:
- *  the printer must already exist in CUPS, so add it first; a downloaded
- *  .command is quarantined so chmod +x + xattr -d, then double-click; it sets
- *  the CUPS default + builds the "KRS POS" Desktop app for silent printing. */
-const MAC_STEPS: SetupStep[] = [
-  {
-    th: "เพิ่มเครื่องพิมพ์ก่อนที่ System Settings > Printers & Scanners",
-    en: "Add the printer first in System Settings > Printers & Scanners.",
-  },
-  {
-    th: "เปิด Terminal รันสองคำสั่งนี้กับไฟล์ .command แล้วดับเบิลคลิก (ครั้งแรกคลิกขวา > Open)",
-    en: "In Terminal run these on the .command file, then double-click it (first time: right-click > Open).",
-    code: "chmod +x kiosk-print-setup-mac.command\nxattr -d com.apple.quarantine kiosk-print-setup-mac.command",
-  },
-  {
-    th: "ไฟล์จะตั้งเครื่องพิมพ์เป็นค่าเริ่มต้น และสร้างแอป 'KRS POS' บน Desktop",
-    en: "It sets the default printer and creates a 'KRS POS' app on the Desktop.",
-  },
-  {
-    th: "เปิด POS จากแอป 'KRS POS' เท่านั้น → ใบเสร็จพิมพ์เงียบทันที",
-    en: "Open the POS from the 'KRS POS' app only → receipts print silently.",
-  },
-];
-
-/** Per-OS download target. Both files live in public/ and are force-downloaded
- *  by the next.config.mjs headers() rules. Keep paths in sync with those rules. */
-const DOWNLOAD: Record<"windows" | "mac", { href: string; file: string; labelTh: string }> = {
-  windows: {
-    href: "/kiosk-print-setup.bat",
-    file: "kiosk-print-setup.bat",
-    labelTh: "ดาวน์โหลดตัวตั้งค่า (Windows)",
-  },
-  mac: {
-    href: "/kiosk-print-setup-mac.command",
-    file: "kiosk-print-setup-mac.command",
-    labelTh: "ดาวน์โหลดตัวตั้งค่า (Mac)",
-  },
+/** Download target: the packaged print-agent zip on the GitHub release. Served
+ *  by GitHub (attachment) — no in-app static file / headers() rule involved. */
+const DOWNLOAD = {
+  href: "https://github.com/innovera2025/krs-pos/releases/download/print-agent-v1/krs-print-agent-win.zip",
+  file: "krs-print-agent-win.zip",
+  labelTh: "ดาวน์โหลดตัวติดตั้ง (Windows · ~22MB)",
 };
 
-/** navigator.userAgentData is not in the base DOM lib typings; narrow it here. */
-type NavigatorUAData = Navigator & { userAgentData?: { platform?: string } };
-
 /**
- * SilentPrintOnboardingModal (silent-print onboarding, Plan A). First-run bilingual
- * guide that explains why a print dialog appears, then — OS-aware — offers the
- * correct one-click setup file and matching steps: Windows (`kiosk-print-setup.bat`)
- * or macOS (`kiosk-print-setup-mac.command`). The OS is detected client-side; a
- * small manual toggle recovers from a wrong guess.
+ * SilentPrintOnboardingModal (silent-print onboarding, Plan B). First-run bilingual
+ * guide that explains why a print dialog appears, then offers the local KRS Print
+ * Agent download (`krs-print-agent-win.zip` from the GitHub release) with the
+ * matching setup steps. Windows-only — the shop's cashier PCs run Windows.
  *
  * Pure consumer of the shared {@link Modal} primitive (focus-trap, Escape,
  * aria-modal handled there). Suppression state lives in `@/lib/kioskMode`; this
@@ -100,26 +58,6 @@ export function SilentPrintOnboardingModal({
   onClose,
   onDismissPermanently,
 }: SilentPrintOnboardingModalProps) {
-  // SSR-safe: default to 'windows' so server and first client render agree (no
-  // hydration mismatch); the effect corrects it after mount from the real UA.
-  const [os, setOs] = useState<OS>("windows");
-
-  useEffect(() => {
-    if (typeof navigator === "undefined") return;
-    const uaData = (navigator as NavigatorUAData).userAgentData;
-    // Prefer the modern high-entropy hint (e.g. "macOS"/"Windows"); fall back to
-    // the classic userAgent string. Match case-insensitively across both.
-    const hay = `${uaData?.platform ?? ""} ${navigator.userAgent ?? ""}`;
-    if (/mac|macintosh/i.test(hay)) setOs("mac");
-    else if (/windows/i.test(hay)) setOs("windows");
-    else setOs("other");
-  }, []);
-
-  // 'other' falls back to the Windows view; only an explicit 'mac' shows Mac.
-  const isMac = os === "mac";
-  const steps = isMac ? MAC_STEPS : WINDOWS_STEPS;
-  const dl = isMac ? DOWNLOAD.mac : DOWNLOAD.windows;
-
   return (
     <Modal open={open} onClose={onClose} label="ตั้งค่าพิมพ์ใบเสร็จ">
       <div
@@ -155,24 +93,23 @@ export function SilentPrintOnboardingModal({
         </header>
 
         <div className="flex flex-col gap-4 px-5 py-4">
-          {/* Section 2 — Explanation (Thai primary, EN muted) — OS-neutral */}
+          {/* Section 2 — Explanation (Thai primary, EN muted) */}
           <div className="flex flex-col gap-2">
             <p className="m-0 text-[13px] leading-relaxed" style={{ color: "var(--ink)" }}>
               เมื่อกดยืนยันการชำระเงิน เบราว์เซอร์จะเปิดหน้าต่างสั่งพิมพ์ทุกครั้ง
-              เพื่อให้ใบเสร็จพิมพ์ออกทันทีโดยไม่มีหน้าต่างเด้ง ต้องตั้งค่าเครื่องหนึ่งครั้ง
-              ไฟล์ตั้งค่าจะสร้างไอคอนพิเศษที่เปิด POS แบบพิมพ์เงียบ ทำเพียงครั้งเดียวต่อเครื่อง
+              เพื่อให้ใบเสร็จพิมพ์ออกทันทีโดยไม่มีหน้าต่างเด้ง ต้องติดตั้งโปรแกรมช่วยพิมพ์
+              (KRS Print Agent) บนเครื่องแคชเชียร์ ทำเพียงครั้งเดียวต่อเครื่อง
             </p>
             <p className="m-0 text-[11.5px] leading-relaxed" style={{ color: "var(--muted)" }}>
               Browsers show a print dialog every time by default. To print receipts
-              instantly with no dialog, each device needs a one-time setup. The setup
-              file creates a special shortcut that launches the POS with silent
-              printing — done once per device.
+              instantly with no dialog, install the KRS Print Agent on the cashier
+              PC — done once per device.
             </p>
           </div>
 
-          {/* Section 3 — Numbered OS-appropriate step guide */}
+          {/* Section 3 — Numbered step guide */}
           <ol className="m-0 flex list-none flex-col gap-2.5 p-0">
-            {steps.map((step, i) => (
+            {STEPS.map((step, i) => (
               <li key={i} className="flex items-start gap-3">
                 <span
                   className="mt-0.5 grid h-6 w-6 flex-shrink-0 place-items-center rounded-full text-[12px] font-bold"
@@ -190,29 +127,17 @@ export function SilentPrintOnboardingModal({
                   >
                     {step.en}
                   </span>
-                  {step.code && (
-                    <code
-                      className="mono mt-1 block whitespace-pre-wrap break-all rounded-[8px] border px-2.5 py-1.5 text-[10.5px] leading-relaxed"
-                      style={{
-                        background: "var(--surface-2)",
-                        borderColor: "var(--line)",
-                        color: "var(--ink)",
-                      }}
-                    >
-                      {step.code}
-                    </code>
-                  )}
                 </span>
               </li>
             ))}
           </ol>
 
-          {/* Section 4 — OS-aware download button (forest-green pill, primary action) */}
+          {/* Section 4 — Download button (forest-green pill, primary action) */}
           <div className="flex flex-col gap-2">
             <a
-              href={dl.href}
-              download={dl.file}
-              aria-label={`ดาวน์โหลดไฟล์ตั้งค่า ${dl.file}`}
+              href={DOWNLOAD.href}
+              download={DOWNLOAD.file}
+              aria-label={`ดาวน์โหลดไฟล์ติดตั้ง ${DOWNLOAD.file}`}
               className="flex h-12 w-full items-center justify-center gap-2.5 rounded-[15px] text-[14px] font-bold text-white"
               style={{
                 background: "linear-gradient(180deg,#22b877,#11865a)",
@@ -220,69 +145,17 @@ export function SilentPrintOnboardingModal({
               }}
             >
               <Download size={18} strokeWidth={2.2} />
-              {dl.labelTh}
+              {DOWNLOAD.labelTh}
             </a>
 
-            {/* Manual OS toggle — recover from a wrong auto-detection. */}
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
-              {os === "other" ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setOs("windows")}
-                    className="underline underline-offset-2"
-                    style={{ color: "var(--brand-2)" }}
-                  >
-                    ใช้ Windows? โหลดเวอร์ชัน Windows
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setOs("mac")}
-                    className="underline underline-offset-2"
-                    style={{ color: "var(--brand-2)" }}
-                  >
-                    ใช้ Mac? โหลดเวอร์ชัน Mac
-                  </button>
-                </>
-              ) : isMac ? (
-                <button
-                  type="button"
-                  onClick={() => setOs("windows")}
-                  className="underline underline-offset-2"
-                  style={{ color: "var(--brand-2)" }}
-                >
-                  ใช้ Windows อยู่? โหลดเวอร์ชัน Windows
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setOs("mac")}
-                  className="underline underline-offset-2"
-                  style={{ color: "var(--brand-2)" }}
-                >
-                  ใช้ Mac อยู่? โหลดเวอร์ชัน Mac
-                </button>
-              )}
-            </div>
-
-            {/* OS-appropriate first-run security note (small, muted) */}
-            {isMac ? (
-              <p className="m-0 text-[11px] leading-relaxed" style={{ color: "var(--muted)" }}>
-                ครั้งแรก macOS อาจบล็อกไฟล์ที่ดาวน์โหลด (Gatekeeper) — คลิกขวาที่ไฟล์แล้วเลือก
-                &lsquo;Open&rsquo;
-                <br />
-                First run, macOS may block the downloaded file (Gatekeeper) — right-click it
-                and choose &lsquo;Open&rsquo;.
-              </p>
-            ) : (
-              <p className="m-0 text-[11px] leading-relaxed" style={{ color: "var(--muted)" }}>
-                หากเห็นหน้าต่าง &lsquo;Windows protected your PC&rsquo; ให้กด &lsquo;More info&rsquo;
-                แล้ว &lsquo;Run anyway&rsquo;
-                <br />
-                If Windows shows a security warning, click &lsquo;More info&rsquo; then
-                &lsquo;Run anyway&rsquo;.
-              </p>
-            )}
+            {/* First-run security note (small, muted) */}
+            <p className="m-0 text-[11px] leading-relaxed" style={{ color: "var(--muted)" }}>
+              หากเห็นหน้าต่าง &lsquo;Windows protected your PC&rsquo; ให้กด &lsquo;More info&rsquo;
+              แล้ว &lsquo;Run anyway&rsquo;
+              <br />
+              If Windows shows a security warning, click &lsquo;More info&rsquo; then
+              &lsquo;Run anyway&rsquo;.
+            </p>
           </div>
         </div>
 
