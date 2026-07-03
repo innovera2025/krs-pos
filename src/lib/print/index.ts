@@ -40,10 +40,11 @@ const DETECTION_TIMEOUT_MS = 1500;
 const AGENT_PRINT_TIMEOUT_MS = 4000;
 
 /**
- * Module-level cache of the SINGLE detection ping per page load. Holds the
- * in-flight OR settled promise so every caller (the POS mount effect, and the
- * per-checkout `resolveReceiptPrintService`) shares ONE `/health` round-trip and
- * we never re-ping. Reset only by a full page reload.
+ * Module-level cache of the LATEST detection ping. Holds the in-flight OR
+ * settled promise so every caller (the POS mount effect, and the per-checkout
+ * `resolveReceiptPrintService`) shares ONE `/health` round-trip per probe and
+ * we never re-ping implicitly. Replaced only by a `{ fresh: true }` re-probe
+ * (checkout print time) or a full page reload.
  */
 let _detectPromise: Promise<boolean> | null = null;
 
@@ -55,11 +56,16 @@ let _detectPromise: Promise<boolean> | null = null;
  * resolves `false` (fail-open to the browser path).
  *
  * NEVER throws or rejects. The result is memoised in {@link _detectPromise} so
- * repeated calls within one page load reuse the first probe (single detection
- * per load).
+ * repeated calls within one page load reuse the latest probe. Pass
+ * `{ fresh: true }` to start a NEW probe (e.g. at print time, so an agent
+ * started/stopped after page load is seen); the new probe REPLACES the cache
+ * before it settles, so concurrent callers share it and later cached reads see
+ * the latest result.
  */
-export async function detectPrintAgent(): Promise<boolean> {
-  if (_detectPromise) return _detectPromise;
+export async function detectPrintAgent(options?: {
+  fresh?: boolean;
+}): Promise<boolean> {
+  if (!options?.fresh && _detectPromise) return _detectPromise;
   _detectPromise = (async (): Promise<boolean> => {
     // SSR / no-fetch environment: the localhost agent is unreachable here.
     if (typeof window === "undefined" || typeof fetch === "undefined") {

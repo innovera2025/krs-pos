@@ -60,6 +60,15 @@ function effectiveStock(p: Product): number {
     : DEFAULT_STOCK;
 }
 
+/**
+ * Checkout POST timeout (ms). Bounds the fetch("/api/orders") round-trip so a
+ * dead network / hung server can never wedge the payment modal forever. 30s is
+ * generous for a normal order POST; on abort the outcome is UNKNOWN, so the
+ * bill + idempotency key are left untouched and the cashier simply retries
+ * (same key → the server collapses a duplicate to one Order).
+ */
+const ORDER_POST_TIMEOUT_MS = 30000;
+
 // Monotonic counter for stable PayLine ids. A simple counter (rather than
 // crypto.randomUUID) keeps ids deterministic, dependency-free, and SSR-safe.
 let payLineSeq = 0;
@@ -967,11 +976,22 @@ export default function POSPage() {
       idemKeyRef.current = freshIdemKey();
     }
     const idempotencyKey = idemKeyRef.current;
+    // Bound the order POST with the SAME AbortController+setTimeout pattern as
+    // the agent detection in src/lib/print/index.ts (no AbortSignal.timeout —
+    // pattern consistency + TS-lib safety). The timer is ALWAYS cleared in the
+    // finally below, alongside the existing setSubmitting(false).
+    const postController =
+      typeof AbortController !== "undefined" ? new AbortController() : null;
+    const postTimer =
+      postController !== null && typeof setTimeout !== "undefined"
+        ? setTimeout(() => postController.abort(), ORDER_POST_TIMEOUT_MS)
+        : null;
     try {
       const trimmedRef = reference.trim();
       const res = await fetch("/api/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: postController?.signal,
         body: JSON.stringify({
           items: cart.map((i) => ({
             productId: i.product.id,
@@ -1070,17 +1090,19 @@ export default function POSPage() {
         setReceiptOrder(null);
       };
       // print-agent-first-sale-race fix: decide the print backend from a FRESH,
-      // AWAITED detectPrintAgent() at PRINT TIME — NOT from the `agentAvailable`
-      // React state. That state is populated by the mount effect ~1500ms after
-      // load, so a checkout in the first ~1.5s after opening the POS window would
-      // read it as `false` and wrongly take the browser window.print() fallback
-      // (which hangs on the shop's fontless printer) even though the agent IS
-      // running. detectPrintAgent is module-cached (one real /health ping per
-      // load), so awaiting it here is cheap and returns the SETTLED result with no
-      // race and no extra network round-trip. detectPrintAgent NEVER rejects
-      // (fail-open false), so this await can only resolve — keeping the branch
-      // fully fail-open. `agentAvailable` still drives the onboarding gate only.
-      const isAgent = await detectPrintAgent();
+      // AWAITED detectPrintAgent({ fresh: true }) at PRINT TIME — NOT from the
+      // `agentAvailable` React state. That state is populated by the mount effect
+      // ~1500ms after load, so a checkout in the first ~1.5s after opening the
+      // POS window would read it as `false` and wrongly take the browser
+      // window.print() fallback (which hangs on the shop's fontless printer)
+      // even though the agent IS running. `fresh: true` re-probes /health NOW
+      // (bounded ~1500ms) instead of trusting the mount-time cache, so an agent
+      // started or stopped AFTER page load is also picked up; the re-probe
+      // replaces the module cache so later reads see this latest result.
+      // detectPrintAgent NEVER rejects (fail-open false), so this await can only
+      // resolve — keeping the branch fully fail-open. `agentAvailable` still
+      // drives the onboarding gate only.
+      const isAgent = await detectPrintAgent({ fresh: true });
       if (isAgent) {
         // AGENT IMAGE path (pos-receipt-image): mount the OFF-SCREEN, renderable
         // `.print-receipt` DOM (captureMode — html2canvas needs a NON-display:none
@@ -1111,18 +1133,31 @@ export default function POSPage() {
           )
           .then(backToNewSale, backToNewSale);
       }
-    } catch {
-      setPayError("ชำระเงินไม่สำเร็จ ลองใหม่อีกครั้ง");
+    } catch (err) {
+      // Abort (our 30s bound fired) = the outcome is UNKNOWN — the order may or
+      // may not have been recorded. The bill AND idemKeyRef stay UNTOUCHED on
+      // this path (only the success path above calls clearBill), so the
+      // cashier's retry replays the SAME idempotency key and the server
+      // collapses a duplicate POST to the one existing Order — no double bill.
+      const isAbort =
+        (err instanceof DOMException || err instanceof Error) &&
+        err.name === "AbortError";
+      setPayError(
+        isAbort
+          ? "การเชื่อมต่อช้าผิดปกติ ยังไม่ยืนยันว่าบันทึกสำเร็จ — กดยืนยันอีกครั้งได้เลย (ระบบกันบิลซ้ำอัตโนมัติ)"
+          : "ชำระเงินไม่สำเร็จ ลองใหม่อีกครั้ง"
+      );
     } finally {
+      if (postTimer !== null) clearTimeout(postTimer);
       setSubmitting(false);
     }
   }
 
   // ---- auto-print receipt (pos-autoprint-receipt) ----
   // The auto-print mechanism lives behind the swappable ReceiptPrintService
-  // (see src/lib/print). On checkout success, confirmPayment awaits a FRESH,
-  // module-cached detectPrintAgent() AT PRINT TIME (Plan B) — not the mount-time
-  // `agentAvailable` state (print-agent-first-sale-race) — and branches:
+  // (see src/lib/print). On checkout success, confirmPayment awaits a FRESH
+  // detectPrintAgent({ fresh: true }) re-probe AT PRINT TIME (Plan B) — not the
+  // mount-time `agentAvailable` state (print-agent-first-sale-race) — and branches:
   //   • agent present → the IMAGE path (captureAndPrintReceiptImage) rasterizes
   //     the OFF-SCREEN `.print-receipt` DOM (ReceiptModal open={captureOpen}
   //     captureMode) to a PNG and POSTs it to the localhost /print-image — silent,
