@@ -69,6 +69,14 @@ function effectiveStock(p: Product): number {
  */
 const ORDER_POST_TIMEOUT_MS = 30000;
 
+/**
+ * Agent print watchdog (ms). The capture→render→POST chain is per-step
+ * time-capped, but if any await still silently pends, this forces the
+ * back-to-new-sale reset — the sale is already recorded, only the receipt is
+ * lost. Generous: covers a slow shop PC's html2canvas render + the 8s POST cap.
+ */
+const PRINT_WATCHDOG_MS = 20000;
+
 // Monotonic counter for stable PayLine ids. A simple counter (rather than
 // crypto.randomUUID) keeps ids deterministic, dependency-free, and SSR-safe.
 let payLineSeq = 0;
@@ -1112,8 +1120,23 @@ export default function POSPage() {
         // setting captureOpen immediately before it is enough. Fully fail-open: a
         // failed render or dead agent still resolves → backToNewSale.
         setCaptureOpen(true);
-        void captureAndPrintReceiptImage().then(backToNewSale, backToNewSale);
+        // Watchdog: if the capture chain silently PENDS (a stalled await that
+        // slipped past its per-step caps), force the reset anyway — the sale is
+        // recorded, only the receipt is lost. Cleared when the chain settles.
+        const printWatchdog = setTimeout(backToNewSale, PRINT_WATCHDOG_MS);
+        const settlePrint = (printed: boolean) => {
+          clearTimeout(printWatchdog);
+          if (!printed) {
+            // Honest failure signal instead of an eternal "กำลังพิมพ์ใบเสร็จ".
+            showToast("พิมพ์ใบเสร็จไม่สำเร็จ — ตรวจสอบเครื่องพิมพ์ แล้วขายต่อได้เลย");
+          }
+          backToNewSale();
+        };
+        void captureAndPrintReceiptImage().then(settlePrint, () =>
+          settlePrint(false)
+        );
       } else {
+        console.info("[krs-print] fallback: browser window.print path");
         // BROWSER fallback (unchanged behavior): mount the screen-hidden
         // `.print-receipt` paper (<ReceiptModal open={autoPrintOpen} autoPrint/>),
         // then resolveReceiptPrintService() returns the BrowserPrintService here

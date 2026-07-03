@@ -85,9 +85,14 @@ export async function detectPrintAgent(options?: {
         // ("private"/"local" = LAN and gets BLOCKED here — see localFetch.ts).
         targetAddressSpace: "loopback",
       } as LocalFetchInit);
+      // Breadcrumb for remote print-debugging (see receiptImage.ts `mark`).
+      console.info(`[krs-print] detect: ${res.ok ? "agent FOUND" : `agent answered ${res.status}`}`);
       return res.ok === true;
-    } catch {
+    } catch (err) {
       // Timeout/abort, connection refused, CORS/PNA rejection, DNS, etc.
+      console.info(
+        `[krs-print] detect: NO agent — ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`
+      );
       return false;
     } finally {
       if (timer !== null) clearTimeout(timer);
