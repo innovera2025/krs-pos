@@ -39,6 +39,7 @@ set "ACTION=install"
 set "PRINTER=XP-80C"
 set "PORT=9100"
 set "POS_URL=https://krspos.innoveraappcenter.com/?kiosk=1"
+set "POS_ORIGIN=https://krspos.innoveraappcenter.com"
 set "SRC_EXE=%~dp0krs-print-agent.exe"
 set "AGENT_DIR=%LOCALAPPDATA%\KrsPrintAgent"
 set "AGENT_EXE=%AGENT_DIR%\krs-print-agent.exe"
@@ -87,6 +88,21 @@ REM  default mode; without it Windows auto-switches to the last-used printer.
 echo [3/7] Locking the default printer to "%PRINTER%" ...
 reg add "HKCU\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows" /v LegacyDefaultPrinterMode /t REG_DWORD /d 1 /f >nul
 rundll32 printui.dll,PrintUIEntry /y /n "%PRINTER%"
+
+REM ---- 3b) Browser policy: let the POS origin reach the localhost agent ------
+REM  Chrome's Local Network Access (LNA) blocks an https site from fetching
+REM  http://localhost unless the user grants a per-profile permission — which
+REM  Chrome sometimes auto-BLOCKS without ever prompting, and some builds have
+REM  no site-settings row to fix it (all hit live at the shop, 03-07-26). These
+REM  HKCU policies (no admin needed) allowlist ONLY the KRS POS origin, survive
+REM  browser updates, and replace the fragile chrome://flags workaround. Both
+REM  the current and legacy policy names are written (the loopback/local split
+REM  happened mid-rollout), for BOTH Chrome and Edge.
+echo       + Browser policy: allow %POS_ORIGIN% to reach the local print agent
+reg add "HKCU\SOFTWARE\Policies\Google\Chrome\LocalNetworkAccessAllowedForUrls" /v 1 /t REG_SZ /d "%POS_ORIGIN%" /f >nul 2>&1
+reg add "HKCU\SOFTWARE\Policies\Google\Chrome\LoopbackNetworkAccessAllowedForUrls" /v 1 /t REG_SZ /d "%POS_ORIGIN%" /f >nul 2>&1
+reg add "HKCU\SOFTWARE\Policies\Microsoft\Edge\LocalNetworkAccessAllowedForUrls" /v 1 /t REG_SZ /d "%POS_ORIGIN%" /f >nul 2>&1
+reg add "HKCU\SOFTWARE\Policies\Microsoft\Edge\LoopbackNetworkAccessAllowedForUrls" /v 1 /t REG_SZ /d "%POS_ORIGIN%" /f >nul 2>&1
 
 REM ---- 4) Write the hidden launcher + register autostart --------------------
 REM  A tiny .vbs launches the console .exe with window mode 0 (fully HIDDEN - no
@@ -143,6 +159,9 @@ if defined AGENT_OK (
   echo     - ตรวจสอบว่าไม่มีโปรแกรมอื่นใช้พอร์ต %PORT% / check nothing else uses port %PORT%
   echo     - ลองรันไฟล์นี้อีกครั้ง / try running this file again
 )
+echo.
+echo  [TH] *** ปิดแล้วเปิด Chrome ใหม่ 1 ครั้ง เพื่อให้นโยบายเครือข่ายภายในมีผล ***
+echo  [EN] *** Restart Chrome once so the local-network policy takes effect ***
 echo.
 echo  [TH] แคชเชียร์เปิด POS จากไอคอน "KRS POS" บนเดสก์ท็อป (คลิกเดียว)
 echo       เมื่อกดยืนยันชำระเงิน ใบเสร็จจะพิมพ์ออกเครื่อง "%PRINTER%" ทันที
@@ -207,6 +226,10 @@ taskkill /F /IM krs-print-agent.exe /T >nul 2>&1
 if exist "%STARTUP_SHORTCUT%" del /Q "%STARTUP_SHORTCUT%" >nul 2>&1
 if exist "%USERPROFILE%\Desktop\KRS POS.lnk" del /Q "%USERPROFILE%\Desktop\KRS POS.lnk" >nul 2>&1
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$old=Join-Path ([Environment]::GetFolderPath('Desktop')) 'KRS POS.lnk'; if(Test-Path $old){ Remove-Item $old -Force }" >nul 2>&1
+reg delete "HKCU\SOFTWARE\Policies\Google\Chrome\LocalNetworkAccessAllowedForUrls" /f >nul 2>&1
+reg delete "HKCU\SOFTWARE\Policies\Google\Chrome\LoopbackNetworkAccessAllowedForUrls" /f >nul 2>&1
+reg delete "HKCU\SOFTWARE\Policies\Microsoft\Edge\LocalNetworkAccessAllowedForUrls" /f >nul 2>&1
+reg delete "HKCU\SOFTWARE\Policies\Microsoft\Edge\LoopbackNetworkAccessAllowedForUrls" /f >nul 2>&1
 if exist "%LAUNCH_VBS%" del /Q "%LAUNCH_VBS%" >nul 2>&1
 if exist "%AGENT_EXE%" del /Q "%AGENT_EXE%" >nul 2>&1
 if exist "%AGENT_DIR%" rmdir /S /Q "%AGENT_DIR%" >nul 2>&1
