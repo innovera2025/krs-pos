@@ -89,9 +89,9 @@ export class PrintAgentService implements ReceiptPrintService {
         // The local agent renders the ESC/POS job from this payload.
         body: JSON.stringify(receipt),
         signal: controller?.signal,
-        // Chrome Local Network Access: opt in to the loopback agent so a public
-        // HTTPS page is allowed to POST to http://localhost:9100 over HTTP.
-        targetAddressSpace: "private",
+        // Chrome Local Network Access: localhost is address space "loopback"
+        // ("private"/"local" = LAN and gets BLOCKED here — see localFetch.ts).
+        targetAddressSpace: "loopback",
       } as LocalFetchInit);
       if (!res.ok) {
         throw new Error(`PrintAgentService: agent responded ${res.status}`);
@@ -144,9 +144,9 @@ export class PrintAgentService implements ReceiptPrintService {
         // The agent decodes this PNG and prints it as an ESC/POS raster.
         body: JSON.stringify({ imagePngBase64 }),
         signal: controller?.signal,
-        // Chrome Local Network Access: opt in to the loopback agent so a public
-        // HTTPS page is allowed to POST to http://localhost:9100 over HTTP.
-        targetAddressSpace: "private",
+        // Chrome Local Network Access: localhost is address space "loopback"
+        // ("private"/"local" = LAN and gets BLOCKED here — see localFetch.ts).
+        targetAddressSpace: "loopback",
       } as LocalFetchInit);
       if (!res.ok) {
         throw new Error(`PrintAgentService: agent responded ${res.status}`);
