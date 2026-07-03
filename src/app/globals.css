@@ -275,6 +275,17 @@ textarea:focus-visible,
   font-weight: 600 !important;
 }
 
+/* Cutter tail margin, AGENT PATH ONLY (bill 0044): the XP-80C's print head
+   sits several mm before the cutter and the agent cuts right after the raster
+   ends, so the receipt's last line ("ขอบคุณที่ใช้บริการ · Thank you") stayed
+   behind the blade and emerged on TOP of the NEXT bill. Pad the CAPTURED
+   receipt with trailing white so the real content clears the blade before the
+   cut: 36 CSS px × 1.75 capture scale ≈ 63 raster dots ≈ 8mm at 203dpi. The
+   browser/driver print path is untouched (the driver manages its own feed). */
+.capture-source .print-receipt {
+  padding-bottom: 36px !important;
+}
+
 /* 80mm thermal receipt print isolation (domain-receipt-80mm).
 
    Portal-based isolation (blank-page fix): every Modal now renders via
