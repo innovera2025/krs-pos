@@ -251,6 +251,20 @@ textarea:focus-visible,
   }
 }
 
+/* Thermal-print contrast (pos-receipt-image): the receipt component styles its
+   secondary lines with muted slate grays (inline #64748b / #334155), but the
+   agent path thresholds the rasterized PNG to 1-bit ESC/POS — mid-grays survive
+   only as sparse dots and print FAINT on the XP-80C (verified on paper,
+   bill 0037). Thermal paper has no grayscale: force pure-black text and solid
+   black rules on the receipt paper EVERYWHERE it renders (capture overlay,
+   browser print, visible reprint preview — a receipt should look like a
+   receipt). `!important` beats the component's inline color styles. */
+.print-receipt,
+.print-receipt * {
+  color: #000 !important;
+  border-color: #000 !important;
+}
+
 /* 80mm thermal receipt print isolation (domain-receipt-80mm).
 
    Portal-based isolation (blank-page fix): every Modal now renders via
