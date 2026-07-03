@@ -109,18 +109,20 @@ set "AGENT_OK="
 curl -s http://127.0.0.1:%PORT%/health 2>nul | findstr /C:"krs-print-agent" >nul 2>&1 && set "AGENT_OK=1"
 
 REM ---- 7) Create a clean cashier desktop icon "KRS POS" (normal browser) -----
-REM  A one-click icon that opens the POS in a NORMAL Chrome/Edge window (--app,
-REM  NO --kiosk-printing, NO isolated profile) so the agent's silent printing
-REM  works reliably. OVERWRITES any old kiosk "KRS POS" icon (same name) that
-REM  could hang/fail. Single-line IFs so (x86) can't break a batch block.
+REM  A one-click icon that opens the POS in a NORMAL Chrome/Edge window
+REM  (--new-window --start-fullscreen; NO --app, NO --kiosk-printing, NO
+REM  isolated profile) so the agent's silent printing works reliably. The real
+REM  Desktop can be OneDrive-redirected, so the icon goes to the shell-resolved
+REM  Desktop and any old "KRS POS" icon is REMOVED from both the shell Desktop
+REM  and the classic %%USERPROFILE%%\Desktop (old kiosk/--app icons hang on
+REM  print). Single-line IFs so (x86) can't break a batch block.
 echo [7/7] Creating cashier desktop icon "KRS POS" ...
 set "POS_BROWSER="
 if exist "%ProgramFiles%\Google\Chrome\Application\chrome.exe" set "POS_BROWSER=%ProgramFiles%\Google\Chrome\Application\chrome.exe"
 if not defined POS_BROWSER if exist "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" set "POS_BROWSER=%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"
 if not defined POS_BROWSER if exist "%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe" set "POS_BROWSER=%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"
 if not defined POS_BROWSER if exist "%ProgramFiles%\Microsoft\Edge\Application\msedge.exe" set "POS_BROWSER=%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"
-set "POS_LNK=%USERPROFILE%\Desktop\KRS POS.lnk"
-if defined POS_BROWSER powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $sc=$ws.CreateShortcut($env:POS_LNK); $sc.TargetPath=$env:POS_BROWSER; $sc.Arguments='--new-window --start-fullscreen ' + $env:POS_URL; $sc.WorkingDirectory=(Split-Path $env:POS_BROWSER); $sc.IconLocation=$env:POS_BROWSER + ',0'; $sc.Description='KRS POS'; $sc.Save(); Write-Host ('  Desktop  : ' + $env:POS_LNK)"
+if defined POS_BROWSER powershell -NoProfile -ExecutionPolicy Bypass -Command "$desk=[Environment]::GetFolderPath('Desktop'); $classic=Join-Path $env:USERPROFILE 'Desktop'; foreach($d in @($desk,$classic)){ $old=Join-Path $d 'KRS POS.lnk'; if(Test-Path $old){ Remove-Item $old -Force } }; $lnk=Join-Path $desk 'KRS POS.lnk'; $ws=New-Object -ComObject WScript.Shell; $sc=$ws.CreateShortcut($lnk); $sc.TargetPath=$env:POS_BROWSER; $sc.Arguments='--new-window --start-fullscreen ' + $env:POS_URL; $sc.WorkingDirectory=(Split-Path $env:POS_BROWSER); $sc.IconLocation=$env:POS_BROWSER + ',0'; $sc.Description='KRS POS'; $sc.Save(); Write-Host ('  Desktop  : ' + $lnk)"
 if not defined POS_BROWSER echo   ^(ไม่พบ Chrome/Edge - เปิด POS ในเบราว์เซอร์ปกติได้เลย / no Chrome or Edge found^)
 
 REM ---- Confirm the current default printer (non-silent verification) ---------
@@ -204,6 +206,7 @@ echo  Stopping agent, removing Startup entry, and deleting "%AGENT_DIR%" ...
 taskkill /F /IM krs-print-agent.exe /T >nul 2>&1
 if exist "%STARTUP_SHORTCUT%" del /Q "%STARTUP_SHORTCUT%" >nul 2>&1
 if exist "%USERPROFILE%\Desktop\KRS POS.lnk" del /Q "%USERPROFILE%\Desktop\KRS POS.lnk" >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$old=Join-Path ([Environment]::GetFolderPath('Desktop')) 'KRS POS.lnk'; if(Test-Path $old){ Remove-Item $old -Force }" >nul 2>&1
 if exist "%LAUNCH_VBS%" del /Q "%LAUNCH_VBS%" >nul 2>&1
 if exist "%AGENT_EXE%" del /Q "%AGENT_EXE%" >nul 2>&1
 if exist "%AGENT_DIR%" rmdir /S /Q "%AGENT_DIR%" >nul 2>&1
