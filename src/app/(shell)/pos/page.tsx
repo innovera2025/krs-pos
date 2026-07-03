@@ -1096,6 +1096,11 @@ export default function POSPage() {
         setAutoPrintOpen(false);
         setCaptureOpen(false);
         setReceiptOrder(null);
+        // Scanner flow (owner request): put the caret back in the search box
+        // the moment the sale settles so the next customer's first barcode
+        // fires straight into it — no mouse touch. rAF so it runs AFTER the
+        // closing modal's own focus restoration.
+        requestAnimationFrame(() => searchRef.current?.focus());
       };
       // print-agent-first-sale-race fix: decide the print backend from a FRESH,
       // AWAITED detectPrintAgent({ fresh: true }) at PRINT TIME — NOT from the
