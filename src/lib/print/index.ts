@@ -31,6 +31,26 @@ const HEALTH_ENDPOINT = "http://localhost:9100/health";
 const DETECTION_TIMEOUT_MS = 1500;
 
 /**
+ * Print-time (`fresh: true`) probe timeout (ms). Longer than the mount probe ON
+ * PURPOSE: the fresh probe fires right after checkout, when a weak shop PC is
+ * busy re-rendering the 2000+ product grid (especially after a barcode-scan
+ * sale clears the search filter). A busy main thread delays processing the
+ * /health response past the timer, so a short timeout falsely aborts a fetch
+ * that actually succeeded — observed live: "detect: NO agent — AbortError"
+ * one line after "detect: agent FOUND" → wrong window.print fallback.
+ */
+const FRESH_DETECTION_TIMEOUT_MS = 3500;
+
+/**
+ * Last SETTLED probe result. Used to rescue a TIMED-OUT fresh probe: an abort
+ * on a busy main thread says nothing about the agent (see
+ * FRESH_DETECTION_TIMEOUT_MS above), so if the agent was seen alive by the most
+ * recent completed probe, keep trusting it. A genuine refusal (connection
+ * refused / CORS / non-2xx) still records `false` and wins.
+ */
+let _lastSettledResult: boolean | null = null;
+
+/**
  * POST timeout (ms) for the ACTIVE agent print. The agent is on localhost, so
  * keep it short — a hung/dead agent must NEVER wedge checkout. Combined with
  * `failOpen: true` (a failed POST RESOLVES) and the call site resetting on both
@@ -66,6 +86,9 @@ export async function detectPrintAgent(options?: {
   fresh?: boolean;
 }): Promise<boolean> {
   if (!options?.fresh && _detectPromise) return _detectPromise;
+  const timeoutMs = options?.fresh
+    ? FRESH_DETECTION_TIMEOUT_MS
+    : DETECTION_TIMEOUT_MS;
   _detectPromise = (async (): Promise<boolean> => {
     // SSR / no-fetch environment: the localhost agent is unreachable here.
     if (typeof window === "undefined" || typeof fetch === "undefined") {
@@ -75,7 +98,7 @@ export async function detectPrintAgent(options?: {
       typeof AbortController !== "undefined" ? new AbortController() : null;
     const timer =
       controller !== null && typeof setTimeout !== "undefined"
-        ? setTimeout(() => controller.abort(), DETECTION_TIMEOUT_MS)
+        ? setTimeout(() => controller.abort(), timeoutMs)
         : null;
     try {
       const res = await fetch(HEALTH_ENDPOINT, {
@@ -87,12 +110,27 @@ export async function detectPrintAgent(options?: {
       } as LocalFetchInit);
       // Breadcrumb for remote print-debugging (see receiptImage.ts `mark`).
       console.info(`[krs-print] detect: ${res.ok ? "agent FOUND" : `agent answered ${res.status}`}`);
+      _lastSettledResult = res.ok === true;
       return res.ok === true;
     } catch (err) {
-      // Timeout/abort, connection refused, CORS/PNA rejection, DNS, etc.
+      const isAbort =
+        (err instanceof DOMException || err instanceof Error) &&
+        err.name === "AbortError";
+      // A timed-out probe on a busy main thread is NOT evidence the agent is
+      // gone — if the last completed probe saw it alive, keep trusting that
+      // instead of dropping into the window.print fallback (which pops the
+      // Chrome print dialog). Genuine refusals (connection refused, CORS,
+      // non-2xx) take the `false` path below and overwrite the memory.
+      if (isAbort && _lastSettledResult === true) {
+        console.info(
+          "[krs-print] detect: probe timed out on a busy thread — keeping last known GOOD result (agent assumed present)"
+        );
+        return true;
+      }
       console.info(
         `[krs-print] detect: NO agent — ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`
       );
+      if (!isAbort) _lastSettledResult = false;
       return false;
     } finally {
       if (timer !== null) clearTimeout(timer);
