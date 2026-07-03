@@ -265,6 +265,16 @@ textarea:focus-visible,
   border-color: #000 !important;
 }
 
+/* Thermal-print stroke weight (bill 0038): 400-weight Thai glyphs at 10–11.5px
+   scale to ~1-dot strokes at 576px raster width, and the 1-bit threshold eats
+   their anti-aliased edges — text prints thin/broken. Thicken every non-bold
+   glyph to 600 so each stroke is ≥2 printed dots; explicit bolds (.font-bold /
+   .font-semibold, e.g. product names and the total row) keep their own weight
+   so the hierarchy still reads. */
+.print-receipt *:not(.font-bold):not(.font-semibold) {
+  font-weight: 600 !important;
+}
+
 /* 80mm thermal receipt print isolation (domain-receipt-80mm).
 
    Portal-based isolation (blank-page fix): every Modal now renders via
