@@ -243,6 +243,23 @@ export type OrderLineResult = {
    * value stored as OrderItem.lineTotal so Σ lineTotal === Order.subtotal.
    */
   lineTotalSatang: number;
+  /**
+   * Fully-net line total in satang AFTER the bill-level discount has been allocated
+   * across lines (largest-remainder) — i.e. `computeTotals(...).lines[i].netSatang`.
+   * This is `lineTotalSatang` minus this line's share of the bill discount, so
+   * `Σ lineNetSatang === totalSatang` (the KRS net-out wire amount per line). Always
+   * in `[0, lineTotalSatang]`. Distinct from `lineTotalSatang`, which excludes the
+   * bill-level allocation.
+   */
+  lineNetSatang: number;
+  /**
+   * The clamped per-line discount actually applied to this line, in satang — i.e.
+   * `min(requestedLineDiscount, gross)` where `gross = max(priceSatang,0)*qty`.
+   * Mirrors the clamp `computeOrderTotals` feeds into the pricing engine, so it is
+   * the authoritative per-line discount for the KRS snapshot (never the raw client
+   * value). Always in `[0, gross]`.
+   */
+  lineDiscountSatang: number;
 };
 
 /** Full server-recomputed order money result (all integer satang). */
@@ -334,7 +351,18 @@ export function computeOrderTotals(
     // === subtotalSatang (the bill discount is a separate header field, allocated
     // proportionally only for VAT extraction — it is NOT folded into lineTotal).
     const lineTotalSatang = Math.max(Math.max(priceSatang, 0) * qty - lineDiscount, 0);
-    return { productId: line.productId, quantity: qty, priceSatang, lineTotalSatang };
+    // lineNet = this line's fully-net amount AFTER the bill-discount allocation
+    // (largest-remainder). Taken straight from the shared engine so Σ lineNetSatang
+    // === totalSatang and each is in [0, lineTotalSatang]. lineDiscountSatang is the
+    // clamped per-line discount the engine actually applied (mirrors the clamp above).
+    return {
+      productId: line.productId,
+      quantity: qty,
+      priceSatang,
+      lineTotalSatang,
+      lineNetSatang: totals.lines[i].netSatang,
+      lineDiscountSatang: lineDiscount,
+    };
   });
 
   return {

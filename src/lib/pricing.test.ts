@@ -7,6 +7,7 @@ import {
   remainingPaySatang,
   OrderProductMissingError,
   type PricingItem,
+  type BillDiscount,
   type OrderProductRow,
   type OrderRequestLine,
 } from "@/lib/pricing";
@@ -264,9 +265,26 @@ describe("computeOrderTotals — DB price authority", () => {
     const t = computeOrderTotals(PRODUCTS, req, { type: "amount", value: 0 });
     expect(t.subtotalSatang).toBe(14300);
     expect(t.totalSatang).toBe(14300);
+    // Additive OrderLineResult fields (Phase 1): with no bill discount lineNet == lineTotal
+    // and lineDiscount == 0 — the pre-existing values are unchanged; the two new keys are
+    // included so this strict deep-equality assertion stays exhaustive.
     expect(t.lines).toEqual([
-      { productId: "p1", quantity: 2, priceSatang: 5900, lineTotalSatang: 11800 },
-      { productId: "p2", quantity: 1, priceSatang: 2500, lineTotalSatang: 2500 },
+      {
+        productId: "p1",
+        quantity: 2,
+        priceSatang: 5900,
+        lineTotalSatang: 11800,
+        lineNetSatang: 11800,
+        lineDiscountSatang: 0,
+      },
+      {
+        productId: "p2",
+        quantity: 1,
+        priceSatang: 2500,
+        lineTotalSatang: 2500,
+        lineNetSatang: 2500,
+        lineDiscountSatang: 0,
+      },
     ]);
   });
 
@@ -389,6 +407,100 @@ describe("computeOrderTotals — validation & error boundaries", () => {
         value: Number.NaN,
       })
     ).toThrow(RangeError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 1 (promotions / KRS net-out) — the additive OrderLineResult fields
+// lineNetSatang + lineDiscountSatang. These pin the two invariants the KRS
+// discount-safe writeback depends on: Σ lineNetSatang === totalSatang (the net-out
+// wire amount reconciles Hdr.TotalAmount) and lineNetSatang ∈ [0, lineTotalSatang]
+// (a line never goes negative and never exceeds its pre-allocation total). Purely
+// additive — the money math above is unchanged.
+// ---------------------------------------------------------------------------
+
+describe("computeOrderTotals — lineNetSatang / lineDiscountSatang (Phase 1)", () => {
+  // Exercise the same allocation scenarios the existing tests cover: no discount,
+  // amount + percent bill discounts (which trigger the largest-remainder split),
+  // and per-line discounts.
+  const scenarios: Array<{
+    name: string;
+    req: OrderRequestLine[];
+    bill: BillDiscount;
+  }> = [
+    {
+      name: "no discount",
+      req: [
+        { productId: "p1", quantity: 2 },
+        { productId: "p2", quantity: 1 },
+      ],
+      bill: { type: "amount", value: 0 },
+    },
+    {
+      name: "amount bill discount (allocated across lines)",
+      req: [
+        { productId: "p1", quantity: 3 }, // 177.00
+        { productId: "p3", quantity: 2 }, // 200.00
+      ],
+      bill: { type: "amount", value: 55 },
+    },
+    {
+      name: "percent bill discount (allocated across lines)",
+      req: [
+        { productId: "p1", quantity: 2 },
+        { productId: "p2", quantity: 1 },
+        { productId: "p3", quantity: 1 },
+      ],
+      bill: { type: "percent", value: 15 },
+    },
+    {
+      name: "per-line + percent bill discount stacked",
+      req: [
+        { productId: "p1", quantity: 2, lineDiscountSatang: 300 },
+        { productId: "p3", quantity: 1 },
+      ],
+      bill: { type: "percent", value: 20 },
+    },
+    {
+      name: "bill discount clamped to subtotal (total 0)",
+      req: [{ productId: "p3", quantity: 1 }],
+      bill: { type: "amount", value: 9999 },
+    },
+  ];
+
+  it("Σ lineNetSatang === totalSatang across allocation scenarios", () => {
+    for (const s of scenarios) {
+      const t = computeOrderTotals(PRODUCTS, s.req, s.bill);
+      const sumNet = t.lines.reduce((acc, l) => acc + l.lineNetSatang, 0);
+      expect(sumNet).toBe(t.totalSatang);
+    }
+  });
+
+  it("lineNetSatang ∈ [0, lineTotalSatang] for every line in every scenario", () => {
+    for (const s of scenarios) {
+      const t = computeOrderTotals(PRODUCTS, s.req, s.bill);
+      for (const l of t.lines) {
+        expect(l.lineNetSatang).toBeGreaterThanOrEqual(0);
+        expect(l.lineNetSatang).toBeLessThanOrEqual(l.lineTotalSatang);
+      }
+    }
+  });
+
+  it("lineDiscountSatang is the clamped per-line discount actually applied", () => {
+    // p2 = 25.00 (2500 satang); an over-large per-line discount is clamped to gross.
+    const t = computeOrderTotals(
+      PRODUCTS,
+      [
+        { productId: "p1", quantity: 2, lineDiscountSatang: 300 }, // within gross
+        { productId: "p2", quantity: 1, lineDiscountSatang: 999999 }, // clamped to 2500
+      ],
+      { type: "amount", value: 0 }
+    );
+    expect(t.lines[0].lineDiscountSatang).toBe(300);
+    expect(t.lines[1].lineDiscountSatang).toBe(2500);
+    // lineTotal reflects the same clamp: p1 = 11800-300, p2 = 2500-2500.
+    expect(t.lines[0].lineTotalSatang).toBe(11500);
+    expect(t.lines[1].lineTotalSatang).toBe(0);
   });
 });
 
