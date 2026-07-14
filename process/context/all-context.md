@@ -191,6 +191,8 @@ krs-pos/
       active/              -- active plans (pos-redesign_PLAN_20-06-26.md = the 165-fn program plan)
       reports/             -- phase execution reports (P1–P6b) + per-phase research docs
       references/          -- pos-redesign-timeline_20-06-26.html, pos-security-gap-audit_20-06-26.md
+    features/              -- feature-scoped plans/reports/references
+      # Current features: branch-warehouse, krs-sync, promotions
 ```
 
 ## 7. Technology Stack
