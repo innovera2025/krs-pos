@@ -19,6 +19,25 @@ A POS refund/void does NOT reverse the sale in KRS → KRS stock + revenue stay 
 ### 2. Line-discount mapping
 Per-line discount (`SalePayloadItem.lineDiscount`) is captured in the snapshot but not yet mapped into the `SalesInvoiceDtl` / VAT base. Verify against a vendor sample before enabling discounted-line sales.
 
+**ADDRESSED 14-07-26 by the promotions program, Phase 1** (independent of promotions themselves —
+this closed the pre-existing manual-discount writeback hazard too): `src/lib/krs/writeback.ts` now
+maps discounted lines with a **net-out** mapping — `Dtl.UnitPrice` = catalog price (unchanged),
+`Dtl.Amount` = net (post-discount), `Dtl.DiscountAmount` = gross − net, `Dtl.DiscountPercent` = 0
+always (exact, no division-by-zero). This reconciles `Σ Dtl.Amount === Hdr.TotalAmount` and
+`UnitPrice×Qty − DiscountAmount == Amount` at the satang level.
+
+Shipped **HELD behind `KRS_DISCOUNT_WRITE_ENABLED`** (default `false`, `src/lib/env.ts`) — jobs for
+any bill with a bill-level or per-line discount are queued but held PENDING (no attempt counted;
+`DISCOUNT_HELD` log) until:
+1. vendor confirms the mapping via questions Q1-Q8 and
+2. sandbox verification passes (7-case test matrix + cross-foot proof SELECTs against
+   Hdr/Dtl/Journal/Tax)
+
+— see `process/features/promotions/references/krs-discount-writeback-contract_14-07-26.md` for the
+full contract, vendor questions, and sandbox test plan. Zero-discount bills are unaffected (byte-
+identical to the pre-existing writeback). The owner flips the flag themselves after sandbox
+verification — the agent does not enable it.
+
 ### 3. Non-cash payment types (transfer / card / mixed)
 Writeback currently models a CASH sale (CashValue=total, cash journal DR). Non-cash tenders need the correct GL account / payment mapping.
 

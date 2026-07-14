@@ -1,4 +1,12 @@
-<!-- Created 14-07-26 | Type: multi-phase program | Status: Phase 1 in progress -->
+<!-- Created 14-07-26 | Type: multi-phase program | Status: all 8 phases code-complete 14-07-26
+     (commits 8e124b2, 939b477, 2b73ced, 70aa429, cd3bc3d, fbc764e, 296197c, fe507ce, 0c191c0,
+     e584284, dd0ae0c). Verified: 85/85 vitest (pricing.test.ts + checkoutPromo.test.ts +
+     promotionEngine.test.ts + datetime.test.ts) + type-check + build + pricing-tester agent SHIP
+     verdict. REMAINING before production promo use: (a) deploy — Phase 1 (KRS net-out mapping)
+     must reach prod BEFORE any promotion is created/used at checkout; (b) send vendor questions
+     Q1-Q8 (process/features/promotions/references/krs-discount-writeback-contract_14-07-26.md);
+     (c) sandbox verification of the net-out mapping; (d) owner flips `KRS_DISCOUNT_WRITE_ENABLED`
+     themselves after (b)+(c) pass; (e) manual QA checklist — pending, not yet executed. -->
 
 # Promotion Feature — สร้างโปรโมชันที่ POS + ส่งยอดกลับ KRS ไปกับบิลขายปกติ
 

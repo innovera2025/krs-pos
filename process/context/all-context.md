@@ -4,8 +4,13 @@
 > both Claude and Codex. Read it first, then open the grouped/source docs it points to.
 > Regenerate or refresh with the `vc-generate-context` skill.
 
-- Last updated: 2026-06-27 (krs-writeback-idempotency shipped — 7 migrations; SyncJob.krsClaimedTxnNo; SyncJobStatus.NEEDS_RECONCILE Prisma enum; module remains dormant)
-- Repo HEAD: main (committed through seller-company-settings; commits 27153c1 feat + c7ab7f9 docs)
+- Last updated: 2026-07-14 (promotions program shipped — `/promotions` strict-ADMIN route,
+  `/api/promotions` CRUD + POS feed, `src/lib/promotionEngine.ts` isomorphic engine,
+  `KRS_DISCOUNT_WRITE_ENABLED` env var; NOTE — this file's stack/route/env/gotchas sections were not
+  kept in sync with several intervening programs (auth/session RBAC, branch/warehouse, financial
+  correctness, held bills, KRS outbound writeback going live) — recommend a full
+  `vc-generate-context` re-sync)
+- Repo HEAD: main (committed through promotions program; commits 8e124b2..dd0ae0c)
 - Mode: Context sync (context-maintainer)
 - Package manager: npm (`package-lock.json` committed)
 
@@ -102,7 +107,8 @@ For most substantial tasks:
 | money math / pricing | `all-context.md` | `src/lib/pricing.ts`, `src/lib/money.ts` |
 | Docker / local DB / deployment image | `all-context.md`, `container/all-container.md` | `docker-compose.yml`, `Dockerfile` |
 | UI/frontend or POS redesign work | `all-context.md` | `design/Simple POS.dc.html`, `design/KRS POS Taste Redesign.html`, then relevant `src/app/(shell)/*/page.tsx` |
-| RBAC / role gates | `all-context.md` | `src/lib/roleAccess.ts`, `src/components/RoleProvider.tsx`, `src/components/AdminOnly.tsx` |
+| RBAC / role gates | `all-context.md` | `src/lib/roleAccess.ts`, `src/components/RoleProvider.tsx`, `src/components/AdminOnly.tsx` — note `src/lib/roleAccess.ts` also has `STRICT_ADMIN_NAV`/`canAccessStrict()` (promotions program): `/promotions` is ADMIN-only and excludes MANAGER, unlike every other admin-gated route (`canAccess`/`requireAdmin` treat MANAGER as admin) |
+| promotions (management + checkout application) | `all-context.md`, `database/all-database.md` | `src/lib/promotionEngine.ts` (isomorphic satang engine, client + server), `src/app/api/promotions/route.ts`, `src/app/(shell)/promotions/page.tsx`, `src/app/api/orders/route.ts` (server-authoritative apply at checkout) |
 | KRS sync / SyncJob state | `all-context.md`, `database/all-database.md` | `src/app/api/sync-jobs/route.ts`, `src/app/(shell)/data/page.tsx` |
 | KRS inbound auto-pull / auto-sync | `all-context.md`, `database/all-database.md`, `container/all-container.md` | `src/lib/krs/autoSync.ts`, `src/app/api/krs/auto-sync/route.ts` — `POST /api/krs/auto-sync` uses bearer machine-auth (NOT session); see `KrsStockSnapshot` model |
 | customer / tax invoice | `all-context.md`, `database/all-database.md` | `src/app/api/customers/route.ts`, `src/app/api/orders/route.ts` |
@@ -131,6 +137,8 @@ krs-pos/
         users/             -- GET users / POST create user
           [id]/            -- PATCH update/activate/deactivate user
         customers/         -- GET customer list (search)
+        promotions/        -- GET (strict-ADMIN, all statuses) / GET ?view=pos (requireUser, effective only) / POST create
+          [id]/            -- GET/PATCH (strict-ADMIN); isActive:false = soft delete, no DELETE handler
         sync-jobs/         -- GET job list / POST insert-all-pending/pull
           [id]/            -- PATCH retry/skip a job
           failed-count/    -- GET count of FAILED jobs (drives NavRail badge)
@@ -142,6 +150,7 @@ krs-pos/
         layout.tsx         -- NavRail shell layout
         pos/               -- /pos — Taste checkout + payment modal + receipt
         products/          -- /products — Products & Inventory (admin)
+        promotions/        -- /promotions — Promotions (STRICT-ADMIN: MANAGER excluded, unlike every other admin-gated route)
         users/             -- /users — Users & Roles (admin)
         sales/             -- /sales — Sales History with detail drawer + refund/void
         shift/             -- /shift — Shift open/close + Z-report
@@ -163,10 +172,12 @@ krs-pos/
       shift/               -- Shift screen components
       data/                -- KRS Data Link tab components (Connection/Mapping/DataFlow/LiveData/SyncDetailDrawer)
       products/            -- Products & Inventory components
+      promotions/          -- Promotion admin components (PromotionFormModal, PromotionProductPicker, promotionMeta)
       users/               -- Users & Roles components
     lib/
       prisma.ts            -- PrismaClient singleton (import { prisma } in all app/route code)
       pricing.ts           -- integer-satang cart math (computeTotals, bahtToSatang, sumPaySatang, remainingPaySatang)
+      promotionEngine.ts   -- isomorphic (no Prisma/mssql/next import) satang-exact promotion engine — applyPromotions() runs identically in the POS client (preview) and the orders route (server-authoritative recompute); parity-tested against pricing.ts
       money.ts             -- formatting: money(n) → "฿X.XX", formatSatang(satang) → "฿X.XX"
       datetime.ts          -- Asia/Bangkok helpers: bangkokDateParts, bangkokYyyymmdd, bangkokDayWindow
       roleAccess.ts        -- NAV_ACCESS map + canAccess() — CLIENT DEMO ONLY, not a server auth boundary
@@ -292,6 +303,14 @@ These are real and worth flagging before touching the relevant code:
   - `KRS_AUTO_SYNC_WAREHOUSE` — warehouse filter passed to `sp_Onhand` (empty = all)
 - KRS auto-sync (sidecar only, NOT in app `env.ts`):
   - `KRS_AUTO_SYNC_INTERVAL_SECONDS` — poll interval for the `krs-cron` sidecar (default 300)
+- KRS outbound write-back (app, `src/lib/env.ts`; only the promotions-program addition below is
+  itemized here — sibling outbound vars such as `KRS_OUTBOUND_ENABLED` predate this doc's last sync
+  and are not yet documented in this section):
+  - `KRS_DISCOUNT_WRITE_ENABLED` — kill switch (default `false`) for writing a DISCOUNTED sale
+    (bill-level or per-line) to KRS. While false, the dispatcher HOLDS discounted bills as PENDING
+    without counting an attempt; zero-discount bills are unaffected. Owner-flipped after vendor
+    sandbox verification of the net-out `SalesInvoiceDtl` mapping — see
+    `process/features/promotions/references/krs-discount-writeback-contract_14-07-26.md`.
 
 ## 10. Current Program State
 
@@ -337,8 +356,11 @@ When durable project knowledge changes: (1) update the smallest relevant context
 ## Scan Metadata
 
 - Generated: 2026-06-20
-- Last manual update: 2026-06-27 (krs-writeback-idempotency shipped; 7 migrations; SyncJob.krsClaimedTxnNo + SyncJobStatus.NEEDS_RECONCILE Prisma enum; outbound module remains dormant)
-- Synced to: seller-company-settings on main (commits 27153c1, c7ab7f9; prior: 942efa8, c8f4afd, d48de83, 989d88c, 054f291, 6ae8346)
+- Last manual update: 2026-07-14 (promotions program closeout — `/promotions` strict-ADMIN route,
+  `/api/promotions`, `src/lib/promotionEngine.ts`, `KRS_DISCOUNT_WRITE_ENABLED`; see the Known Drift
+  note at the top of this file for sections not reconciled since 2026-06-27)
+- Synced to: promotions program on main (commits 8e124b2, 939b477, 2b73ced, 70aa429, cd3bc3d,
+  fbc764e, 296197c, fe507ce, 0c191c0, e584284, dd0ae0c; prior: seller-company-settings 27153c1, c7ab7f9)
 - Package manager: npm
 - Source files scanned: `prisma/schema.prisma`, `prisma/migrations/`, `prisma/seed.ts`,
   `src/app/api/*/route.ts`, `src/app/(shell)/*/page.tsx`, `src/components/*.tsx`,

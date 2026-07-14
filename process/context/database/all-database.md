@@ -5,7 +5,15 @@ This file is the canonical database context entrypoint for krs-pos.
 Use it after `process/context/all-context.md` when the task needs schema changes, Prisma model
 work, migrations, seeding, or money/Decimal handling.
 
-Last updated: 2026-06-27 (krs-writeback-idempotency shipped — 7 migrations; SyncJob.krsClaimedTxnNo; SyncJobStatus.NEEDS_RECONCILE Prisma enum value)
+Last updated: 2026-07-14 (promotions program shipped — `Promotion` model + `PromotionType` enum,
+`Order.promoBillDiscount`/`billPromotionId`/`billPromotionName`, `OrderItem.promotionId`/
+`promotionName`/`promoDiscount`, migration `20260714080426_add_promotions`). **Known drift:** this
+file's model/enum/migration inventory was last fully reconciled at krs-writeback-idempotency
+(2026-06-27); several programs shipped since then (branch/warehouse, auth/audit, financial
+correctness + tax invoice, KRS connection/field-mapping settings, held bills) added models,
+enums, and ~17 migrations that are **not yet itemized below** — see the counts and the flag at the
+end of the Models/Enums/Tracked Migrations sections. Recommend a full `vc-generate-context` re-sync
+of this file.
 
 ---
 
@@ -13,7 +21,9 @@ Last updated: 2026-06-27 (krs-writeback-idempotency shipped — 7 migrations; Sy
 
 This group covers:
 
-- the Prisma schema (`prisma/schema.prisma`): 12 models + 11 enums, 7 migrations (as of krs-writeback-idempotency)
+- the Prisma schema (`prisma/schema.prisma`): 21 models + 11 enums, 24 tracked migrations (actual
+  current counts, promotions program; only the models/enums/migrations documented at each program's
+  own closeout are itemized in the tables below — see the Known Drift flag above)
 - model relationships and key constraints (unique fields, cascade deletes)
 - migration workflow (`prisma migrate` — tracked migrations only; `db push` is dev-convenience only)
 - seeding (`prisma/seed.ts` via tsx)
@@ -39,15 +49,18 @@ Read this entrypoint when:
 
 Provider: **PostgreSQL** (`datasource db`, `url = env("DATABASE_URL")`). Generator: `prisma-client-js`.
 
-**Models (`prisma/schema.prisma`) — 12 models as of seller-company-settings:**
+**Models (`prisma/schema.prisma`) — 21 models total; only models documented as of each program's own
+closeout are itemized here (see Known Drift above for the 8 not yet itemized: `Warehouse`,
+`WarehouseStock`, `HeldBill`, `AuditLog`, `DailyOrderCounter`, `TaxInvoiceCounter`,
+`KrsConnectionSettings`, `KrsFieldMapping`):**
 
 | Model | Key fields & constraints | Relations |
 |---|---|---|
 | `User` | `email` unique, `name`, `role` (enum, default `CASHIER`), `password` (**plaintext** — TODO hash), `isActive Boolean @default(true)` (P4), `branchId String @default("BR-01")` (P4) | `orders Order[]`, `shifts Shift[]` (P5) |
 | `Category` | `name` unique | `products Product[]` |
 | `Product` | `sku` unique, `barcode` unique?, `price Decimal(10,2)`, `stock Int @default(0)`, `isActive @default(true)`, `imageUrl?`, `branchId @default("BR-01")` (P4) | `category Category?`, `orderItems OrderItem[]`, `movements StockMovement[]` (P4) |
-| `Order` | `orderNumber` unique, `status` (enum, default `COMPLETED`), `subtotal`/`total` `Decimal(10,2)`, `tax`/`discount`/`amountPaid`/`change` `Decimal(10,2) @default(0)`, `paymentType` (enum, default `CASH`), `branchId @default("BR-01")` (P4), `shiftId?` (P5), `syncStatus SyncStatus @default(PENDING)` (P5), `accountingDocNo String?` (P5), `taxRequested Boolean @default(false)` (P5), `customerId?` (P6a) | `cashier User?`, `items OrderItem[]`, `payments PaymentLine[]` (P3), `shift Shift?` (P5), `customer Customer?` (P6a) |
-| `OrderItem` | `quantity Int`, `unitPrice/lineTotal Decimal(10,2)` | `order Order` (**onDelete: Cascade**), `product Product` |
+| `Order` | `orderNumber` unique, `status` (enum, default `COMPLETED`), `subtotal`/`total` `Decimal(10,2)`, `tax`/`discount`/`amountPaid`/`change` `Decimal(10,2) @default(0)`, `paymentType` (enum, default `CASH`), `branchId @default("BR-01")` (P4), `shiftId?` (P5), `syncStatus SyncStatus @default(PENDING)` (P5), `accountingDocNo String?` (P5), `taxRequested Boolean @default(false)` (P5), `customerId?` (P6a); `promoBillDiscount Decimal(10,2) @default(0)`, `billPromotionId?`, `billPromotionName?` (promotions program — `promoBillDiscount` is the promo SLICE of `discount`; `discount` **keeps its prior meaning** = combined bill-level discount (manual + promo), so `subtotal − discount === total` is unchanged) | `cashier User?`, `items OrderItem[]`, `payments PaymentLine[]` (P3), `shift Shift?` (P5), `customer Customer?` (P6a) |
+| `OrderItem` | `quantity Int`, `unitPrice/lineTotal Decimal(10,2)`; `promotionId?`, `promotionName?`, `promoDiscount Decimal(10,2) @default(0)` (promotions program — snapshot, no FK; already folded into `lineTotal` = `unitPrice×quantity − manualLineDiscount − promoDiscount`); `@@index([promotionId])` | `order Order` (**onDelete: Cascade**), `product Product` |
 | `PaymentLine` | `method PaymentType`, `amount Decimal(10,2)`, `reference String?` (P3) | `order Order` (**onDelete: Cascade**) |
 | `StockMovement` | `type StockMovementType`, `qty Int`, `reference String?`, `branchId @default("BR-01")` (P4) | `product Product` (**onDelete: Cascade**) |
 | `Shift` | `shiftNumber` unique, `status ShiftStatus @default(OPEN)`, `openedAt/closedAt?`, `openingFloat Decimal(10,2) @default(0)`, `countedCash Decimal(10,2)?`, `cashierId?`, `branchId @default("BR-01")` (P5) | `cashier User?`, `orders Order[]` |
@@ -55,13 +68,15 @@ Provider: **PostgreSQL** (`datasource db`, `url = env("DATABASE_URL")`). Generat
 | `SyncJob` | `type SyncJobType`, `direction SyncDirection @default(INSERT)`, `ref String`, `amount Decimal(12,2) @default(0)`, `status SyncJobStatus @default(PENDING)`, `provider String @default("KRS")`, `error?`, `response?`, `branchId @default("BR-01")` (P6a); `krsClaimedTxnNo String?` (krs-writeback-idempotency — burned-anchor: SaleInvoiceTrNo claimed in a separate committed phase-0 tx; non-null means a prior attempt burned this number; never cleared on failure, reused on NOT FOUND retry) | — |
 | `KrsStockSnapshot` | `itemCode String @id`, `lastQty Decimal(12,4)`, `lockedAt DateTime?`, `updatedAt @updatedAt` — KRS on-hand snapshot for the inbound auto-pull delta engine. The row with `itemCode = "__LOCK__"` is the run-lock sentinel (prevents concurrent sync runs). | — |
 | `ShopSettings` | Singleton row (`id = "singleton"`). Receipt layout: `receiptWidthMm Int @default(80)`, `receiptHeightAuto Boolean @default(true)`, `receiptHeightMm Int?`. Seller identity (DB-primary, ENV fallback via `getSellerConfig()`): `sellerName String?`, `sellerTaxId String?`, `sellerAddress String?`, `sellerPhone String?`, `sellerPosId String?`, `sellerBranchCode String?`, `sellerBranchLabel String?`. The 7 seller fields replaced the former `SELLER_*`-env-only design (migration `20260624120424_seller_settings`); `getSellerConfig()` is now async, reads DB first, falls back to `SELLER_*` env vars per field. Editable by admin via `/settings` Seller Info card. | — |
+| `Promotion` (promotions program) | `name` (Thai display, shown on POS + receipt), `code String? @unique` (optional coupon ref), `type PromotionType`, `isActive Boolean @default(true)` (**soft delete only** — the app DB role has no DELETE, same stance as `HeldBill`), `startsAt/endsAt DateTime?` (UTC instants; half-open `startsAt <= now < endsAt`; admin UI converts Bangkok calendar days ↔ UTC via `src/lib/datetime.ts`; filtering is done at the fetch boundary — the engine itself is clock-free), `branchId @default("BR-01")`; per-type value fields (all validated at the API boundary, NULL unless `type` uses them): `percentOff Decimal(5,2)?`, `amountOffSatang Int?`, `fixedPriceSatang Int?`, `buyQty/getQty Int?`, `getDiscountPercent Int?`, `minSubtotalSatang Int?`; `productIds String[] @default([])` (scalar array, NOT a join table — the DB role has no DELETE, which would make editing a join set impractical; validated to exist at write time); `@@index([isActive, startsAt, endsAt])` | — |
 
 All models have `createdAt @default(now())`; all except `OrderItem`, `PaymentLine`, `StockMovement`,
 and `KrsStockSnapshot` also have `updatedAt @updatedAt` (KrsStockSnapshot has `updatedAt` but no
 `createdAt` — it is a keyed snapshot store, not an audit log). IDs are `cuid()` strings for most models;
 `KrsStockSnapshot` uses `itemCode String @id` as a natural key.
 
-**Enums — 11 enums as of krs-inbound-auto-pull (SyncJobStatus gained NEEDS_RECONCILE in krs-writeback-idempotency — Prisma enum only):**
+**Enums — 11 enums total; only enums documented as of each program's own closeout are itemized here
+(`AuditAction`, added by the auth program, is not yet itemized — see Known Drift above):**
 
 | Enum | Values |
 |---|---|
@@ -74,13 +89,18 @@ and `KrsStockSnapshot` also have `updatedAt @updatedAt` (KrsStockSnapshot has `u
 | `SyncJobType` | `SALE`, `REFUND`, `STOCK`, `PULL`, `TAX_INVOICE`, `STOCK_ADJ`, `RECEIVE` (P6a) |
 | `SyncDirection` | `INSERT`, `PULL` (P6a) |
 | `SyncJobStatus` | `PENDING`, `SYNCED`, `FAILED`, `RETRYING`, `SKIPPED` (P6a), `NEEDS_RECONCILE` (krs-writeback-idempotency — Prisma enum only; NOT in `src/types/index.ts` local union; not auto-claimable; routes to operator review when existence check persistently fails on a reclaimed job) |
+| `PromotionType` (promotions program) | `PRODUCT_DISCOUNT`, `FIXED_PRICE`, `BUY_X_GET_Y`, `BILL_THRESHOLD` — ordered 1-4 as the engine/UI reference them: line %/฿ discount, special fixed price, buy-X-get-Y (same product, v1), whole-bill spend threshold |
 
 ## Tracked Migrations
 
 The repo uses **`prisma migrate`** (tracked migration history) — NOT `db push` for production.
 `db push` is available as `npm run db:push` for dev/scratch use only.
 
-Seven migrations exist under `prisma/migrations/`:
+24 migrations exist under `prisma/migrations/`; only the ones documented at each program's own
+closeout are itemized in the table below (17 migrations — auth/lockout/audit, financial
+correctness, checkout idempotency, tax invoice, shop settings, perf indexes, KRS connection/
+field-mapping settings, sync job outbox, warehouse master/user-warehouse/warehouse-stock ×3,
+held bill ×2 — are tracked in the repo but not yet itemized here; see Known Drift above):
 
 | Migration folder | Phase | Contents |
 |---|---|---|
@@ -91,6 +111,7 @@ Seven migrations exist under `prisma/migrations/`:
 | `20260623105939_krs_auto_sync_snapshot` | krs-inbound-auto-pull | `KrsStockSnapshot` model (`itemCode @id`, `lastQty Decimal(12,4)`, `lockedAt`, `updatedAt`); `KRS_SYNC` value added to `StockMovementType` enum |
 | `20260624120424_seller_settings` | seller-company-settings | 7 nullable `TEXT` columns added to `ShopSettings` (`sellerName`, `sellerTaxId`, `sellerAddress`, `sellerPhone`, `sellerPosId`, `sellerBranchCode`, `sellerBranchLabel`); additive only — no drops, no alters to existing columns |
 | `20260627000000_add_syncjob_krs_claimed_txn_v2` | krs-writeback-idempotency | `ADD COLUMN "krsClaimedTxnNo" TEXT` on `SyncJob`; `ALTER TYPE "SyncJobStatus" ADD VALUE 'NEEDS_RECONCILE'`; additive only — no backfill, no constraint changes |
+| `20260714080426_add_promotions` | promotions | `PromotionType` enum; `AuditAction` gains `PROMOTION_CREATED`/`PROMOTION_UPDATED`/`PROMOTION_ACTIVATED`/`PROMOTION_DEACTIVATED`; new `Promotion` model + `Promotion_isActive_startsAt_endsAt_idx`; `Order` gains `promoBillDiscount`/`billPromotionId`/`billPromotionName`; `OrderItem` gains `promotionId`/`promotionName`/`promoDiscount` + `OrderItem_promotionId_idx`; additive only — no drops, no backfill |
 
 Apply to a fresh DB with `prisma migrate deploy` (CI/production) or `prisma migrate dev` (dev).
 
