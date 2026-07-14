@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Role } from "@prisma/client";
 import type { Session } from "next-auth";
 import { auth } from "@/auth";
 import { isAdminRole } from "@/lib/authRole";
@@ -64,6 +65,40 @@ export async function requireAdmin(): Promise<AuthResult> {
     };
   }
   if (!isAdminRole(session.user.role)) {
+    return {
+      response: NextResponse.json(
+        { error: "ต้องเป็นผู้ดูแลระบบ", code: "FORBIDDEN" },
+        { status: 403 }
+      ),
+    };
+  }
+  return { session };
+}
+
+/**
+ * Require an authenticated user whose Prisma role is EXACTLY `Role.ADMIN`
+ * (promotions program, Phase 4). 401 if not signed in, 403 otherwise — the SAME
+ * `{ error, code }` shape as `requireAdmin`.
+ *
+ * STRICT ADMIN = OWNER-ONLY. Promotion mutations are owner-only per decision D2.
+ * Unlike `requireAdmin` (which treats MANAGER as admin via `isAdminRole`), MANAGER
+ * is DELIBERATELY excluded here — a signed-in MANAGER gets 403 FORBIDDEN. This is
+ * why the check compares `session.user.role === Role.ADMIN` directly instead of
+ * routing through `isAdminRole`: the MANAGER→admin mapping is an existing system
+ * decision this strict guard must BYPASS, not change. Do NOT modify `isAdminRole`
+ * or `requireAdmin` to accommodate this stricter surface.
+ */
+export async function requireStrictAdmin(): Promise<AuthResult> {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return {
+      response: NextResponse.json(
+        { error: "กรุณาเข้าสู่ระบบ", code: "UNAUTHENTICATED" },
+        { status: 401 }
+      ),
+    };
+  }
+  if (session.user.role !== Role.ADMIN) {
     return {
       response: NextResponse.json(
         { error: "ต้องเป็นผู้ดูแลระบบ", code: "FORBIDDEN" },
