@@ -32,9 +32,23 @@ import { logAudit, ipFromHeaders } from "@/lib/auditLog";
 import {
   computeOrderTotals,
   OrderProductMissingError,
-  type BillDiscount,
   type OrderRequestLine,
 } from "@/lib/pricing";
+// Promotions program (Phase 6) — server-authoritative promotion application. The
+// pure, isomorphic engine ranks/applies the effective promotions and yields the
+// combined (manual + promo) per-line discounts + one combined bill discount that
+// are fed UNCHANGED into computeOrderTotals, so the engine and pricing subtotals
+// match to the satang (asserted below). The engine imports no Prisma/mssql — the
+// checkout route's module graph stays driver-free.
+import {
+  applyPromotions,
+  type ActivePromotion,
+  type PromoCartLine,
+} from "@/lib/promotionEngine";
+// Shared row → ActivePromotion serializer (Phase 4). REUSED here so the checkout
+// recompute and GET /api/promotions?view=pos can never drift on which fields each
+// promotion type exposes to the engine.
+import { serializePosPromotion } from "@/lib/promotionSerialize";
 // Shared wire serializer + satang helpers (FIX 1): every order response
 // (GET/POST here, and every PATCH return in [id]/route.ts) emits identical 2dp
 // string money fields. The serializer lives in its own module so both route
@@ -595,17 +609,101 @@ export async function POST(req: Request) {
       select: { id: true, price: true },
     });
 
-    const bill: BillDiscount = { type: discountType, value: discountValue };
-    const requestedLines: OrderRequestLine[] = items.map((i) => ({
+    // --- Promotions program (Phase 6): fetch the EFFECTIVE promotions ---
+    // A promotion is effective NOW iff isActive AND the wall-clock instant is inside
+    // its [startsAt, endsAt) window (a null bound = open on that side; endsAt is
+    // EXCLUSIVE). The time/active filtering lives HERE at the fetch boundary — the
+    // engine is deliberately clock-free — so the POS preview (?view=pos) and this
+    // checkout recompute apply the identical rule. This is a pre-tx Prisma read
+    // (never inside the checkout $transaction), inside the sanitized try so a DB
+    // failure maps to the route's INTERNAL 500. Serialized via the SHARED
+    // serializePosPromotion so checkout and the pos view can never drift.
+    const now = new Date();
+    const activePromoRows = await prisma.promotion.findMany({
+      where: {
+        isActive: true,
+        AND: [
+          { OR: [{ startsAt: null }, { startsAt: { lte: now } }] },
+          { OR: [{ endsAt: null }, { endsAt: { gt: now } }] },
+        ],
+      },
+    });
+    const activePromos: ActivePromotion[] = activePromoRows.map(serializePosPromotion);
+
+    // Per-item catalog price in integer satang, keyed by productId. Uses the SAME
+    // Decimal→satang conversion (`toSatang`) that computeOrderTotals applies to these
+    // rows, so the engine's per-line gross equals pricing's gross exactly (the
+    // subtotal cross-check below depends on this). A productId absent from the ACTIVE
+    // product rows maps to 0 here → gross 0 → no promo; computeOrderTotals then throws
+    // OrderProductMissingError (→ 404) for that same line, preserving the existing
+    // unknown/inactive-product behavior.
+    const priceById = new Map(products.map((p) => [p.id, toSatang(p.price)]));
+
+    // Build the engine's cart lines in the SAME order as items[] — priceSatang from
+    // the DB (never the client), manualLineDiscountSatang from the request's per-line
+    // discount input (the engine re-clamps it defensively).
+    const promoLines: PromoCartLine[] = items.map((i) => ({
+      productId: i.productId,
+      priceSatang: priceById.get(i.productId) ?? 0,
+      quantity: i.quantity,
+      manualLineDiscountSatang: i.lineDiscountSatang,
+    }));
+
+    // Apply promotions (server-authoritative). Yields per-line combined (manual +
+    // promo) discounts and one combined bill discount, both fed UNCHANGED into
+    // computeOrderTotals so server and client agree to the satang.
+    const application = applyPromotions(promoLines, activePromos, {
+      type: discountType,
+      value: discountValue,
+    });
+
+    const requestedLines: OrderRequestLine[] = items.map((i, idx) => ({
       productId: i.productId,
       quantity: i.quantity,
-      lineDiscountSatang: i.lineDiscountSatang,
+      // The COMBINED (manual + promo) per-line discount, already clamped to gross by
+      // the engine. computeOrderTotals re-clamps to gross (a no-op here) and folds it
+      // into lineTotal, so OrderItem.lineTotal = gross − manualLine − promoLine.
+      lineDiscountSatang: application.lines[idx].combinedLineDiscountSatang,
     }));
 
     // computeOrderTotals throws OrderProductMissingError for an unknown/inactive
     // product (→ 404 below) and RangeError for an out-of-range discount (already
-    // validated at the boundary above, so this is a belt-and-braces guard).
-    const totals = computeOrderTotals(products, requestedLines, bill);
+    // validated at the boundary above, so this is a belt-and-braces guard). The bill
+    // discount is the engine's COMBINED bill discount (promo threshold + manual), so
+    // Order.discount keeps its combined meaning and `subtotal − discount === total`.
+    const totals = computeOrderTotals(
+      products,
+      requestedLines,
+      application.combinedBill
+    );
+
+    // --- Engine/pricing drift guard (belt-and-braces) ---
+    // The engine and pricing compute the subtotal with the identical formula
+    // (Σ max(gross − combinedLineDiscount, 0)) over the same integer-satang inputs, so
+    // they MUST match. Likewise the combined bill discount round-trips exactly, so
+    // pricing's billDiscountSatang MUST equal promoBill + manualBill. A mismatch means
+    // the two modules diverged (a real bug) — it must NEVER ship a silently wrong sale,
+    // so log both values and return 500 INTERNAL instead of persisting a bad total.
+    if (
+      totals.subtotalSatang !== application.subtotalSatang ||
+      totals.billDiscountSatang !==
+        application.promoBillDiscountSatang + application.manualBillDiscountSatang
+    ) {
+      logger.error(
+        {
+          pricingSubtotal: totals.subtotalSatang,
+          engineSubtotal: application.subtotalSatang,
+          pricingBillDiscount: totals.billDiscountSatang,
+          enginePromoBill: application.promoBillDiscountSatang,
+          engineManualBill: application.manualBillDiscountSatang,
+        },
+        "promotion engine / pricing drift detected"
+      );
+      return NextResponse.json(
+        { error: "Could not create order", code: "INTERNAL" },
+        { status: 500 }
+      );
+    }
 
     // Server-computed bill money (integer satang → Decimal-safe baht strings).
     const subtotalBaht = satangToString(totals.subtotalSatang);
@@ -642,12 +740,23 @@ export async function POST(req: Request) {
 
     // Per-line OrderItem rows from the SERVER recompute (unitPrice/lineTotal in
     // Decimal-safe baht strings — never the client's per-line amounts).
-    const lineItems = totals.lines.map((l) => ({
-      productId: l.productId,
-      quantity: l.quantity,
-      unitPrice: satangToString(l.priceSatang),
-      lineTotal: satangToString(l.lineTotalSatang),
-    }));
+    //
+    // Promotions program (Phase 6): thread the line-promo snapshot columns. `totals.lines`,
+    // `application.lines`, and `items` are all built in the SAME order (each from items[]),
+    // so `application.lines[i]` is this line's promo result. `promoDiscount` is the promo-only
+    // slice already folded into `lineTotal` (lineTotal = gross − manualLine − promoLine).
+    const lineItems = totals.lines.map((l, i) => {
+      const appLine = application.lines[i];
+      return {
+        productId: l.productId,
+        quantity: l.quantity,
+        unitPrice: satangToString(l.priceSatang),
+        lineTotal: satangToString(l.lineTotalSatang),
+        promotionId: appLine.promo?.promotionId ?? null,
+        promotionName: appLine.promo?.promotionName ?? null,
+        promoDiscount: satangToString(appLine.promoDiscountSatang),
+      };
+    });
 
     // Phase 5 (Decision A2): link the new order to the current OPEN shift if one
     // exists, else leave shiftId null. This MUST NOT block checkout when no shift
@@ -711,7 +820,14 @@ export async function POST(req: Request) {
           idempotencyKey: normalizedIdemKey,
           subtotal: subtotalBaht,
           tax: taxBaht,
+          // `discount` = COMBINED bill discount (promo threshold + manual), so the
+          // invariant `subtotal − discount === total` is unchanged.
           discount: discountBaht,
+          // Promotions program (Phase 6): the bill-level promo slice + applied promo
+          // snapshot (NO FK — historical immutability). manual slice = discount − promoBill.
+          promoBillDiscount: satangToString(application.promoBillDiscountSatang),
+          billPromotionId: application.billPromo?.promotionId ?? null,
+          billPromotionName: application.billPromo?.promotionName ?? null,
           total: totalBaht,
           paymentType: primaryMethod,
           amountPaid: amountPaidBaht,
@@ -807,18 +923,19 @@ export async function POST(req: Request) {
         branchCode: outboxBranchCode,
         branchName: outboxBranchName,
         warehouseCode: outboxWarehouseCode,
-        // Bill-level promotion split (krs-sync discount-safety Phase 1). `discount` keeps
-        // its combined-bill-discount meaning; promoBillDiscount is the promotion-only
-        // slice. Phase 6 fills real promotion values — Phase 1 records "no promotion".
-        promoBillDiscount: "0.00",
-        billPromotionName: null,
+        // Bill-level promotion split (promotions program). `discount` keeps its
+        // combined-bill-discount meaning (manual + promo); promoBillDiscount is the
+        // promotion-only slice actually applied. Phase 6 fills the REAL values.
+        promoBillDiscount: satangToString(application.promoBillDiscountSatang),
+        billPromotionName: application.billPromo?.promotionName ?? null,
         // Snapshot built from the SERVER-recomputed per-line result (`totals.lines`,
         // OrderLineResult) so the KRS net-out wire fields (lineDiscount, lineNet) come
         // from the same integer-satang recompute as the persisted OrderItem money — never
         // a client value, never a float round-trip. Product sku/name are attached by
         // productId (not relation position) so a repeated product never mis-attaches.
-        items: totals.lines.map((l) => {
+        items: totals.lines.map((l, i) => {
           const prod = snapshotProductById.get(l.productId);
+          const appLine = application.lines[i];
           return {
             itemCode: prod?.sku ?? "",
             description: prod?.name ?? "",
@@ -826,14 +943,18 @@ export async function POST(req: Request) {
             unitPrice: satangToString(l.priceSatang),
             lineTotal: satangToString(l.lineTotalSatang),
             // Real combined per-line discount (manual + promo) actually applied, folded
-            // into lineTotal (= gross - lineDiscount). Previously hardcoded "0.00".
+            // into lineTotal (= gross - lineDiscount). `l.lineDiscountSatang` is the
+            // clamped combined value computeOrderTotals fed the engine — it equals
+            // application.lines[i].combinedLineDiscountSatang, so this carries BOTH the
+            // manual and promo per-line slices to KRS. Previously hardcoded "0.00".
             lineDiscount: satangToString(l.lineDiscountSatang),
             // Fully-net line amount AFTER the bill-discount allocation — the KRS net-out
             // wire amount (Dtl.Amount). Σ lineNet === Order.total.
             lineNet: satangToString(l.lineNetSatang),
-            // Phase 6 fills real promotion values; Phase 1 records "no promotion".
-            linePromoDiscount: "0.00",
-            promotionName: null,
+            // Promotions program (Phase 6): the promotion-only per-line slice + applied
+            // promo name. Informational split; the combined value is in `lineDiscount`.
+            linePromoDiscount: satangToString(appLine.promoDiscountSatang),
+            promotionName: appLine.promo?.promotionName ?? null,
           };
         }),
       };
@@ -857,6 +978,29 @@ export async function POST(req: Request) {
       return created;
     });
 
+    // Promotions program (Phase 6): compact snapshot of every promotion applied to
+    // this sale — the winning line promo per line plus the bill-level promo, if any —
+    // for the audit trail. `satang` is the discount that promo contributed. Empty
+    // array = no promotion applied (the common case), keeping the detail compact.
+    const appliedPromotions = [
+      ...application.lines
+        .filter((l) => l.promo !== null)
+        .map((l) => ({
+          id: l.promo!.promotionId,
+          name: l.promo!.promotionName,
+          satang: l.promo!.discountSatang,
+        })),
+      ...(application.billPromo
+        ? [
+            {
+              id: application.billPromo.promotionId,
+              name: application.billPromo.promotionName,
+              satang: application.billPromo.discountSatang,
+            },
+          ]
+        : []),
+    ];
+
     // Money/ledger audit (Sub-phase B). BEST-EFFORT, AFTER commit — never inside
     // the transaction (mirrors ORDER_VOIDED/ORDER_REFUNDED). A failed audit write
     // never fails the sale.
@@ -870,6 +1014,7 @@ export async function POST(req: Request) {
       detail: JSON.stringify({
         orderNumber: order.orderNumber,
         total: totalBaht,
+        promotions: appliedPromotions,
       }),
     });
 

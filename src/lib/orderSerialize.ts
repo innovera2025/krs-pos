@@ -49,7 +49,20 @@ type SerializableOrder = {
   total: Money;
   amountPaid: Money;
   change: Money;
-  items: Array<{ unitPrice: Money; lineTotal: Money } & Record<string, unknown>>;
+  // Bill-level promotion slice of `discount` (promotions program, Phase 6). A 2dp
+  // Decimal(10,2) that must NOT leak as a raw Decimal (trailing-zero pitfall), so it
+  // joins the money map. `billPromotionId`/`billPromotionName` are plain fields that
+  // pass through the `...order` spread untouched.
+  promoBillDiscount: Money;
+  items: Array<
+    // `promoDiscount` is the per-line promo slice of `lineTotal` (2dp Decimal) — it
+    // joins the item money map for the same trailing-zero reason. `promotionId`/
+    // `promotionName` pass through the `...it` spread untouched.
+    { unitPrice: Money; lineTotal: Money; promoDiscount: Money } & Record<
+      string,
+      unknown
+    >
+  >;
   payments: Array<{ amount: Money } & Record<string, unknown>>;
 } & Record<string, unknown>;
 
@@ -62,6 +75,7 @@ export type SerializedOrder<T extends SerializableOrder> = Omit<
   | "total"
   | "amountPaid"
   | "change"
+  | "promoBillDiscount"
   | "items"
   | "payments"
 > & {
@@ -71,10 +85,12 @@ export type SerializedOrder<T extends SerializableOrder> = Omit<
   total: string;
   amountPaid: string;
   change: string;
+  promoBillDiscount: string;
   items: Array<
-    Omit<T["items"][number], "unitPrice" | "lineTotal"> & {
+    Omit<T["items"][number], "unitPrice" | "lineTotal" | "promoDiscount"> & {
       unitPrice: string;
       lineTotal: string;
+      promoDiscount: string;
     }
   >;
   payments: Array<Omit<T["payments"][number], "amount"> & { amount: string }>;
@@ -99,10 +115,15 @@ export function serializeOrder<T extends SerializableOrder>(
     total: money(order.total),
     amountPaid: money(order.amountPaid),
     change: money(order.change),
+    // Promotions program (Phase 6): the bill-level promo slice is a 2dp string in the
+    // same money contract; `billPromotionId`/`billPromotionName` flow through `...order`.
+    promoBillDiscount: money(order.promoBillDiscount),
     items: order.items.map((it) => ({
       ...it,
       unitPrice: money(it.unitPrice),
       lineTotal: money(it.lineTotal),
+      // Per-line promo slice as a 2dp string; `promotionId`/`promotionName` flow through `...it`.
+      promoDiscount: money(it.promoDiscount),
     })),
     payments: order.payments.map((p) => ({
       ...p,
