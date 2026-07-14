@@ -57,7 +57,7 @@ export function PromotionSummaryCard({ zReport }: { zReport: ZReportPromoFields 
             className="mono mt-[3px] text-[18px] font-bold"
             style={{ color: "var(--brand-2)" }}
           >
-            −{money(promoDiscountTotal)}
+            −{money(Math.abs(Number(promoDiscountTotal)))}
           </div>
         </div>
         <div
@@ -71,7 +71,7 @@ export function PromotionSummaryCard({ zReport }: { zReport: ZReportPromoFields 
             className="mono mt-[3px] text-[18px] font-bold"
             style={{ color: "var(--blue)" }}
           >
-            −{money(manualDiscountTotal)}
+            −{money(Math.abs(Number(manualDiscountTotal)))}
           </div>
         </div>
       </div>
@@ -107,7 +107,7 @@ export function PromotionSummaryCard({ zReport }: { zReport: ZReportPromoFields 
                 className="mono text-[14px] font-semibold"
                 style={{ color: "var(--brand-2)" }}
               >
-                −{money(p.amount)}
+                −{money(Math.abs(Number(p.amount)))}
               </div>
             </div>
           ))

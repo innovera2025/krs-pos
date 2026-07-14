@@ -161,7 +161,10 @@ async function buildZReport(shiftId: string, openingFloatSatang: number) {
   // pass is the cheapest correct query (single findMany, no raw SQL). Per the
   // Money Contract `lineTotal = unitPrice×qty − manualLine − promoDiscount`, so:
   //   line promo   = promoDiscount
-  //   line manual  = unitPrice×qty − lineTotal − promoDiscount  (≥ 0 by invariant)
+  //   line manual  = unitPrice×qty − lineTotal − promoDiscount  (≥ 0 by invariant
+  //   for checkout-written rows; clamped at 0 per line because legacy/seeded demo
+  //   rows can carry an inconsistent lineTotal > gross, which must not drive the
+  //   shift's manual-discount aggregate negative)
   const items = await prisma.orderItem.findMany({
     where: { order: { shiftId, status: OrderStatus.COMPLETED } },
     select: {
@@ -180,7 +183,7 @@ async function buildZReport(shiftId: string, openingFloatSatang: number) {
     const grossLineSatang = toSatang(it.unitPrice) * it.quantity;
     const promoSatang = toSatang(it.promoDiscount);
     linePromoSatang += promoSatang;
-    lineManualSatang += grossLineSatang - toSatang(it.lineTotal) - promoSatang;
+    lineManualSatang += Math.max(grossLineSatang - toSatang(it.lineTotal) - promoSatang, 0);
     if (it.promotionId) {
       accumulatePromo(it.promotionId, it.promotionName, it.orderId, promoSatang);
     }
