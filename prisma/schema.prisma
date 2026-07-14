@@ -248,6 +248,15 @@ enum AuditAction {
   // compensating audit control for the deliberate no-private-IP-denylist SSRF
   // stance (P0 spec §1.2.1). `detail` holds {newHost,newPort} JSON.
   KRS_SETTINGS_CHANGED
+  // Promotion lifecycle (promotions program, Phase 2). Written best-effort AFTER a
+  // Promotion create/update/toggle commits — the audit-trail counterpart for the
+  // ADMIN-only (strict-ADMIN; MANAGER excluded) promotion management surface.
+  // ACTIVATED / DEACTIVATED capture the `isActive` soft-delete toggle (no hard
+  // DELETE); `detail` holds the promotion id/name/type JSON.
+  PROMOTION_CREATED
+  PROMOTION_UPDATED
+  PROMOTION_ACTIVATED
+  PROMOTION_DEACTIVATED
 }
 
 model Category {
@@ -294,6 +303,17 @@ model Order {
   tax          Decimal     @db.Decimal(10, 2) @default(0)
   discount     Decimal     @db.Decimal(10, 2) @default(0)
   total        Decimal     @db.Decimal(10, 2)
+  // Bill-level promotion (promotions program, Phase 2). `discount` above KEEPS its
+  // meaning = the TOTAL bill-level discount (manual + promo), so the invariant
+  // `subtotal − discount === total` is unchanged everywhere (checkout, writeback
+  // assert, Z-report, sales history). `promoBillDiscount` is the promo SLICE of that
+  // discount (manual slice = discount − promoBillDiscount); `billPromotionId` /
+  // `billPromotionName` snapshot the applied BILL_THRESHOLD promo — NO FK, the same
+  // historical-immutability stance as OrderItem.promotionId (a promo edit must never
+  // touch a past sale). 0 / null = no bill-level promotion.
+  promoBillDiscount Decimal @db.Decimal(10, 2) @default(0)
+  billPromotionId   String?
+  billPromotionName String?
   paymentType  PaymentType @default(CASH)
   amountPaid   Decimal     @db.Decimal(10, 2) @default(0)
   change       Decimal     @db.Decimal(10, 2) @default(0)
@@ -426,7 +446,22 @@ model OrderItem {
   quantity   Int
   unitPrice  Decimal  @db.Decimal(10, 2)
   lineTotal  Decimal  @db.Decimal(10, 2)
+  // Line-level promotion snapshot (promotions program, Phase 2). DELIBERATELY NO
+  // relation/FK to Promotion — a later promo edit/deactivate must never touch a
+  // historical sale (same snapshot stance as HeldBill.customerId). `promotionId` /
+  // `promotionName` record which line promo (type 1-3) applied at sale time.
+  // `promoDiscount` is the promo portion ALREADY folded into `lineTotal` (lineTotal
+  // = unitPrice×quantity − manualLineDiscount − promoDiscount), so the manual portion
+  // is recoverable as unitPrice×quantity − lineTotal − promoDiscount. Null / 0 = no
+  // promotion on this line.
+  promotionId   String?
+  promotionName String?
+  promoDiscount Decimal  @db.Decimal(10, 2) @default(0)
   createdAt  DateTime @default(now())
+
+  // Z-report promo breakdown groups OrderItem rows by promotionId (COMPLETED-only);
+  // Postgres does not auto-index this non-FK column, so add it for the per-promo scan.
+  @@index([promotionId])
 }
 
 // Stock movement ledger (Phase 4: action-receive-stock / flow-product-stock).
@@ -652,4 +687,76 @@ model HeldBill {
   // GET lists a cashier's parked bills ordered by createdAt — composite index serves
   // the per-cashier filter + sort in one scan.
   @@index([createdById, createdAt])
+}
+
+// Promotion (promotions program, Phase 2). ADMIN-authored (strict-ADMIN; MANAGER
+// excluded) discount rule the POS applies automatically at checkout. Four kinds
+// (see PromotionType): a line-level % / ฿ discount, a special fixed per-unit price,
+// buy-X-get-Y on the SAME product (v1), and a whole-bill spend threshold.
+//
+// ⚠️ MONEY-UNIT CONVENTION — every configured money value here is an Int in SATANG
+// (1 baht = 100 satang): `amountOffSatang`, `fixedPriceSatang`, `minSubtotalSatang`.
+// These are ENGINE INPUTS (the promotion engine computes in integer satang, exactly
+// like pricing.ts) and are JSON-safe plain ints (no Decimal trailing-zero pitfall).
+// This is DELIBERATELY UNLIKE the Order money columns, which are Decimal(10,2) baht.
+// `percentOff` is a Decimal(5,2) percent (e.g. 12.50), never a money amount.
+//
+// Per-type value fields are NULL when irrelevant to `type` and are enforced at the
+// API boundary (Zod discriminated union), not by the DB — Postgres cannot express
+// "these columns are required iff type = X".
+model Promotion {
+  id        String        @id @default(cuid())
+  name      String        // Thai display name — shown on the POS screen + receipt
+  code      String?       @unique // optional coupon/reference code (unique when set)
+  type      PromotionType
+  // Soft delete only (least-privilege: the app DB role `krs_app` has no DELETE —
+  // see the HeldBill.resolvedAt precedent). Deactivating flips this to false; a
+  // promotion row is never hard-removed.
+  isActive  Boolean       @default(true)
+  // Active WINDOW as UTC instants (null = open-ended on that side). The admin UI
+  // works in Bangkok CALENDAR days and converts via src/lib/datetime.ts: `startsAt`
+  // = 00:00 Bangkok of the start day; `endsAt` = the EXCLUSIVE 00:00 Bangkok of the
+  // day AFTER the end day. A promotion is effective iff `startsAt <= now < endsAt`
+  // (half-open), evaluated at the fetch boundary — the engine itself stays clock-free.
+  startsAt  DateTime?
+  endsAt    DateTime?
+  // Multi-branch-ready data model (domain-multi-branch-ready) — single-branch
+  // deployments use the BR-01 default.
+  branchId  String        @default("BR-01")
+  // Per-type value fields (NULL unless the `type` uses them; validated at the API
+  // boundary). Money fields are Int SATANG (see the model note above):
+  //  - PRODUCT_DISCOUNT : percentOff (Decimal %) OR amountOffSatang (฿ off per unit)
+  //  - FIXED_PRICE      : fixedPriceSatang (special per-unit price)
+  //  - BUY_X_GET_Y      : buyQty (X) + getQty (Y) + getDiscountPercent (% off the Y)
+  //  - BILL_THRESHOLD   : minSubtotalSatang (spend gate) + percentOff OR amountOffSatang
+  percentOff         Decimal? @db.Decimal(5, 2)
+  amountOffSatang    Int?
+  fixedPriceSatang   Int?
+  buyQty             Int?
+  getQty             Int?
+  getDiscountPercent Int?
+  minSubtotalSatang  Int?
+  // Product scoping for the line-level types (1-3: PRODUCT_DISCOUNT / FIXED_PRICE /
+  // BUY_X_GET_Y); EMPTY for BILL_THRESHOLD (whole-bill). A scalar String[] instead of
+  // a Promotion↔Product join table BECAUSE the app DB role has no DELETE (HeldBill
+  // precedent), which makes editing a join set impractical; the ids are validated to
+  // exist at write time, and products are never hard-deleted (soft-delete only), so a
+  // dangling id cannot appear.
+  productIds String[]      @default([])
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  // The POS fetch selects effective promotions (isActive + the startsAt/endsAt
+  // window); index the predicate columns so the per-checkout scan uses one index.
+  @@index([isActive, startsAt, endsAt])
+}
+
+// Promotion kinds (promotions program, Phase 2; D1 — all four). Ordered 1-4 as the
+// engine/UI reference them: a line % or ฿ discount, a special fixed price, buy-X-
+// get-Y on the SAME product (v1), and a whole-bill spend threshold.
+enum PromotionType {
+  PRODUCT_DISCOUNT
+  FIXED_PRICE
+  BUY_X_GET_Y
+  BILL_THRESHOLD
 }
