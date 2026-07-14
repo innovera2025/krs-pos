@@ -143,6 +143,13 @@ const EnvSchema = z.object({
   // skips the write (re-queues the claimed job) for any value other than "true".
   // Opt-in by design (mirrors KRS_AUTO_SYNC_ENABLED).
   KRS_OUTBOUND_ENABLED: z.enum(["true", "false"]).default("false"),
+  // KRS_DISCOUNT_WRITE_ENABLED — kill switch for writing DISCOUNTED sales to KRS. When
+  // not exactly "true", the dispatcher HOLDS any bill that carries a discount
+  // (salePayloadHasDiscount) — re-queued PENDING without counting an attempt — so no
+  // discounted bill reaches KRS until the net-out mapping is verified in the sandbox. A
+  // zero-discount bill is unaffected. Opt-in by design (mirrors KRS_OUTBOUND_ENABLED);
+  // the OWNER flips it after sandbox verification (an agent must never flip it).
+  KRS_DISCOUNT_WRITE_ENABLED: z.enum(["true", "false"]).default("false"),
   // KRS_DISPATCH_SECRET — the shared bearer secret the dispatch cron sidecar sends as
   // `Authorization: Bearer <value>` to POST /api/krs/dispatch. Min 32 chars when
   // present (high-entropy: openssl rand -hex 32). When unset, the endpoint returns
@@ -250,6 +257,8 @@ function loadEnv(): z.infer<typeof EnvSchema> {
       // object matches the parsed type exactly.
       KRS_OUTBOUND_ENABLED:
         process.env.KRS_OUTBOUND_ENABLED === "true" ? "true" : "false",
+      KRS_DISCOUNT_WRITE_ENABLED:
+        process.env.KRS_DISCOUNT_WRITE_ENABLED === "true" ? "true" : "false",
       KRS_DISPATCH_SECRET: process.env.KRS_DISPATCH_SECRET,
       KRS_SANDBOX_HOST: process.env.KRS_SANDBOX_HOST,
       KRS_SANDBOX_PORT: process.env.KRS_SANDBOX_PORT,

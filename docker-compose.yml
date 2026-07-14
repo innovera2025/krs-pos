@@ -94,11 +94,15 @@ services:
       # the sandbox would read as unconfigured.
       #  - KRS_OUTBOUND_ENABLED: kill switch for the KRS write; must be "true" to write.
       #    Default false (opt-in) — the SALE outbox is still populated, the write is gated.
+      #  - KRS_DISCOUNT_WRITE_ENABLED: kill switch for writing DISCOUNTED sales; when not
+      #    "true" the dispatcher HOLDS any discounted bill (PENDING) until sandbox-verified.
+      #    Zero-discount bills are unaffected. Default false (opt-in) — owner flips it.
       #  - KRS_DISPATCH_SECRET: bearer secret the krs-dispatch-cron sidecar authenticates
       #    with (must match the sidecar value in docker-compose.prod.yml). Empty = 503.
       #  - KRS_SANDBOX_*: the SEPARATE sandbox write target (NOT the prod inbound KRS).
       #    Empty host/db/user/pass = sandbox unconfigured → the write refuses cleanly.
       KRS_OUTBOUND_ENABLED: ${KRS_OUTBOUND_ENABLED:-false}
+      KRS_DISCOUNT_WRITE_ENABLED: ${KRS_DISCOUNT_WRITE_ENABLED:-false}
       KRS_DISPATCH_SECRET: ${KRS_DISPATCH_SECRET:-}
       KRS_SANDBOX_HOST: ${KRS_SANDBOX_HOST:-}
       KRS_SANDBOX_PORT: ${KRS_SANDBOX_PORT:-1433}
