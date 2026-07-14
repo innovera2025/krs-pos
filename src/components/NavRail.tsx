@@ -10,13 +10,14 @@ import {
   Clock3,
   DatabaseZap,
   Package,
+  BadgePercent,
   UsersRound,
   SlidersHorizontal,
   LogOut,
   type LucideIcon,
 } from "lucide-react";
 import { useRole } from "@/components/RoleProvider";
-import { canAccess } from "@/lib/roleAccess";
+import { canAccessStrict } from "@/lib/roleAccess";
 
 type NavItem = {
   key: string;
@@ -36,6 +37,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: "shift", label: "ปิดรอบขาย", labelEn: "Shift Close", route: "/shift", icon: Clock3 },
   { key: "data", label: "การเชื่อมข้อมูล", labelEn: "KRS Data Link", route: "/data", icon: DatabaseZap, badge: true },
   { key: "products", label: "สินค้า/สต็อก", labelEn: "Products", route: "/products", icon: Package },
+  { key: "promotions", label: "โปรโมชัน", labelEn: "Promotions", route: "/promotions", icon: BadgePercent },
   { key: "users", label: "จัดการผู้ใช้", labelEn: "Users & Roles", route: "/users", icon: UsersRound },
   { key: "settings", label: "ตั้งค่าร้านค้า", labelEn: "Shop Settings", route: "/settings", icon: SlidersHorizontal },
 ];
@@ -66,7 +68,7 @@ const NAV_ITEMS: NavItem[] = [
 export function NavRail() {
   const pathname = usePathname();
   const router = useRouter();
-  const { role, userName } = useRole();
+  const { role, isStrictAdmin, userName } = useRole();
 
   // Failed-sync-job count for the `data` badge (display-sidebar-failed-badge-
   // source). Init 0 → no layout shift; errors are swallowed (the rail must never
@@ -80,7 +82,7 @@ export function NavRail() {
   // entirely; the badge stays at 0/hidden — the same visible result, since a
   // seller doesn't see `data` anyway. `role` is a dep so the gate re-evaluates if
   // role resolves after mount (e.g. an admin's session arriving late).
-  const canSeeData = canAccess("data", role);
+  const canSeeData = canAccessStrict("data", role, isStrictAdmin);
   useEffect(() => {
     if (!canSeeData) return;
     let mounted = true;
@@ -106,7 +108,9 @@ export function NavRail() {
     };
   }, [canSeeData]);
 
-  const visibleItems = NAV_ITEMS.filter((item) => canAccess(item.key, role));
+  const visibleItems = NAV_ITEMS.filter((item) =>
+    canAccessStrict(item.key, role, isStrictAdmin)
+  );
 
   return (
     <nav

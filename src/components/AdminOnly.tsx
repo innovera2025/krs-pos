@@ -16,12 +16,23 @@ import { useRole } from "@/components/RoleProvider";
  * bounces a seller off an admin route before this mounts, and the admin APIs are
  * guarded by `requireAdmin`. A seller can no longer reach admin data by URL or by
  * tampering with the client role.
+ *
+ * `strict` (promotions program, decision D2): when set, the screen is ADMIN-ONLY
+ * in the strict sense — a MANAGER (which normally maps to the admin AppRole) is
+ * ALSO bounced. Used by /promotions, which the strict-ADMIN middleware gate
+ * already blocks server-side; this keeps the client UX in lock-step.
  */
-export function AdminOnly({ children }: { children: React.ReactNode }) {
+export function AdminOnly({
+  children,
+  strict = false,
+}: {
+  children: React.ReactNode;
+  strict?: boolean;
+}) {
   // Hooks stay unconditional (called every render) regardless of branch below.
-  const { role, hydrated } = useRole();
+  const { role, isStrictAdmin, hydrated } = useRole();
   const router = useRouter();
-  const allowed = role === "admin";
+  const allowed = strict ? isStrictAdmin : role === "admin";
 
   useEffect(() => {
     // Only redirect once the real role is known. Redirecting on the pre-hydration

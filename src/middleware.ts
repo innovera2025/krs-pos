@@ -1,7 +1,7 @@
 import NextAuth from "next-auth";
 import { NextResponse } from "next/server";
 import { authConfig, navKeyForPath } from "@/auth.config";
-import { canAccess } from "@/lib/roleAccess";
+import { canAccessStrict } from "@/lib/roleAccess";
 import { prismaRoleToAppRole } from "@/lib/authRole";
 
 // Security-review FIX B: build the middleware NextAuth instance from the EDGE-SAFE
@@ -59,9 +59,13 @@ export const middleware = auth((req) => {
       return NextResponse.redirect(loginUrl);
     }
     // Authenticated but this role can't access the nav area → bounce to /pos
-    // (a route every role can reach) rather than the login page.
+    // (a route every role can reach) rather than the login page. STRICT-ADMIN nav
+    // (e.g. /promotions) additionally requires a real Prisma Role.ADMIN — a
+    // MANAGER (mapped to the admin AppRole) is bounced too. String compare keeps
+    // this edge-safe (no Prisma enum import).
     const appRole = prismaRoleToAppRole(req.auth.user.role);
-    if (!canAccess(navKey, appRole)) {
+    const isStrictAdmin = req.auth.user.role === "ADMIN";
+    if (!canAccessStrict(navKey, appRole, isStrictAdmin)) {
       return NextResponse.redirect(new URL("/pos", req.nextUrl));
     }
   }

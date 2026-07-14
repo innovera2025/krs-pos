@@ -1,5 +1,5 @@
 import type { NextAuthConfig } from "next-auth";
-import { canAccess } from "@/lib/roleAccess";
+import { canAccessStrict } from "@/lib/roleAccess";
 import { prismaRoleToAppRole } from "@/lib/authRole";
 
 /**
@@ -33,6 +33,7 @@ export const PROTECTED_PREFIXES = [
   "/shift",
   "/data",
   "/products",
+  "/promotions",
   "/users",
   "/settings",
 ];
@@ -105,9 +106,13 @@ export const authConfig: NextAuthConfig = {
 
       // Authenticated: enforce the nav-access map by mapped role. If this role
       // may not access the nav key, bounce to /pos (a route every role can
-      // reach) rather than the login page.
+      // reach) rather than the login page. STRICT-ADMIN nav (e.g. /promotions)
+      // additionally requires a real Prisma Role.ADMIN — a MANAGER (which maps to
+      // the admin AppRole) is bounced too. The compare is a plain string check so
+      // this stays edge-safe (no Prisma enum import).
       const appRole = prismaRoleToAppRole(auth.user.role);
-      if (!canAccess(navKey, appRole)) {
+      const isStrictAdmin = auth.user.role === "ADMIN";
+      if (!canAccessStrict(navKey, appRole, isStrictAdmin)) {
         const posUrl = new URL("/pos", request.nextUrl);
         return Response.redirect(posUrl);
       }

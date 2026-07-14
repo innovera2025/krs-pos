@@ -47,6 +47,54 @@ export type Category = {
 };
 
 /**
+ * Promotion kind (mirrors the Prisma `PromotionType` enum, promotions program):
+ *  - PRODUCT_DISCOUNT — ลดราคาต่อสินค้า (%/฿ per unit) on the scoped products
+ *  - FIXED_PRICE      — ราคาพิเศษ (a special per-unit price) on the scoped products
+ *  - BUY_X_GET_Y      — ซื้อครบรับส่วนลด/ฟรี (buy X, get Y at a discount / free)
+ *  - BILL_THRESHOLD   — ลดตามยอดบิล (spend ≥ min, get a bill-level discount)
+ */
+export type PromotionType =
+  | "PRODUCT_DISCOUNT"
+  | "FIXED_PRICE"
+  | "BUY_X_GET_Y"
+  | "BILL_THRESHOLD";
+
+/**
+ * A promotion as returned by the ADMIN view of GET /api/promotions (promotions
+ * program, Phase 4/5). This DTO MIRRORS THE API ADMIN RESPONSE EXACTLY — the
+ * documented Public Contract:
+ *  - money CONFIG is integer SATANG (Prisma Int columns) passed straight through
+ *    JSON, so the field names carry the `Satang` suffix (amountOffSatang, …). This
+ *    deliberately AVOIDS the Decimal trailing-zero JSON pitfall. (⚠️ the CREATE /
+ *    PATCH REQUEST body is the inverse — it takes BAHT numbers named
+ *    amountOff/fixedPrice/minSubtotal; the API converts baht → satang server-side.)
+ *  - `percentOff` is `Number(Decimal(5,2))` (a plain number, 1–100).
+ *  - every type-specific field is nullable — it is `null` when N/A for `type`.
+ *  - dates are ISO instant strings (UTC); the UI converts to/from Asia/Bangkok
+ *    calendar dates at the form boundary (inclusive end date → exclusive next-day
+ *    instant).
+ */
+export type PromotionDTO = {
+  id: string;
+  name: string;
+  code: string | null;
+  type: PromotionType;
+  isActive: boolean;
+  startsAt: string | null;
+  endsAt: string | null;
+  percentOff: number | null;
+  amountOffSatang: number | null;
+  fixedPriceSatang: number | null;
+  buyQty: number | null;
+  getQty: number | null;
+  getDiscountPercent: number | null;
+  minSubtotalSatang: number | null;
+  productIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+/**
  * Stable category slug used to attach a Taste icon/gradient/tint to a fetched
  * Category by name. The DB Category model only carries `name`, so the UI maps
  * name -> { slug, icon } for product-card / cart-line icons and the products-table

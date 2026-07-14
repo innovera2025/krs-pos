@@ -24,6 +24,14 @@ export type AppRole = "admin" | "seller";
 
 type RoleContextValue = {
   role: AppRole;
+  /**
+   * Promotions program (strict-ADMIN gate, decision D2): true ONLY for a real
+   * Prisma Role.ADMIN — a MANAGER (which maps to the admin AppRole above) is
+   * false. Drives the /promotions NavRail item + the `<AdminOnly strict>` guard.
+   * false pre-hydration (session not yet resolved), same as the least-privileged
+   * default, so a MANAGER never sees the promotions item flash.
+   */
+  isStrictAdmin: boolean;
   /** The logged-in user's display name, when available (shown in the NavRail). */
   userName: string | null;
   /**
@@ -59,6 +67,11 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
     ? prismaRoleToAppRole(session.user.role)
     : DEFAULT_ROLE;
 
+  // Promotions program (decision D2): strict-ADMIN is the RAW Prisma role being
+  // ADMIN — NOT the collapsed AppRole (which folds MANAGER in). null/undefined
+  // session → false (least-privileged, matches pre-hydration).
+  const isStrictAdmin = session?.user?.role === "ADMIN";
+
   const userName = session?.user?.name ?? null;
 
   // Branch/Warehouse program (Phase 3): surface the user's warehouse + derived
@@ -69,7 +82,7 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <RoleContext.Provider
-      value={{ role, userName, warehouseCode, branchCode, hydrated }}
+      value={{ role, isStrictAdmin, userName, warehouseCode, branchCode, hydrated }}
     >
       {children}
     </RoleContext.Provider>
