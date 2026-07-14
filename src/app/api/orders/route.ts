@@ -807,18 +807,33 @@ export async function POST(req: Request) {
         branchCode: outboxBranchCode,
         branchName: outboxBranchName,
         warehouseCode: outboxWarehouseCode,
-        items: lineItems.map((l) => {
+        // Bill-level promotion split (krs-sync discount-safety Phase 1). `discount` keeps
+        // its combined-bill-discount meaning; promoBillDiscount is the promotion-only
+        // slice. Phase 6 fills real promotion values — Phase 1 records "no promotion".
+        promoBillDiscount: "0.00",
+        billPromotionName: null,
+        // Snapshot built from the SERVER-recomputed per-line result (`totals.lines`,
+        // OrderLineResult) so the KRS net-out wire fields (lineDiscount, lineNet) come
+        // from the same integer-satang recompute as the persisted OrderItem money — never
+        // a client value, never a float round-trip. Product sku/name are attached by
+        // productId (not relation position) so a repeated product never mis-attaches.
+        items: totals.lines.map((l) => {
           const prod = snapshotProductById.get(l.productId);
           return {
             itemCode: prod?.sku ?? "",
             description: prod?.name ?? "",
             quantity: l.quantity,
-            unitPrice: l.unitPrice,
-            lineTotal: l.lineTotal,
-            // Per-line discount is already folded into the server lineTotal; the cart's
-            // per-line discount input is not separately persisted on OrderItem, so the
-            // snapshot records "0.00" here (the bill-level discount lives in `discount`).
-            lineDiscount: "0.00",
+            unitPrice: satangToString(l.priceSatang),
+            lineTotal: satangToString(l.lineTotalSatang),
+            // Real combined per-line discount (manual + promo) actually applied, folded
+            // into lineTotal (= gross - lineDiscount). Previously hardcoded "0.00".
+            lineDiscount: satangToString(l.lineDiscountSatang),
+            // Fully-net line amount AFTER the bill-discount allocation — the KRS net-out
+            // wire amount (Dtl.Amount). Σ lineNet === Order.total.
+            lineNet: satangToString(l.lineNetSatang),
+            // Phase 6 fills real promotion values; Phase 1 records "no promotion".
+            linePromoDiscount: "0.00",
+            promotionName: null,
           };
         }),
       };

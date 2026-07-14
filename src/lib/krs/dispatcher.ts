@@ -37,7 +37,7 @@ import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
 import { env } from "@/lib/env";
 import { buildSandboxConfig } from "./sandboxClient";
-import { parseSalePayload } from "./salePayload";
+import { parseSalePayload, salePayloadHasDiscount } from "./salePayload";
 import { writeKrsSale, WriteConfigNotReadyError, checkKrsSaleExists } from "./writeback";
 import type { KrsWriteOpts } from "./writeback";
 
@@ -459,6 +459,26 @@ export async function runDispatch(): Promise<DispatchResult> {
         result.failed += 1;
         continue;
       }
+    }
+
+    // === DISCOUNT-WRITE GATE ===
+    // Placed AFTER the reclaim block ON PURPOSE (load-bearing): a discounted job that
+    // ALREADY burned an anchor and committed its phase-1 write must first be recovered to
+    // SYNCED (with the global snapshot advanced) by the reclaim block above — otherwise
+    // holding it here would strand a committed-but-unrecorded KRS write and leave the
+    // snapshot un-advanced (stock double-count risk). Only a NOT-YET-WRITTEN discounted job
+    // reaches this gate. When the discount-write flag is off, HOLD it: re-queue WITHOUT
+    // counting an attempt (same pattern as the KRS_OUTBOUND_ENABLED=false path above) so it
+    // waits, PENDING, until the owner enables the verified net-out writeback. Zero-discount
+    // bills pass straight through.
+    if (env.KRS_DISCOUNT_WRITE_ENABLED !== "true" && salePayloadHasDiscount(payload)) {
+      await requeuePending(job.id);
+      result.skipped += 1;
+      logger.info(
+        { krsDispatch: { jobId: job.id, ref: job.ref, code: "DISCOUNT_HELD" } },
+        "KRS dispatch: discounted bill held — KRS_DISCOUNT_WRITE_ENABLED is off"
+      );
+      continue;
     }
 
     // === KRS WRITE (mssql, OUTSIDE any Prisma tx) ===

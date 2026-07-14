@@ -25,8 +25,23 @@ export type SalePayloadItem = {
   unitPrice: string;
   /** OrderItem.lineTotal as a 2dp Decimal string. */
   lineTotal: string;
-  /** Per-line discount as a 2dp Decimal string (may be "0.00"). */
+  /** Per-line discount as a 2dp Decimal string (may be "0.00"). Combined manual +
+   *  promo line discount already folded into `lineTotal` (= gross - lineDiscount). */
   lineDiscount: string;
+  /**
+   * Fully-net line amount as a 2dp Decimal string AFTER the bill-level discount has
+   * been allocated to this line (= pricing `lineNetSatang`/100). This is the
+   * authoritative KRS net-out wire amount per line: `Dtl.Amount = lineNet`,
+   * `Dtl.DiscountAmount = unitPrice*quantity - lineNet`. `null` marks a LEGACY payload
+   * enqueued before this field existed — the writeback reconstructs net from
+   * `lineTotal` only for a fully zero-discount bill, else refuses (manual review).
+   */
+  lineNet: string | null;
+  /** The promotion-only portion of this line's discount as a 2dp Decimal string
+   *  (default "0.00"). Informational split; the combined value is in `lineDiscount`. */
+  linePromoDiscount: string;
+  /** The applied promotion's display name for this line, or null when none. */
+  promotionName: string | null;
 };
 
 /** The full SALE snapshot stored in `SyncJob.payload`. */
@@ -41,8 +56,15 @@ export type SalePayload = {
   subtotal: string;
   /** Order.tax as a 2dp Decimal string → output-VAT journal line. */
   tax: string;
-  /** Order.discount as a 2dp Decimal string. */
+  /** Total bill-level discount (manual + promotion) as a 2dp Decimal string. Keeps the
+   *  original combined-bill-discount meaning: the writeback balance identity is still
+   *  `total === subtotal - discount`. `promoBillDiscount` is the promotion-only slice. */
   discount: string;
+  /** The promotion-only portion of the bill-level discount as a 2dp Decimal string
+   *  (default "0.00"). Manual bill discount = `discount - promoBillDiscount`. */
+  promoBillDiscount: string;
+  /** The applied bill-level promotion's display name, or null when none. */
+  billPromotionName: string | null;
   /** Order.amountPaid as a 2dp Decimal string → CashValue. */
   amountPaid: string;
   /** User.id of the cashier (SalePerson). */
@@ -134,6 +156,14 @@ export function parseSalePayload(value: unknown): SalePayload {
       unitPrice: istr("unitPrice"),
       lineTotal: istr("lineTotal"),
       lineDiscount: typeof it.lineDiscount === "string" ? it.lineDiscount : "0.00",
+      // LENIENT (precedent: warehouseCode below): a legacy line enqueued before these
+      // fields existed has no lineNet — it stays null so the writeback can detect and
+      // gate a legacy discounted payload. linePromoDiscount/promotionName default to the
+      // "no promotion" values so an in-flight legacy job still parses.
+      lineNet: typeof it.lineNet === "string" && it.lineNet.length > 0 ? it.lineNet : null,
+      linePromoDiscount:
+        typeof it.linePromoDiscount === "string" ? it.linePromoDiscount : "0.00",
+      promotionName: typeof it.promotionName === "string" ? it.promotionName : null,
     };
   });
 
@@ -144,6 +174,14 @@ export function parseSalePayload(value: unknown): SalePayload {
     subtotal: str("subtotal"),
     tax: str("tax"),
     discount: str("discount"),
+    // LENIENT (precedent: warehouseCode below): a legacy header enqueued before these
+    // fields existed has no promoBillDiscount/billPromotionName — they default to the
+    // "no promotion" values so an in-flight legacy job still parses. `discount` keeps its
+    // combined-bill-discount meaning, so the writeback balance assert is unchanged.
+    promoBillDiscount:
+      typeof v.promoBillDiscount === "string" ? v.promoBillDiscount : "0.00",
+    billPromotionName:
+      typeof v.billPromotionName === "string" ? v.billPromotionName : null,
     amountPaid: str("amountPaid"),
     cashierId: str("cashierId"),
     cashierName: typeof v.cashierName === "string" ? v.cashierName : "",
@@ -164,4 +202,48 @@ export function parseSalePayload(value: unknown): SalePayload {
         : SALE_PAYLOAD_HQ_WAREHOUSE,
     items,
   };
+}
+
+/**
+ * TOLERANT 2dp-decimal → integer-satang parser, LOCAL to this module. A malformed /
+ * non-finite value yields 0 (never throws) — this is deliberately more lenient than
+ * writeback's `toSatang`, because `salePayloadHasDiscount` must classify legacy /
+ * odd-shaped payloads without crashing the dispatcher's flag gate. Kept local (not
+ * imported from writeback/orderSerialize) so this module stays free of any node-only
+ * dependency and remains safe to import from the checkout route.
+ */
+function tolerantSatang(decimalStr: string): number {
+  const cleaned = decimalStr.replace(/,/g, "").trim();
+  if (!/^-?\d+(\.\d{1,2})?$/.test(cleaned)) return 0;
+  const neg = cleaned.startsWith("-");
+  const [intPart, fracRaw = ""] = cleaned.replace(/^-/, "").split(".");
+  const frac = (fracRaw + "00").slice(0, 2);
+  const magnitude = Number(intPart) * 100 + Number(frac);
+  if (!Number.isFinite(magnitude)) return 0;
+  return neg ? -magnitude : magnitude;
+}
+
+/**
+ * True when the SALE payload carries ANY discount — bill-level OR per-line. Used by the
+ * dispatcher's KRS_DISCOUNT_WRITE_ENABLED gate to hold discounted bills until the
+ * discount-safe writeback is verified, and by the writeback to decide whether a legacy
+ * (`lineNet == null`) payload can be safely net-reconstructed.
+ *
+ * A discount is present when any of:
+ *  - `discount` > 0 (combined bill-level discount: manual + promotion), OR
+ *  - `promoBillDiscount` > 0 (promotion slice; defensive — it is a subset of `discount`), OR
+ *  - any item where `unitPrice * quantity !== lineTotal` (a folded per-line discount,
+ *    INCLUDING legacy payloads whose only discount signal is the folded lineTotal).
+ *
+ * Pure: no I/O. Malformed money fields are treated as 0 by `tolerantSatang`, so a garbage
+ * value never makes this throw — it just does not register as a discount on that field.
+ */
+export function salePayloadHasDiscount(p: SalePayload): boolean {
+  if (tolerantSatang(p.discount) > 0) return true;
+  if (tolerantSatang(p.promoBillDiscount) > 0) return true;
+  for (const it of p.items) {
+    const gross = tolerantSatang(it.unitPrice) * it.quantity;
+    if (gross !== tolerantSatang(it.lineTotal)) return true;
+  }
+  return false;
 }
