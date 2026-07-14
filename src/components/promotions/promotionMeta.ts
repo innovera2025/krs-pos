@@ -144,6 +144,18 @@ export function promoBadgeLabel(p: PromoLike): string {
   }
 }
 
+/**
+ * The reward-only label for a spend-&-save (BILL_THRESHOLD) promotion — the "ลดทันที
+ * {reward}" tail of the POS threshold hint (Phase 7), WITHOUT the "ครบ …" condition
+ * that `promoSummary` prepends. "฿50.00" for a flat amount, "10%" for a percentage.
+ * Also usable for any percent/amount-shaped promo. "" when malformed (defensive).
+ */
+export function promoRewardLabel(p: PromoLike): string {
+  if (p.percentOff != null) return `${trimPercent(p.percentOff)}%`;
+  if (p.amountOffSatang != null) return formatSatang(p.amountOffSatang);
+  return "";
+}
+
 /** Drop a trailing ".00"/".x0" so "10.00" → "10", "12.50" → "12.5" in labels. */
 function trimPercent(pct: number): string {
   return String(Number(pct));

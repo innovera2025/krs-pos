@@ -127,6 +127,23 @@ export function ReceiptModal({
   const totalNum = Number(order.total);
   const changeNum = Number(order.change);
   const hasChange = changeNum > 0.01;
+
+  // Promotions program (Phase 7): receipt discount lines. All money is read from the
+  // 2dp-string order contract via a defensive Number(). `grossNum` is the pre-discount
+  // line sum (Σ unitPrice × qty); the total the customer saved is gross − total.
+  const subtotalNum = Number(order.subtotal);
+  const discountNum = Number(order.discount);
+  const promoBillDiscountNum = Number(order.promoBillDiscount ?? 0);
+  // Manual bill discount = the non-promo slice of `discount` (Money Contract).
+  const manualBillDiscountNum = Math.max(discountNum - promoBillDiscountNum, 0);
+  const grossNum = order.items.reduce(
+    (sum, it) => sum + Number(it.unitPrice) * it.quantity,
+    0
+  );
+  const savingsNum = grossNum - totalNum;
+  // Any discount at all (line-level and/or bill-level) → show the ยอดรวม (subtotal)
+  // line so the totals block foots subtotal − promoBill − manual = total.
+  const anyDiscount = savingsNum > 0.005;
   const cashierName = order.cashier?.name ?? "นิดา ส.";
   // Reprint-from-history bills may already carry a real accounting doc number;
   // fresh P3 receipts have accountingDocNo === null → keep the placeholder.
@@ -277,14 +294,56 @@ export function ReceiptModal({
               <div style={{ color: "var(--soft)" }}>
                 {it.quantity} × {money(Number(it.unitPrice))}
               </div>
+              {/* Per-line promotion (promotions program, Phase 7) — monochrome text. */}
+              {it.promotionName && (
+                <div
+                  className="flex justify-between text-[10.5px]"
+                  style={{ color: "var(--soft)", fontFamily: "var(--font-sans)" }}
+                >
+                  <span>โปร: {it.promotionName}</span>
+                  <span>-{money(Number(it.promoDiscount ?? 0))}</span>
+                </div>
+              )}
             </div>
           ))}
 
-          {/* Totals */}
+          {/* Totals — subtotal + discount breakdown (promotions program, Phase 7) then
+              the net. The subtotal + discount rows appear only when a discount exists;
+              a plain no-discount bill still shows just รวมสุทธิ (unchanged). */}
           <div
             className="mt-3 border-t border-dashed pt-2.5 text-[11.5px] leading-[1.9]"
             style={{ borderColor: "#cbd5e1", color: "#475569" }}
           >
+            {anyDiscount && (
+              <div
+                className="flex justify-between"
+                style={{ fontFamily: "var(--font-sans)" }}
+              >
+                <span>ยอดรวม</span>
+                <span>{money(subtotalNum)}</span>
+              </div>
+            )}
+            {promoBillDiscountNum > 0 && (
+              <div
+                className="flex justify-between"
+                style={{ fontFamily: "var(--font-sans)" }}
+              >
+                <span>
+                  ส่วนลดโปรโมชันท้ายบิล
+                  {order.billPromotionName ? ` · ${order.billPromotionName}` : ""}
+                </span>
+                <span>-{money(promoBillDiscountNum)}</span>
+              </div>
+            )}
+            {manualBillDiscountNum > 0 && (
+              <div
+                className="flex justify-between"
+                style={{ fontFamily: "var(--font-sans)" }}
+              >
+                <span>ส่วนลดท้ายบิล</span>
+                <span>-{money(manualBillDiscountNum)}</span>
+              </div>
+            )}
             <div
               className="flex justify-between text-[15px] font-bold"
               style={{ fontFamily: "var(--font-sans)", color: "#0f172a" }}
@@ -335,6 +394,17 @@ export function ReceiptModal({
                 </div>
               )}
               <div>TIN {order.customer.taxId}</div>
+            </div>
+          )}
+
+          {/* Total savings (promotions program, Phase 7) — the sum of every line- and
+              bill-level discount (gross − net). Centered, just above the VAT note. */}
+          {savingsNum > 0.005 && (
+            <div
+              className="mt-2.5 text-center text-[11.5px] font-bold"
+              style={{ color: "#0f172a", fontFamily: "var(--font-sans)" }}
+            >
+              คุณประหยัดไป {money(savingsNum)}
             </div>
           )}
 

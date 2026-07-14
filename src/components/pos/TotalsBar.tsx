@@ -25,6 +25,20 @@ type TotalsBarProps = {
   /** Disable pay (empty cart or in-flight checkout). */
   payDisabled: boolean;
   checkingOut: boolean;
+  /**
+   * Bill-level PROMOTION discount in satang (promotions program, Phase 7) — the promo
+   * slice of `totals.billDiscountSatang`. The manual bill-discount row shows the rest
+   * (`billDiscountSatang − promoBillDiscountSatang`), so the footing stays
+   * `subtotal − promoBill − manual = total`.
+   */
+  promoBillDiscountSatang?: number;
+  /** Name of the applied threshold promo (shown small beside the promo row). */
+  billPromoName?: string | null;
+  /**
+   * Nearest UNMET spend-&-save promo (promotions program, Phase 7): buy `missingSatang`
+   * more to unlock `rewardLabel`. Null when none is unmet or one is already applied.
+   */
+  thresholdHint?: { missingSatang: number; rewardLabel: string } | null;
 };
 
 /**
@@ -48,7 +62,15 @@ export function TotalsBar({
   onPay,
   payDisabled,
   checkingOut,
+  promoBillDiscountSatang,
+  billPromoName,
+  thresholdHint,
 }: TotalsBarProps) {
+  // Split the combined bill discount into its promo + manual slices for the two rows.
+  // `totals.billDiscountSatang` is the combined value the engine handed to pricing;
+  // the manual portion is whatever is left after the promo portion.
+  const promoBill = promoBillDiscountSatang ?? 0;
+  const manualBill = Math.max(totals.billDiscountSatang - promoBill, 0);
   return (
     <div
       className="border-t px-[18px] pb-[18px] pt-4"
@@ -57,6 +79,25 @@ export function TotalsBar({
         background: "linear-gradient(180deg,#fff,#f8fafc)",
       }}
     >
+      {/* Nearest unmet spend-&-save nudge (promotions program, Phase 7) — slim mint
+          pill above the bill-discount input, shown only while a threshold is unmet. */}
+      {thresholdHint && (
+        <div
+          className="mb-2.5 flex items-center gap-1.5 rounded-[11px] px-2.5 py-2 text-[11.5px] font-semibold"
+          style={{
+            background: "#ecfdf5",
+            color: "#11865a",
+            border: "1px solid #cdf3dd",
+          }}
+        >
+          <span aria-hidden="true">✦</span>
+          <span>
+            ซื้อเพิ่มอีก {formatSatang(thresholdHint.missingSatang)} ลดทันที{" "}
+            {thresholdHint.rewardLabel}
+          </span>
+        </div>
+      )}
+
       {/* Bill discount row */}
       <div
         className="mb-[13px] grid items-center gap-2"
@@ -106,10 +147,23 @@ export function TotalsBar({
           <span>ยอดก่อนภาษี · Subtotal</span>
           <span className="mono">{formatSatang(totals.subtotalSatang)}</span>
         </div>
-        {totals.billDiscountSatang > 0 && (
+        {/* Bill-level PROMOTION discount (mint) — sits between subtotal and the manual
+            discount row; line-level promos are already inside the subtotal. */}
+        {promoBill > 0 && (
+          <div className="flex justify-between text-[12.5px]" style={{ color: "#11865a" }}>
+            <span className="min-w-0 truncate pr-2">
+              ส่วนลดโปรโมชัน · Promotions
+              {billPromoName ? (
+                <span className="ml-1 opacity-70">· {billPromoName}</span>
+              ) : null}
+            </span>
+            <span className="mono flex-shrink-0">-{formatSatang(promoBill)}</span>
+          </div>
+        )}
+        {manualBill > 0 && (
           <div className="flex justify-between text-[12.5px]" style={{ color: "#dc2626" }}>
             <span>ส่วนลดท้ายบิล · Discount</span>
-            <span className="mono">-{formatSatang(totals.billDiscountSatang)}</span>
+            <span className="mono">-{formatSatang(manualBill)}</span>
           </div>
         )}
         <div className="flex justify-between text-[12.5px]" style={{ color: "#667085" }}>

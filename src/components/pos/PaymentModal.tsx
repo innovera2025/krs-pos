@@ -15,6 +15,12 @@ type PaymentModalProps = {
   vatSatang: number;
   /** Number of physical items in the cart (display only). */
   itemCount: number;
+  /**
+   * Total promotion savings on this bill in satang (Σ line promos + bill promo) —
+   * promotions program, Phase 7. Informational only; shown as a mint line under the
+   * total due when > 0. Omitted/0 → the line is hidden.
+   */
+  promoSavingsSatang?: number;
 
   /** Selected customer (null = walk-in / ลูกค้าทั่วไป). Phase 6a. */
   customer: CustomerDTO | null;
@@ -57,6 +63,7 @@ export function PaymentModal({
   totalSatang,
   vatSatang,
   itemCount,
+  promoSavingsSatang,
   customer,
   taxRequested,
   payLines,
@@ -144,6 +151,17 @@ export function PaymentModal({
           <div className="mono mt-1 text-[38px] font-bold leading-none">
             {formatSatang(totalSatang)}
           </div>
+          {/* Promotion savings on this bill (promotions program, Phase 7) — mint,
+              informational; the total due above is already net of every discount. */}
+          {promoSavingsSatang != null && promoSavingsSatang > 0 && (
+            <div
+              className="mt-1.5 flex items-center justify-between text-[12px] font-semibold"
+              style={{ color: "#6ee7b7" }}
+            >
+              <span>รวมส่วนลดโปรโมชัน</span>
+              <span className="mono">-{formatSatang(promoSavingsSatang)}</span>
+            </div>
+          )}
           <div
             className="mt-[18px] flex flex-col gap-[7px] border-t pt-4 text-[12.5px]"
             style={{ borderColor: "#1e293b", color: "#94a3b8" }}

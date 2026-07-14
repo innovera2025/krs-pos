@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Minus, Plus, Trash2, Tag } from "lucide-react";
+import { Minus, Plus, Trash2, Tag, BadgePercent } from "lucide-react";
 import type { CartItem } from "@/types";
 import { money, formatSatang } from "@/lib/money";
 import { CATEGORY_META, slugForCategoryName } from "./categoryMeta";
@@ -11,6 +11,12 @@ type CartLineProps = {
   item: CartItem;
   /** Line gross in satang (unit price * qty) — the per-line discount ceiling. */
   lineGrossSatang: number;
+  /**
+   * The line-level promotion applied to this line (promotions program, Phase 7), or
+   * null when none. Read-only display (the engine owns the math); its `discountSatang`
+   * is folded into the shown line net so the line reads gross − manual − promo.
+   */
+  appliedPromo?: { name: string; discountSatang: number } | null;
   onInc: (productId: string) => void;
   onDec: (productId: string) => void;
   onRemove: (productId: string) => void;
@@ -26,6 +32,7 @@ type CartLineProps = {
 export function CartLine({
   item,
   lineGrossSatang,
+  appliedPromo,
   onInc,
   onDec,
   onRemove,
@@ -47,7 +54,13 @@ export function CartLine({
     lineDiscountSatang > 0 ? (lineDiscountSatang / 100).toString() : ""
   );
 
-  const lineNetSatang = Math.max(lineGrossSatang - lineDiscountSatang, 0);
+  // Line net reflects the COMBINED discount (manual + promo), matching the engine's
+  // per-line fold so the shown net === the price this line contributes to the subtotal.
+  const promoDiscountSatang = appliedPromo?.discountSatang ?? 0;
+  const lineNetSatang = Math.max(
+    lineGrossSatang - lineDiscountSatang - promoDiscountSatang,
+    0
+  );
 
   function commitDiscount(raw: string) {
     setDraft(raw);
@@ -143,6 +156,25 @@ export function CartLine({
           ส่วนลดรายการ
         </button>
       </div>
+
+      {/* Applied line promotion (promotions program, Phase 7) — read-only mint chip,
+          distinct from the blue manual-discount affordance. Shows the promo name + the
+          discount it contributed to this line. */}
+      {appliedPromo && (
+        <div className="mt-2.5 flex items-center">
+          <span
+            className="inline-flex items-center gap-1 rounded-full px-2 py-[5px] text-[11px] font-semibold"
+            style={{
+              background: "#ecfdf5",
+              color: "#11865a",
+              border: "1px solid #cdf3dd",
+            }}
+          >
+            <BadgePercent size={12} strokeWidth={2} />
+            โปร{appliedPromo.name} -{formatSatang(appliedPromo.discountSatang)}
+          </span>
+        </div>
+      )}
 
       {open && (
         <div className="mt-2.5 flex items-center gap-2">

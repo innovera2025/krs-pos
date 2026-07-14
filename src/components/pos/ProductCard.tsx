@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { Boxes, Plus, Check } from "lucide-react";
+import { Boxes, Plus, Check, BadgePercent } from "lucide-react";
 import type { Product } from "@/types";
 import { money } from "@/lib/money";
 import { CATEGORY_META, slugForCategoryName } from "./categoryMeta";
@@ -13,6 +13,18 @@ type ProductCardProps = {
   /** Qty of this product currently in the cart (0 = not in cart). */
   inCartQty: number;
   onAdd: (product: Product) => void;
+  /**
+   * Best qty-1 promotion badge for this product (promotions program, Phase 7), or
+   * null when no line-level promo is scoped to it. `struckPrice` + `promoUnitPriceSatang`
+   * are set for PRODUCT_DISCOUNT / FIXED_PRICE (an honest struck price at qty 1);
+   * BUY_X_GET_Y carries only a rule `label` (its effective price depends on qty).
+   * Derived ONCE per product upstream so this React.memo'd card keeps a stable prop.
+   */
+  promo?: {
+    label: string;
+    struckPrice?: boolean;
+    promoUnitPriceSatang?: number;
+  } | null;
 };
 
 /** Low-stock threshold (amber) and out-of-stock (disable add). */
@@ -30,6 +42,7 @@ export const ProductCard = React.memo(function ProductCard({
   stock,
   inCartQty,
   onAdd,
+  promo,
 }: ProductCardProps) {
   const slug = slugForCategoryName(product.category?.name);
   const meta = CATEGORY_META[slug];
@@ -90,6 +103,17 @@ export const ProductCard = React.memo(function ProductCard({
             <Check size={11} strokeWidth={3} /> {inCartQty}
           </span>
         )}
+        {/* Promotion pill (promotions program, Phase 7) — bottom-left so it never
+            collides with the in-cart ✓ (top-left) or the barcode chip (top-right).
+            Solid mint #11865a; the label is the type-appropriate short copy. */}
+        {promo && (
+          <span
+            className="absolute bottom-[7px] left-2 flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold text-white"
+            style={{ background: "#11865a" }}
+          >
+            <BadgePercent size={11} strokeWidth={2.5} /> {promo.label}
+          </span>
+        )}
       </div>
 
       {/* Name — one step smaller so the enlarged image dominates */}
@@ -105,9 +129,28 @@ export const ProductCard = React.memo(function ProductCard({
             <Boxes size={13} strokeWidth={2} />
             {isOut ? "หมด" : `${stock} คงเหลือ`}
           </div>
-          <div className="price mono text-[18px] font-bold tracking-tight">
-            {money(Number(product.price))}
-          </div>
+          {/* Price — struck original above the mint promo price for %/฿/fixed promos;
+              BUY_X_GET_Y (no struckPrice) keeps the normal catalog price + rule pill. */}
+          {promo?.struckPrice && promo.promoUnitPriceSatang != null ? (
+            <>
+              <del
+                className="mono block text-[11px] font-semibold"
+                style={{ color: "var(--muted)" }}
+              >
+                {money(Number(product.price))}
+              </del>
+              <div
+                className="price mono text-[18px] font-bold tracking-tight"
+                style={{ color: "#11865a" }}
+              >
+                {money(promo.promoUnitPriceSatang / 100)}
+              </div>
+            </>
+          ) : (
+            <div className="price mono text-[18px] font-bold tracking-tight">
+              {money(Number(product.price))}
+            </div>
+          )}
         </div>
         <span
           aria-hidden="true"

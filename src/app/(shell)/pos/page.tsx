@@ -24,7 +24,18 @@ import {
   computeTotals,
   remainingPaySatang,
   type PricingItem,
+  type BillDiscount,
 } from "@/lib/pricing";
+import {
+  applyPromotions,
+  linePromoCandidateSatang,
+  type ActivePromotion,
+  type PromoCartLine,
+} from "@/lib/promotionEngine";
+import {
+  promoBadgeLabel,
+  promoRewardLabel,
+} from "@/components/promotions/promotionMeta";
 import { CategoryPanel, type CategoryChip } from "@/components/pos/CategoryPanel";
 import { ProductCard } from "@/components/pos/ProductCard";
 import { CartLine } from "@/components/pos/CartLine";
@@ -109,6 +120,12 @@ export default function POSPage() {
 
   const [products, setProducts] = useState<Product[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
+
+  // Currently-effective promotions (promotions program, Phase 7). Fetched on mount,
+  // then refetched after every settled sale AND on a PAYMENT_MISMATCH (a promo may have
+  // expired mid-bill), so the on-screen preview uses the SAME effective set the server
+  // recomputes against. The server stays authoritative — this is preview only.
+  const [activePromos, setActivePromos] = useState<ActivePromotion[]>([]);
 
   const [cart, setCart] = useState<CartItem[]>([]);
   const [search, setSearch] = useState("");
@@ -255,6 +272,29 @@ export default function POSPage() {
     return () => ctrl.abort();
   }, []);
 
+  // Load the effective promotions (promotions program, Phase 7). Reused by the mount
+  // effect (with an abort signal) AND by the fire-and-forget refetch after a settled
+  // sale / on a PAYMENT_MISMATCH. Best-effort: a failed/slow load keeps the last-known
+  // set (or []), which just previews fewer promos — the server recompute is the source
+  // of truth, so an under-preview can only ever be corrected upward by PAYMENT_MISMATCH.
+  const loadPromotions = useCallback((signal?: AbortSignal) => {
+    fetch("/api/promotions?view=pos", signal ? { signal } : undefined)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: ActivePromotion[] | null) => {
+        if (signal?.aborted || !Array.isArray(data)) return;
+        setActivePromos(data);
+      })
+      .catch(() => {
+        /* ignore — keep the last-known promotions (server stays authoritative) */
+      });
+  }, []);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    loadPromotions(ctrl.signal);
+    return () => ctrl.abort();
+  }, [loadPromotions]);
+
   // Receipt print-size settings (Receipt print-size feature). Fetched once on
   // mount so the receipt print path can apply the admin-configured size. Errors
   // are swallowed → receiptSettings stays null → the auto-print path falls back
@@ -388,20 +428,119 @@ export default function POSPage() {
     return m;
   }, [cart]);
 
-  // Totals via the pure integer-satang engine.
-  const totals = useMemo(() => {
-    const items: PricingItem[] = cart.map((i) => ({
+  // Best qty-1 promo badge per product (promotions program, Phase 7). For each product
+  // we rank its scoped line-level promos at qty 1 with the SAME engine helper the cart
+  // uses (largest discount wins; ties → smallest id, mirroring the engine's pickBest),
+  // so the card preview never drifts from the applied discount. %/฿/fixed → an honest
+  // struck price at qty 1; BUY_X_GET_Y → the rule label only (its effective price
+  // depends on qty). Threshold promos have no per-product badge. Rebuilt ONLY when
+  // promos/products change, so each product's badge object stays referentially stable
+  // and the React.memo'd ProductCard doesn't re-render on cart/keystroke churn.
+  const promoBadgeByProductId = useMemo(() => {
+    const map = new Map<
+      string,
+      { label: string; struckPrice?: boolean; promoUnitPriceSatang?: number }
+    >();
+    const linePromos = activePromos.filter(
+      (p) =>
+        p.type === "PRODUCT_DISCOUNT" ||
+        p.type === "FIXED_PRICE" ||
+        p.type === "BUY_X_GET_Y"
+    );
+    if (linePromos.length === 0) return map;
+    for (const product of products) {
+      const priceSatang = bahtToSatang(product.price);
+      if (priceSatang <= 0) continue;
+      const scoped = linePromos.filter((p) => p.productIds?.includes(product.id));
+      if (scoped.length === 0) continue;
+      // Rank at qty 1: highest discount first, ties broken by smallest id (engine parity).
+      const ranked = scoped
+        .map((promo) => ({
+          promo,
+          discount: linePromoCandidateSatang(promo, priceSatang, 1),
+        }))
+        .sort(
+          (a, b) =>
+            b.discount - a.discount || (a.promo.id < b.promo.id ? -1 : 1)
+        );
+      const best = ranked[0];
+      if (best.promo.type === "BUY_X_GET_Y") {
+        // qty-1 discount is 0 (no full group yet) — show the rule label, no struck price.
+        const label = promoBadgeLabel(best.promo);
+        if (label) map.set(product.id, { label });
+        continue;
+      }
+      // PRODUCT_DISCOUNT / FIXED_PRICE: honest struck price at qty 1 (skip if 0/malformed).
+      if (best.discount <= 0) continue;
+      const label = promoBadgeLabel(best.promo);
+      if (!label) continue;
+      map.set(product.id, {
+        label,
+        struckPrice: true,
+        promoUnitPriceSatang: Math.max(priceSatang - best.discount, 0),
+      });
+    }
+    return map;
+  }, [activePromos, products]);
+
+  // Totals via the pure integer-satang engine, now routed through the promotion engine
+  // (promotions program, Phase 7). We run `applyPromotions` over the cart + effective
+  // promos + the manual bill discount, then feed its `combinedLineDiscountSatang`
+  // (per line) and `combinedBill` into `computeTotals` — the IDENTICAL inputs the
+  // server uses (parity guaranteed by promotionEngine tests), so the on-screen total
+  // equals the server's authoritative recompute. `application` carries the per-line +
+  // bill promo breakdown for the cart/totals/payment surfaces.
+  const { totals, application } = useMemo(() => {
+    const promoLines: PromoCartLine[] = cart.map((i) => ({
+      productId: i.product.id,
       priceSatang: bahtToSatang(i.product.price),
-      qty: i.quantity,
-      lineDiscountSatang: i.lineDiscountSatang,
+      quantity: i.quantity,
+      manualLineDiscountSatang: i.lineDiscountSatang,
     }));
     const value = Number(discountDraft.trim());
-    const bill = {
+    const manualBill: BillDiscount = {
       type: discountType,
       value: Number.isFinite(value) ? value : 0,
     };
-    return computeTotals(items, bill);
-  }, [cart, discountDraft, discountType]);
+    const application = applyPromotions(promoLines, activePromos, manualBill);
+    const items: PricingItem[] = cart.map((i, idx) => ({
+      priceSatang: bahtToSatang(i.product.price),
+      qty: i.quantity,
+      lineDiscountSatang: application.lines[idx]?.combinedLineDiscountSatang ?? 0,
+    }));
+    const totals = computeTotals(items, application.combinedBill);
+    return { totals, application };
+  }, [cart, discountDraft, discountType, activePromos]);
+
+  // Total promotion savings on this bill (Σ line promos + bill promo) — informational,
+  // shown in the payment modal under the total due.
+  const promoSavingsSatang = useMemo(
+    () =>
+      application.lines.reduce((s, l) => s + l.promoDiscountSatang, 0) +
+      application.promoBillDiscountSatang,
+    [application]
+  );
+
+  // Nearest UNMET spend-&-save (BILL_THRESHOLD) promo (promotions program, Phase 7):
+  // among threshold promos whose min the current subtotal has not reached, pick the
+  // closest and surface "buy ฿X more → save Y". Null when a threshold promo is already
+  // applied (it shows as a discount row instead) or none is unmet.
+  const thresholdHint = useMemo(() => {
+    if (application.billPromo) return null;
+    const subtotal = application.subtotalSatang;
+    let nearest: { missingSatang: number; rewardLabel: string } | null = null;
+    for (const promo of activePromos) {
+      if (promo.type !== "BILL_THRESHOLD") continue;
+      const min = promo.minSubtotalSatang;
+      if (typeof min !== "number" || !Number.isFinite(min) || min <= 0) continue;
+      const missingSatang = min - subtotal;
+      if (missingSatang <= 0) continue; // already met (would have applied) → skip
+      if (nearest === null || missingSatang < nearest.missingSatang) {
+        nearest = { missingSatang, rewardLabel: promoRewardLabel(promo) };
+      }
+    }
+    return nearest;
+  }, [application, activePromos]);
 
   // ---- cart actions ----
   // useCallback keeps addToCart referentially stable across renders so the
@@ -1034,11 +1173,24 @@ export default function POSPage() {
       });
       if (!res.ok) {
         let msg = "ชำระเงินไม่สำเร็จ ลองใหม่อีกครั้ง";
+        let code = "";
         try {
           const data = await res.json();
           if (data?.error) msg = data.error;
+          if (typeof data?.code === "string") code = data.code;
         } catch {
           /* keep default message */
+        }
+        // Stale-promo guard (promotions program, Phase 7): the server rejects with
+        // PAYMENT_MISMATCH when its authoritative total no longer matches the client's
+        // preview — which happens when a promotion expired/changed mid-bill. Refetch the
+        // effective promos so the totals memo recomputes against the same set the server
+        // now uses, and tell the cashier to re-check before re-confirming. We keep the
+        // banner path/shape and only swap the message for this code (other 422s keep
+        // their server message untouched).
+        if (code === "PAYMENT_MISMATCH") {
+          loadPromotions();
+          msg = "โปรโมชันมีการเปลี่ยนแปลง ยอดถูกคำนวณใหม่ กรุณาตรวจสอบ";
         }
         setPayError(msg);
         return;
@@ -1096,6 +1248,10 @@ export default function POSPage() {
         setAutoPrintOpen(false);
         setCaptureOpen(false);
         setReceiptOrder(null);
+        // Refetch effective promotions now the sale has settled (promotions program,
+        // Phase 7): a promo may have expired/started between bills, so the next sale
+        // previews the current set. Best-effort — the server recompute stays authoritative.
+        loadPromotions();
         // Scanner flow (owner request): put the caret back in the search box
         // the moment the sale settles so the next customer's first barcode
         // fires straight into it — no mouse touch. rAF so it runs AFTER the
@@ -1322,6 +1478,7 @@ export default function POSPage() {
                     stock={effectiveStock(p)}
                     inCartQty={cartQtyById.get(p.id) ?? 0}
                     onAdd={addToCart}
+                    promo={promoBadgeByProductId.get(p.id) ?? null}
                   />
                 ))}
               </div>
@@ -1408,17 +1565,32 @@ export default function POSPage() {
               </div>
             </div>
           ) : (
-            cart.map((item) => (
-              <CartLine
-                key={item.product.id}
-                item={item}
-                lineGrossSatang={bahtToSatang(item.product.price) * item.quantity}
-                onInc={incLine}
-                onDec={decLine}
-                onRemove={removeLine}
-                onLineDiscount={setLineDiscount}
-              />
-            ))
+            cart.map((item, idx) => {
+              // The promotion engine returns per-line results in cart order, so
+              // application.lines[idx] is this line's promo (null when none applied).
+              const linePromo = application.lines[idx]?.promo ?? null;
+              return (
+                <CartLine
+                  key={item.product.id}
+                  item={item}
+                  lineGrossSatang={
+                    bahtToSatang(item.product.price) * item.quantity
+                  }
+                  appliedPromo={
+                    linePromo
+                      ? {
+                          name: linePromo.promotionName,
+                          discountSatang: linePromo.discountSatang,
+                        }
+                      : null
+                  }
+                  onInc={incLine}
+                  onDec={decLine}
+                  onRemove={removeLine}
+                  onLineDiscount={setLineDiscount}
+                />
+              );
+            })
           )}
         </div>
 
@@ -1438,6 +1610,9 @@ export default function POSPage() {
           onPay={openPayment}
           payDisabled={cart.length === 0 || submitting}
           checkingOut={submitting}
+          promoBillDiscountSatang={application.promoBillDiscountSatang}
+          billPromoName={application.billPromo?.promotionName ?? null}
+          thresholdHint={thresholdHint}
         />
       </aside>
 
@@ -1468,6 +1643,7 @@ export default function POSPage() {
         totalSatang={totals.totalSatang}
         vatSatang={totals.vatSatang}
         itemCount={itemCount}
+        promoSavingsSatang={promoSavingsSatang}
         customer={customer}
         taxRequested={taxRequested}
         payLines={payLines}

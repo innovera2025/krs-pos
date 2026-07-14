@@ -155,6 +155,14 @@ export type OrderItemDTO = {
   unitPrice: string | number;
   lineTotal: string | number;
   product: { id: string; name: string; sku: string };
+  // Promotions program (Phase 6/7): per-line promo snapshot. `promoDiscount` is the
+  // promo-only slice of `lineTotal` as a 2dp baht string (serializeOrder always emits
+  // it, "0.00" when none); `promotionId`/`promotionName` are the applied line-promo
+  // snapshot (null when no line promo applied). Optional so legacy/pre-promo reprints
+  // still type-check; the receipt reads them defensively.
+  promoDiscount?: string | number;
+  promotionId?: string | null;
+  promotionName?: string | null;
 };
 
 /**
@@ -286,6 +294,14 @@ export type OrderDTO = {
   taxIssuedAt?: string | null;
   taxRequested: boolean;
   shiftId?: string | null;
+  // Promotions program (Phase 6/7): bill-level promo snapshot. `promoBillDiscount` is
+  // the promo slice of `discount` as a 2dp baht string (serializeOrder always emits it,
+  // "0.00" when none); `billPromotionId`/`billPromotionName` are the applied threshold-
+  // promo snapshot (null when none). Optional so legacy/pre-promo reprints still
+  // type-check; the receipt reads them defensively.
+  promoBillDiscount?: string | number;
+  billPromotionId?: string | null;
+  billPromotionName?: string | null;
   // Phase 6a — customer linkage (null/undefined = walk-in / ลูกค้าทั่วไป).
   customerId?: string | null;
   customer?: CustomerDTO | null;
