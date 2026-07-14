@@ -11,6 +11,7 @@ import {
   type PromotionFormPayload,
 } from "@/components/promotions/PromotionFormModal";
 import { Modal } from "@/components/Modal";
+import { PromotionReportTab } from "@/components/promotions/PromotionReportTab";
 
 type LoadState = "loading" | "ready" | "error";
 type StatusFilter = "all" | "active" | "inactive";
@@ -41,6 +42,9 @@ function PromotionsScreen() {
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<StatusFilter>("all");
+
+  // Manage (existing CRUD) vs. Report (Phase 9 date-range sales report) tab.
+  const [tab, setTab] = useState<"manage" | "report">("manage");
 
   // Add/edit modal.
   const [formOpen, setFormOpen] = useState(false);
@@ -171,16 +175,32 @@ function PromotionsScreen() {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={openAdd}
-          className="flex h-11 items-center gap-2 rounded-[14px] px-4 text-[13.5px] font-bold text-white"
-          style={{ background: "var(--brand)", boxShadow: "var(--shadow-sm)" }}
-        >
-          <Plus size={17} strokeWidth={2.5} /> เพิ่มโปรโมชัน
-        </button>
+        {tab === "manage" && (
+          <button
+            type="button"
+            onClick={openAdd}
+            className="flex h-11 items-center gap-2 rounded-[14px] px-4 text-[13.5px] font-bold text-white"
+            style={{ background: "var(--brand)", boxShadow: "var(--shadow-sm)" }}
+          >
+            <Plus size={17} strokeWidth={2.5} /> เพิ่มโปรโมชัน
+          </button>
+        )}
       </header>
 
+      {/* จัดการ / รายงาน tab switcher (filter-pill style) */}
+      <div className="flex items-center gap-1.5">
+        <FilterPill active={tab === "manage"} onClick={() => setTab("manage")}>
+          จัดการ · Manage
+        </FilterPill>
+        <FilterPill active={tab === "report"} onClick={() => setTab("report")}>
+          รายงาน · Report
+        </FilterPill>
+      </div>
+
+      {tab === "report" ? (
+        <PromotionReportTab />
+      ) : (
+        <>
       {/* Search + status filter pills */}
       <div className="flex flex-wrap items-center gap-3">
         <label
@@ -314,6 +334,8 @@ function PromotionsScreen() {
           if (t) setActive(t, false);
         }}
       />
+        </>
+      )}
     </div>
   );
 }
