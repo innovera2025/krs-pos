@@ -85,9 +85,26 @@ function serializeShift(shift: {
  */
 async function buildZReport(shiftId: string, openingFloatSatang: number) {
   // Completed orders drive gross sales / VAT / discounts.
+  //
+  // Promotions program (Phase 8): the select is EXTENDED (additive) with the
+  // bill-level promo columns so the promo breakdown + manual/promo split are
+  // computed in JS integer satang — the same money discipline as the rest of
+  // this route. `promoBillDiscount` is the promo SLICE of `discount` (manual
+  // bill slice = discount − promoBillDiscount); `billPromotionId` /
+  // `billPromotionName` snapshot the applied BILL_THRESHOLD promo. `id` is
+  // needed to count DISTINCT bills per promotion. The pre-existing gross/VAT/
+  // discount sums below are byte-identical (only new fields were added).
   const completed = await prisma.order.findMany({
     where: { shiftId, status: OrderStatus.COMPLETED },
-    select: { total: true, tax: true, discount: true },
+    select: {
+      id: true,
+      total: true,
+      tax: true,
+      discount: true,
+      promoBillDiscount: true,
+      billPromotionId: true,
+      billPromotionName: true,
+    },
   });
   // Refunded orders drive refundsTotal (their total is stored negative).
   const refunded = await prisma.order.findMany({
@@ -95,15 +112,95 @@ async function buildZReport(shiftId: string, openingFloatSatang: number) {
     select: { total: true },
   });
 
+  // Per-promotion breakdown accumulator (line-level + bill-level merged by
+  // promotionId). `orderIds` is a Set so DISTINCT bills are counted even when a
+  // promotion appears on several lines of the same bill. `name` snapshots are
+  // identical per promo; we keep the max (deterministic regardless of row order).
+  type PromoAgg = { name: string | null; orderIds: Set<string>; amountSatang: number };
+  const promoAgg = new Map<string, PromoAgg>();
+  function accumulatePromo(
+    promotionId: string,
+    name: string | null,
+    orderId: string,
+    amountSatang: number
+  ) {
+    const existing = promoAgg.get(promotionId);
+    if (existing) {
+      existing.orderIds.add(orderId);
+      existing.amountSatang += amountSatang;
+      if (name && (existing.name === null || name > existing.name)) existing.name = name;
+    } else {
+      promoAgg.set(promotionId, {
+        name,
+        orderIds: new Set([orderId]),
+        amountSatang,
+      });
+    }
+  }
+
   let grossSatang = 0;
   let vatSatang = 0;
   let discountSatang = 0;
+  // Σ Order.promoBillDiscount — the bill-level promo slice of `discount`.
+  let promoBillSatang = 0;
   for (const o of completed) {
     grossSatang += toSatang(o.total);
     vatSatang += toSatang(o.tax);
     discountSatang += toSatang(o.discount);
+    const oPromoBill = toSatang(o.promoBillDiscount);
+    promoBillSatang += oPromoBill;
+    if (o.billPromotionId) {
+      accumulatePromo(o.billPromotionId, o.billPromotionName, o.id, oPromoBill);
+    }
   }
   const txnCount = completed.length;
+
+  // Line-level promo/manual split (Phase 8). Fetch the minimal OrderItem fields
+  // for this shift's COMPLETED orders and sum in JS integer satang — Prisma's
+  // `_sum` cannot multiply two columns (unitPrice × quantity), so a per-row JS
+  // pass is the cheapest correct query (single findMany, no raw SQL). Per the
+  // Money Contract `lineTotal = unitPrice×qty − manualLine − promoDiscount`, so:
+  //   line promo   = promoDiscount
+  //   line manual  = unitPrice×qty − lineTotal − promoDiscount  (≥ 0 by invariant)
+  const items = await prisma.orderItem.findMany({
+    where: { order: { shiftId, status: OrderStatus.COMPLETED } },
+    select: {
+      orderId: true,
+      quantity: true,
+      unitPrice: true,
+      lineTotal: true,
+      promoDiscount: true,
+      promotionId: true,
+      promotionName: true,
+    },
+  });
+  let linePromoSatang = 0;
+  let lineManualSatang = 0;
+  for (const it of items) {
+    const grossLineSatang = toSatang(it.unitPrice) * it.quantity;
+    const promoSatang = toSatang(it.promoDiscount);
+    linePromoSatang += promoSatang;
+    lineManualSatang += grossLineSatang - toSatang(it.lineTotal) - promoSatang;
+    if (it.promotionId) {
+      accumulatePromo(it.promotionId, it.promotionName, it.orderId, promoSatang);
+    }
+  }
+
+  // Promo total = bill promo + line promo; manual total = bill manual + line
+  // manual (bill manual = discount − promoBillDiscount, per the Money Contract).
+  const promoDiscountSatang = promoBillSatang + linePromoSatang;
+  const manualDiscountSatang = discountSatang - promoBillSatang + lineManualSatang;
+
+  const promoBreakdown = [...promoAgg.entries()]
+    .map(([promotionId, agg]) => ({
+      promotionId,
+      promotionName: agg.name,
+      orders: agg.orderIds.size,
+      amount: satangToString(agg.amountSatang),
+      amountSatang: agg.amountSatang,
+    }))
+    .sort((a, b) => b.amountSatang - a.amountSatang)
+    .map(({ amountSatang: _omit, ...rest }) => rest);
 
   // refundsTotal: magnitude of refunded order totals (stored negative → abs).
   let refundsSatang = 0;
@@ -157,6 +254,14 @@ async function buildZReport(shiftId: string, openingFloatSatang: number) {
     byMethod,
     refundsTotal: satangToString(refundsSatang),
     discountsTotal: satangToString(discountSatang),
+    // Promotions program (Phase 8) — additive Z-report fields. `discountsTotal`
+    // above KEEPS its meaning (Σ Order.discount = bill-level total). These new
+    // fields report the promo/manual split INCLUDING line-level discounts (which
+    // are folded into lineTotal, not into Order.discount), plus a per-promotion
+    // breakdown. All COMPLETED-only, Decimal→2dp-string.
+    promoDiscountTotal: satangToString(promoDiscountSatang),
+    manualDiscountTotal: satangToString(manualDiscountSatang),
+    promoBreakdown,
     vatTotal: satangToString(vatSatang),
     cashSales: satangToString(cashSalesSatang),
     cashRefunds: satangToString(cashRefundsSatang),

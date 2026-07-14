@@ -6,8 +6,12 @@ import { useToast } from "@/components/ToastProvider";
 import { KpiCards } from "@/components/shift/KpiCards";
 import { PaymentMethodBreakdown } from "@/components/shift/PaymentMethodBreakdown";
 import { ShiftSummaryCard } from "@/components/shift/ShiftSummaryCard";
+import {
+  PromotionSummaryCard,
+  type ZReportPromoFields,
+} from "@/components/shift/PromotionSummaryCard";
 import { CashCountingPanel } from "@/components/shift/CashCountingPanel";
-import type { ShiftResponse } from "@/types";
+import type { ShiftResponse, ZReportDTO } from "@/types";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -190,6 +194,13 @@ export default function ShiftPage() {
               refundsTotal={data.zReport.refundsTotal}
               discountsTotal={data.zReport.discountsTotal}
               vatTotal={data.zReport.vatTotal}
+            />
+            {/* Promotions program (Phase 8): the Z-report payload is extended with
+                the promo/manual split + per-promotion breakdown. Cast to the
+                locally-defined ZReportPromoFields (the shared ZReportDTO is not
+                edited this phase — the POS UI file is changing concurrently). */}
+            <PromotionSummaryCard
+              zReport={data.zReport as ZReportDTO & ZReportPromoFields}
             />
           </div>
 
