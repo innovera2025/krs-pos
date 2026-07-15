@@ -127,6 +127,21 @@ export function PaymentModal({
     return () => cancelAnimationFrame(raf);
   }, [open, showCash]);
 
+  // Single-line invariant (single-line-amount-is-total): whenever exactly ONE
+  // payment method is in play, its amount MUST equal the bill total. The cashier
+  // can no longer edit it (it renders read-only below), so this guards the two
+  // remaining ways it could go stale: an amount that was edited before this became
+  // read-only, or a split trimmed back down to a single line (which keeps its old
+  // partial amount). Force-sync through the existing amount setter whenever the
+  // lone line drifts from the total — compared in exact satang so "58.5" vs
+  // "58.50" isn't a false drift. No loop: after the sync the amount equals the
+  // total and the satang guard short-circuits.
+  useEffect(() => {
+    if (payLines.length !== 1) return;
+    if (bahtToSatang(payLines[0].amount) === totalSatang) return;
+    onSetAmount(0, (totalSatang / 100).toFixed(2));
+  }, [payLines, totalSatang, onSetAmount]);
+
   // Split sum vs total (satang-exact) → confirm enablement.
   const paidSatang = sumPaySatang(payLines.map((l) => l.amount));
   const sumMatches = Math.abs(paidSatang - totalSatang) <= 1; // ≤ 0.01 baht
@@ -327,15 +342,31 @@ export function PaymentModal({
                   <span className="mono text-[13px]" style={{ color: "var(--soft)" }}>
                     ฿
                   </span>
-                  <input
-                    inputMode="decimal"
-                    value={line.amount}
-                    onChange={(e) => onSetAmount(i, e.target.value)}
-                    onFocus={(e) => e.currentTarget.select()}
-                    aria-label={`จำนวนเงิน ${methodLabel(line.method)}`}
-                    className="mono h-9 w-[104px] rounded-lg border px-2.5 text-right text-[14px]"
-                    style={{ borderColor: "#e2e8f0" }}
-                  />
+                  {payLines.length === 1 ? (
+                    // Single-line mode: the amount always equals the bill total
+                    // (force-synced above), so editing it is pure foot-gun. Render
+                    // it as read-only display text — same footprint / mono / right-
+                    // aligned / weight as the input it replaces, but with no input
+                    // chrome so it doesn't invite typing. The เงินสด received panel
+                    // stays the (editable) place to enter tendered cash.
+                    <div
+                      aria-label={`จำนวนเงิน ${methodLabel(line.method)}`}
+                      className="mono flex h-9 w-[104px] items-center justify-end px-2.5 text-right text-[14px]"
+                      style={{ color: "#0f172a" }}
+                    >
+                      {line.amount}
+                    </div>
+                  ) : (
+                    <input
+                      inputMode="decimal"
+                      value={line.amount}
+                      onChange={(e) => onSetAmount(i, e.target.value)}
+                      onFocus={(e) => e.currentTarget.select()}
+                      aria-label={`จำนวนเงิน ${methodLabel(line.method)}`}
+                      className="mono h-9 w-[104px] rounded-lg border px-2.5 text-right text-[14px]"
+                      style={{ borderColor: "#e2e8f0" }}
+                    />
+                  )}
                   {payLines.length > 1 && (
                     <button
                       type="button"
@@ -351,6 +382,42 @@ export function PaymentModal({
               );
             })}
           </div>
+
+          {/* Split mismatch explainer (split-mismatch-explainer): in split mode
+              (≥2 lines) the per-method amounts stay editable, so their sum can drift
+              from the bill total — which silently disables Confirm with no on-screen
+              reason. Surface WHY directly under the lines whenever the sum doesn't
+              match: short → how much more the methods still owe; over → how much they
+              exceed the bill. Hidden in single-line mode (its amount is force-synced
+              to the total, so it can never mismatch) and hidden once the split
+              balances. Amber/red to match this modal's error-text voice. */}
+          {payLines.length >= 2 && !sumMatches && (
+            <div
+              className="mb-1.5 flex items-center gap-1.5 text-[12px] font-medium"
+              style={{ color: "#dc2626" }}
+            >
+              <AlertTriangle
+                size={14}
+                strokeWidth={1.8}
+                className="flex-shrink-0"
+              />
+              {totalSatang - paidSatang > 0 ? (
+                <span>
+                  ยอดวิธีจ่ายยังขาดอีก{" "}
+                  <span className="mono font-semibold">
+                    {formatSatang(totalSatang - paidSatang)}
+                  </span>
+                </span>
+              ) : (
+                <span>
+                  ยอดวิธีจ่ายเกินยอดบิลอยู่{" "}
+                  <span className="mono font-semibold">
+                    {formatSatang(paidSatang - totalSatang)}
+                  </span>
+                </span>
+              )}
+            </div>
+          )}
           <button
             type="button"
             onClick={onAddLine}
