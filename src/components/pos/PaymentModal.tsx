@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { X, Trash2, Check, AlertTriangle } from "lucide-react";
 import { Modal } from "@/components/Modal";
 import type { CustomerDTO, PayLine, PayMethod } from "@/types";
@@ -102,6 +103,29 @@ export function PaymentModal({
   );
   const receivedSatang = bahtToSatang(cashReceived);
   const changeSatang = Math.max(receivedSatang - cashDueSatang, 0);
+
+  // Cash-drawer convention (owner request): whenever the cash panel becomes
+  // relevant — the modal opens with เงินสด preselected (the default seed) or the
+  // cashier switches the active method to เงินสด — auto-focus the "รับเงินสด"
+  // input and select its contents so the next keystroke overwrites the amount
+  // instead of appending. Keyed on [open, showCash] so it fires exactly on those
+  // transitions (including switch-away-then-back), never mid-edit while a cash
+  // line already exists in a split (deps unchanged → no re-run). rAF defers the
+  // focus until after the portal has painted the input (the shared Modal mounts
+  // its overlay a commit late) and after the Modal's own focus-move, so this
+  // focus wins — matching the requestAnimationFrame(focus) refocus pattern used
+  // on the POS page.
+  const cashReceivedRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!open || !showCash) return;
+    const raf = requestAnimationFrame(() => {
+      const el = cashReceivedRef.current;
+      if (!el) return;
+      el.focus();
+      el.select();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [open, showCash]);
 
   // Split sum vs total (satang-exact) → confirm enablement.
   const paidSatang = sumPaySatang(payLines.map((l) => l.amount));
@@ -307,6 +331,7 @@ export function PaymentModal({
                     inputMode="decimal"
                     value={line.amount}
                     onChange={(e) => onSetAmount(i, e.target.value)}
+                    onFocus={(e) => e.currentTarget.select()}
                     aria-label={`จำนวนเงิน ${methodLabel(line.method)}`}
                     className="mono h-9 w-[104px] rounded-lg border px-2.5 text-right text-[14px]"
                     style={{ borderColor: "#e2e8f0" }}
@@ -346,9 +371,11 @@ export function PaymentModal({
                   รับเงินสด · Cash received
                 </span>
                 <input
+                  ref={cashReceivedRef}
                   inputMode="decimal"
                   value={cashReceived}
                   onChange={(e) => onCashReceived(e.target.value)}
+                  onFocus={(e) => e.currentTarget.select()}
                   aria-label="จำนวนเงินสดที่รับ"
                   className="mono h-10 w-[130px] rounded-[9px] border px-3 text-right text-[16px] font-semibold"
                   style={{ borderColor: "#86efac" }}
