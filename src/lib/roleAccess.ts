@@ -3,9 +3,19 @@ import type { AppRole } from "@/components/RoleProvider";
 /**
  * ROLE-GATE MAP (rolegate-seller-vs-admin) — single source of truth.
  *
- * Which roles may see/visit each nav key. Mirrors Simple POS's navAccess:
- *  - pos / sales / shift  → both seller + admin
- *  - data / products / users / settings → admin only
+ * Which roles may see/visit each nav key. Access policy (owner decision 15-07-26,
+ * which SUPERSEDES the promotions-program decision D2 "ADMIN-only promotions"):
+ *  - pos / sales / shift / products / promotions → both seller (CASHIER) + admin
+ *  - data / users / settings → admin only
+ *
+ * NOTE on `products` (view-only for seller): a CASHIER may now VIEW the products
+ * page (it is in NAV_ACCESS), but every mutation affordance is hidden client-side
+ * and the products mutation APIs stay `requireAdmin` (ADMIN+MANAGER). This map only
+ * governs page/nav VISIBILITY, not write authorization.
+ *
+ * NOTE on `promotions`: promotion management is now open to EVERY signed-in role
+ * (create/edit/activate/deactivate + the Report tab). Accountability is the AuditLog
+ * (every mutation records the actor) plus the Z-report / per-promotion report.
  *
  * This map is now enforced on BOTH boundaries:
  *  - server: the middleware `authorized` callback (src/auth.config.ts) calls
@@ -20,8 +30,8 @@ export const NAV_ACCESS: Record<string, AppRole[]> = {
   sales: ["admin", "seller"],
   shift: ["admin", "seller"],
   data: ["admin"],
-  products: ["admin"],
-  promotions: ["admin"],
+  products: ["admin", "seller"],
+  promotions: ["admin", "seller"],
   users: ["admin"],
   settings: ["admin"],
 };
@@ -33,17 +43,20 @@ export function canAccess(navKey: string, role: AppRole): boolean {
 }
 
 /**
- * STRICT-ADMIN nav keys (promotions program, owner decision D2).
+ * STRICT-ADMIN nav keys — an EXTRA gate layered on top of `canAccess`: a key in
+ * this set additionally requires a strict Prisma `Role.ADMIN` (isStrictAdmin), so a
+ * MANAGER (which maps to the admin AppRole) is bounced like a seller.
  *
- * NAV_ACCESS collapses MANAGER → admin (see lib/authRole), so a MANAGER passes
- * `canAccess("promotions", "admin")`. Promotion management is ADMIN-ONLY, so these
- * keys carry an EXTRA gate on top of canAccess: the caller must additionally be a
- * strict Prisma `Role.ADMIN` (isStrictAdmin). A MANAGER is bounced like a seller.
+ * CURRENTLY EMPTY. Promotions used to live here (promotions-program decision D2,
+ * "ADMIN-only"), but the owner SUPERSEDED that on 15-07-26 — promotion management is
+ * now open to every signed-in role, so `promotions` was removed. The set + the
+ * `canAccessStrict` machinery are retained (not deleted) for a future owner-only
+ * surface; an empty set means `canAccessStrict` behaves EXACTLY like `canAccess`.
  *
  * Edge-safe: a plain string Set, no new imports — this file is consumed by the
  * edge middleware / auth.config route gate which must stay Prisma/bcrypt-free.
  */
-export const STRICT_ADMIN_NAV: ReadonlySet<string> = new Set(["promotions"]);
+export const STRICT_ADMIN_NAV: ReadonlySet<string> = new Set<string>();
 
 /**
  * Access check layering the strict-ADMIN requirement on top of `canAccess`.

@@ -20,7 +20,7 @@
 | # | เรื่อง | ตัดสินใจ |
 |---|---|---|
 | D1 | ประเภทโปร | ทั้ง 4: ลดต่อสินค้า (%/฿), ราคาพิเศษ (fixed), ซื้อ X แถม/ลด Y (สินค้าเดียวกัน v1), ลดตามยอดบิล (threshold) |
-| D2 | สิทธิ์จัดการ | **ADMIN เท่านั้น** (MANAGER ไม่ได้ — ต้องมี guard ใหม่ เพราะ `requireAdmin()` เดิมรวม MANAGER) |
+| D2 | สิทธิ์จัดการ | ~~**ADMIN เท่านั้น** (MANAGER ไม่ได้ — guard `requireStrictAdmin` ใหม่)~~ **(superseded 15-07-26)** → **ทุก role ที่ล็อกอิน จัดการโปรได้** (owner decision; create/edit/toggle + Report tab); accountability ผ่าน AuditLog (actor ถูกบันทึกทุก mutation) + Z-report/รายงานต่อโปร |
 | D3 | ส่งยอด KRS | ไปกับบิลขายปกติ (writeback SALE เดิม) ด้วย mapping net-out ที่ reconcile ในตัว; ทดสอบ sandbox ก่อนเปิด flag |
 | D4 | การ apply | อัตโนมัติ (server-authoritative; client preview ด้วย engine เดียวกัน) |
 | D5 | ซ้อนส่วนลด manual | ซ้อนได้ — คิดโปรก่อน แล้ว manual ทับได้; บันทึกแยกส่วนโปร/manual ชัดเจน |

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { Prisma, PromotionType, AuditAction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { requireUser, requireStrictAdmin } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { PromotionCreateSchema } from "@/lib/schemas/promotion";
 import { parseBody } from "@/lib/schemas/_shared";
 import {
@@ -16,11 +16,12 @@ import { logger } from "@/lib/logger";
 /**
  * Promotion management + POS-feed API (promotions program, Phase 4).
  *
- * AUTH (decision D2): the management surface is STRICT-ADMIN (owner-only) — MANAGER is
- * deliberately excluded via `requireStrictAdmin` (NOT `requireAdmin`, which treats
- * MANAGER as admin). The one exception is `GET ?view=pos`, which any authenticated user
- * (incl. a CASHIER) may read to price the cart; it returns only the client-safe
- * `ActivePromotion` DTO of the CURRENTLY-EFFECTIVE promotions.
+ * AUTH (owner decision 15-07-26 — SUPERSEDES the old D2 "ADMIN-only" gate): the
+ * management surface is open to EVERY signed-in role (CASHIER/MANAGER/ADMIN) — list,
+ * create, and edit all use `requireUser`. Accountability is the audit log: every
+ * mutation records the actor via `logAudit` (unchanged). `GET ?view=pos` is also
+ * `requireUser` (any authenticated user may read it to price the cart); it returns
+ * only the client-safe `ActivePromotion` DTO of the CURRENTLY-EFFECTIVE promotions.
  *
  * Money is validated in baht by the Zod schema and converted to integer satang HERE
  * (`Math.round(v * 100)`) before it hits the satang Int columns. `percentOff` is stored
@@ -39,7 +40,7 @@ function isPromotionType(v: string): v is PromotionType {
 
 // GET /api/promotions
 //  - ?view=pos  → requireUser; currently-effective promotions as ActivePromotion[].
-//  - default    → requireStrictAdmin; ALL rows (full admin DTO) + ?active= / ?type= filters.
+//  - default    → requireUser; ALL rows (full admin DTO) + ?active= / ?type= filters.
 export async function GET(req: Request) {
   return runWithRequestId(req, async () => {
     const { searchParams } = new URL(req.url);
@@ -76,8 +77,8 @@ export async function GET(req: Request) {
       }
     }
 
-    // --- Admin management view: strict ADMIN, all rows + optional filters ---
-    const gate = await requireStrictAdmin();
+    // --- Management view: any signed-in user, all rows + optional filters ---
+    const gate = await requireUser();
     if ("response" in gate) return gate.response;
 
     // Optional ?active=true|false — an unknown value is a 400, not a silent ignore.
@@ -126,10 +127,10 @@ export async function GET(req: Request) {
   });
 }
 
-// POST /api/promotions — create a promotion. Strict-ADMIN only.
+// POST /api/promotions — create a promotion. Any signed-in user (audited).
 export async function POST(req: Request) {
   return runWithRequestId(req, async () => {
-    const gate = await requireStrictAdmin();
+    const gate = await requireUser();
     if ("response" in gate) return gate.response;
 
     let raw: unknown;

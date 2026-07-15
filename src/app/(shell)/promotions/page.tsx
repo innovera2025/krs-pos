@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { Search, Plus, AlertTriangle, Pencil } from "lucide-react";
 import type { PromotionDTO } from "@/types";
 import { useToast } from "@/components/ToastProvider";
-import { AdminOnly } from "@/components/AdminOnly";
 import { PROMO_META, promoSummary } from "@/components/promotions/promotionMeta";
 import {
   PromotionFormModal,
@@ -27,12 +26,11 @@ function fmtBkk(d: Date): string {
   return THAI_DATE.format(d);
 }
 
+// Open to EVERY signed-in role (owner decision 15-07-26 — SUPERSEDES the old D2
+// "ADMIN-only" gate). NAV_ACCESS/middleware still require an authenticated session;
+// there is no extra role guard here — CASHIER/MANAGER/ADMIN all fully manage promos.
 export default function PromotionsPage() {
-  return (
-    <AdminOnly strict>
-      <PromotionsScreen />
-    </AdminOnly>
-  );
+  return <PromotionsScreen />;
 }
 
 function PromotionsScreen() {

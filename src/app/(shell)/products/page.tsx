@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import type { Category, Product } from "@/types";
 import { useToast } from "@/components/ToastProvider";
-import { AdminOnly } from "@/components/AdminOnly";
+import { useRole } from "@/components/RoleProvider";
 import { money } from "@/lib/money";
 import {
   LOW_STOCK,
@@ -29,16 +29,20 @@ function inclusiveVat(price: number): number {
   return (price * 7) / 107;
 }
 
+// Owner decision 15-07-26: the page is VIEW-ONLY for a seller (CASHIER) — the page
+// itself is now in NAV_ACCESS, but every mutation affordance is hidden for non-admin
+// (see `isAdmin` below). The products mutation APIs stay `requireAdmin` regardless.
 export default function ProductsPage() {
-  return (
-    <AdminOnly>
-      <ProductsScreen />
-    </AdminOnly>
-  );
+  return <ProductsScreen />;
 }
 
 function ProductsScreen() {
   const { showToast } = useToast();
+  // Mutation affordances (add / receive-stock / edit) render for admin only. A
+  // seller sees the same table read-only. This is UX only — the mutation APIs are
+  // still guarded by `requireAdmin`, so a tampered client role cannot write.
+  const { role } = useRole();
+  const isAdmin = role === "admin";
 
   const [products, setProducts] = useState<Product[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -207,29 +211,32 @@ function ProductsScreen() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
-          <button
-            type="button"
-            onClick={() => openReceive()}
-            className="flex h-11 items-center gap-2 rounded-[14px] border px-4 text-[13.5px] font-semibold"
-            style={{
-              borderColor: "var(--line)",
-              background: "#fff",
-              color: "var(--ink)",
-              boxShadow: "var(--shadow-sm)",
-            }}
-          >
-            <PackagePlus size={17} strokeWidth={2} /> รับสินค้าเข้า
-          </button>
-          <button
-            type="button"
-            onClick={openAdd}
-            className="flex h-11 items-center gap-2 rounded-[14px] px-4 text-[13.5px] font-bold text-white"
-            style={{ background: "var(--brand)", boxShadow: "var(--shadow-sm)" }}
-          >
-            <Plus size={17} strokeWidth={2.5} /> เพิ่มสินค้า
-          </button>
-        </div>
+        {/* Mutation actions — admin only (seller sees the page read-only). */}
+        {isAdmin && (
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => openReceive()}
+              className="flex h-11 items-center gap-2 rounded-[14px] border px-4 text-[13.5px] font-semibold"
+              style={{
+                borderColor: "var(--line)",
+                background: "#fff",
+                color: "var(--ink)",
+                boxShadow: "var(--shadow-sm)",
+              }}
+            >
+              <PackagePlus size={17} strokeWidth={2} /> รับสินค้าเข้า
+            </button>
+            <button
+              type="button"
+              onClick={openAdd}
+              className="flex h-11 items-center gap-2 rounded-[14px] px-4 text-[13.5px] font-bold text-white"
+              style={{ background: "var(--brand)", boxShadow: "var(--shadow-sm)" }}
+            >
+              <Plus size={17} strokeWidth={2.5} /> เพิ่มสินค้า
+            </button>
+          </div>
+        )}
       </header>
 
       {/* Search + low-stock badge */}
@@ -331,7 +338,8 @@ function ProductsScreen() {
                   <Th className="text-right">VAT 7%</Th>
                   <Th>บาร์โค้ด</Th>
                   <Th>สถานะ</Th>
-                  <Th className="text-right">จัดการ</Th>
+                  {/* จัดการ column — admin only (seller view is read-only). */}
+                  {isAdmin && <Th className="text-right">จัดการ</Th>}
                 </tr>
               </thead>
               <tbody>
@@ -373,30 +381,33 @@ function ProductsScreen() {
                       <Td>
                         <StatusBadge status={status} />
                       </Td>
-                      <Td className="text-right">
-                        <div className="flex justify-end gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => openReceive(p.id)}
-                            aria-label={`รับสินค้าเข้า ${p.name}`}
-                            title="รับสินค้าเข้า"
-                            className="grid h-9 w-9 place-items-center rounded-[11px] border"
-                            style={{ borderColor: "var(--line)", color: "var(--brand-2)" }}
-                          >
-                            <PackagePlus size={16} strokeWidth={2} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => openEdit(p)}
-                            aria-label={`แก้ไข ${p.name}`}
-                            title="แก้ไข"
-                            className="grid h-9 w-9 place-items-center rounded-[11px] border"
-                            style={{ borderColor: "var(--line)", color: "var(--ink)" }}
-                          >
-                            <Pencil size={15} strokeWidth={2} />
-                          </button>
-                        </div>
-                      </Td>
+                      {/* จัดการ cell — admin only (matches the gated header). */}
+                      {isAdmin && (
+                        <Td className="text-right">
+                          <div className="flex justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => openReceive(p.id)}
+                              aria-label={`รับสินค้าเข้า ${p.name}`}
+                              title="รับสินค้าเข้า"
+                              className="grid h-9 w-9 place-items-center rounded-[11px] border"
+                              style={{ borderColor: "var(--line)", color: "var(--brand-2)" }}
+                            >
+                              <PackagePlus size={16} strokeWidth={2} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openEdit(p)}
+                              aria-label={`แก้ไข ${p.name}`}
+                              title="แก้ไข"
+                              className="grid h-9 w-9 place-items-center rounded-[11px] border"
+                              style={{ borderColor: "var(--line)", color: "var(--ink)" }}
+                            >
+                              <Pencil size={15} strokeWidth={2} />
+                            </button>
+                          </div>
+                        </Td>
+                      )}
                     </tr>
                   );
                 })}

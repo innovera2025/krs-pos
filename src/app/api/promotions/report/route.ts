@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { OrderStatus, type PromotionType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { requireStrictAdmin } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { bangkokDateParts, bangkokDayWindow } from "@/lib/datetime";
 import { satangToString, toSatang } from "@/lib/orderSerialize";
 import { runWithRequestId } from "@/lib/requestContext";
@@ -9,8 +9,9 @@ import { logger } from "@/lib/logger";
 
 /**
  * GET /api/promotions/report?from=YYYY-MM-DD&to=YYYY-MM-DD — date-range promotion
- * sales report (promotions program, Phase 9). STRICT-ADMIN only (owner-only, the
- * same gate as the rest of the promotions surface — MANAGER is excluded).
+ * sales report (promotions program, Phase 9). Open to EVERY signed-in role via
+ * `requireUser` (owner decision 15-07-26 — SUPERSEDES the old D2 "ADMIN-only" gate),
+ * the same gate as the rest of the promotions surface.
  *
  * Money discipline mirrors the Z-report (shift/route.ts, Phase 8): every aggregate
  * is summed in integer satang and serialized as a 2dp baht STRING via
@@ -76,7 +77,7 @@ type PromoRowAgg = {
 
 export async function GET(req: Request) {
   return runWithRequestId(req, async () => {
-    const gate = await requireStrictAdmin();
+    const gate = await requireUser();
     if ("response" in gate) return gate.response;
 
     try {

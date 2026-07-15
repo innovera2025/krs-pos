@@ -76,17 +76,20 @@ export async function requireAdmin(): Promise<AuthResult> {
 }
 
 /**
- * Require an authenticated user whose Prisma role is EXACTLY `Role.ADMIN`
- * (promotions program, Phase 4). 401 if not signed in, 403 otherwise — the SAME
- * `{ error, code }` shape as `requireAdmin`.
+ * Require an authenticated user whose Prisma role is EXACTLY `Role.ADMIN`. 401 if
+ * not signed in, 403 otherwise — the SAME `{ error, code }` shape as `requireAdmin`.
  *
- * STRICT ADMIN = OWNER-ONLY. Promotion mutations are owner-only per decision D2.
- * Unlike `requireAdmin` (which treats MANAGER as admin via `isAdminRole`), MANAGER
- * is DELIBERATELY excluded here — a signed-in MANAGER gets 403 FORBIDDEN. This is
- * why the check compares `session.user.role === Role.ADMIN` directly instead of
- * routing through `isAdminRole`: the MANAGER→admin mapping is an existing system
- * decision this strict guard must BYPASS, not change. Do NOT modify `isAdminRole`
- * or `requireAdmin` to accommodate this stricter surface.
+ * ⚠️ CURRENTLY UNUSED. This was the promotions gate (decision D2, "ADMIN-only"), but
+ * the owner SUPERSEDED that on 15-07-26 — the promotions API now uses `requireUser`
+ * (every signed-in role may manage promotions; accountability is the audit log). The
+ * helper is retained (not deleted) for a future owner-only surface.
+ *
+ * STRICT ADMIN = OWNER-ONLY. Unlike `requireAdmin` (which treats MANAGER as admin
+ * via `isAdminRole`), MANAGER is DELIBERATELY excluded here — a signed-in MANAGER
+ * gets 403 FORBIDDEN. This is why the check compares `session.user.role ===
+ * Role.ADMIN` directly instead of routing through `isAdminRole`: the MANAGER→admin
+ * mapping is an existing system decision this strict guard must BYPASS, not change.
+ * Do NOT modify `isAdminRole` or `requireAdmin` to accommodate this stricter surface.
  */
 export async function requireStrictAdmin(): Promise<AuthResult> {
   const session = await auth();

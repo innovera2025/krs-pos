@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { Prisma, PromotionType, AuditAction } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { requireStrictAdmin } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { PromotionPatchSchema } from "@/lib/schemas/promotion";
 import { parseBody } from "@/lib/schemas/_shared";
 import { serializeAdminPromotion } from "@/lib/promotionSerialize";
@@ -11,8 +11,9 @@ import { runWithRequestId } from "@/lib/requestContext";
 import { logger } from "@/lib/logger";
 
 /**
- * Single-promotion read + update (promotions program, Phase 4). STRICT-ADMIN only
- * (owner-only, decision D2 — MANAGER excluded via `requireStrictAdmin`).
+ * Single-promotion read + update (promotions program, Phase 4). Open to EVERY
+ * signed-in role via `requireUser` (owner decision 15-07-26 — SUPERSEDES the old D2
+ * "ADMIN-only" gate); each mutation is attributed to the actor via logAudit.
  *
  * There is deliberately NO DELETE handler: the app DB role `krs_app` has no DELETE
  * privilege (HeldBill precedent), so "removing" a promotion is a soft delete —
@@ -57,13 +58,13 @@ const VALUE_FIELDS_BY_TYPE: Record<PromotionType, ReadonlySet<string>> = {
   BILL_THRESHOLD: new Set(["minSubtotal", "percentOff", "amountOff"]),
 };
 
-// GET /api/promotions/[id] — read one promotion (full admin DTO). Strict-ADMIN.
+// GET /api/promotions/[id] — read one promotion (full admin DTO). Any signed-in user.
 export async function GET(
   req: Request,
   { params }: { params: { id: string } }
 ) {
   return runWithRequestId(req, async () => {
-    const gate = await requireStrictAdmin();
+    const gate = await requireUser();
     if ("response" in gate) return gate.response;
 
     const { id } = params;
@@ -93,13 +94,13 @@ export async function GET(
   });
 }
 
-// PATCH /api/promotions/[id] — partial update / soft-delete toggle. Strict-ADMIN.
+// PATCH /api/promotions/[id] — partial update / soft-delete toggle. Any signed-in user (audited).
 export async function PATCH(
   req: Request,
   { params }: { params: { id: string } }
 ) {
   return runWithRequestId(req, async () => {
-    const gate = await requireStrictAdmin();
+    const gate = await requireUser();
     if ("response" in gate) return gate.response;
 
     const { id } = params;
