@@ -20,18 +20,25 @@ KRS `sp_Onhand` is **internally inconsistent**: the all-warehouse call (`@Wareho
 - The auto-sync delta engine was NOT at fault: it faithfully mirrored the (wrong) global answer
   every run (`updated 0, skipped 972, delta 0`).
 
-## Patch applied (prod, 2026-07-15 ~07:28 UTC, backup first: `backups/krs-pos-20260715-072800.dump`)
-One transaction, superuser psql inside the db container:
+## Patch history (prod, 2026-07-15, backup first: `backups/krs-pos-20260715-072800.dump`)
 
-1. `Product.stock += ROUND(Σ WarehouseStock.qty − global KrsStockSnapshot.lastQty)` capped to int,
-   only where `Σ warehouse > global baseline` (667 rows, +13,644 units).
-2. Global snapshot baseline (`KrsStockSnapshot` rows with `warehouseCode = ''`) set to the same
-   warehouse sum — **this is what makes the patch delta-safe**: the next auto-sync computes
-   delta = 0 (no clobber); if KRS's global proc later heals to the true value, the delta engine
-   adjusts from the new baseline without double-counting. POS-owned sale decrements are preserved
-   (delta engine only ever applies KRS-originated movement).
+**Attempt 1 (~07:28 UTC) — FAILED, reverted by the delta engine within ~2 minutes.** It bumped
+`Product.stock` AND raised the global snapshot baseline (`lastQty`) to the warehouse sum. Because
+KRS's global sp_Onhand still reports 0, the next auto-sync computed
+`delta = 0 − 52 = −52` per item and subtracted it all back (log:
+`updated: 667, totalDelta: -13644`), resetting both stock and baselines to 0.
+**Lesson (hard rule): the snapshot baseline must ALWAYS mirror what KRS actually last reported —
+never a wished-for value. Any gap between baseline and KRS's real answer becomes a phantom
+"movement" the engine applies.**
 
-Verified after: F01-0217 stock = 52, F14-0662 = 8 (untouched), remaining broken = 0.
+**Attempt 2 (~07:45 UTC) — DURABLE.** Stock-only patch, baselines untouched:
+`Product.stock += ROUND(Σ WarehouseStock.qty − global lastQty)` where
+`Σ warehouse > global baseline AND stock < ROUND(Σ warehouse)` (667 rows). Baseline stays 0 =
+exactly what KRS reports → every subsequent run computes delta 0 → the patched stock persists,
+and POS sale decrements apply on top normally. Re-runnable/idempotent.
+
+Verified after: F01-0217 stock = 52 (stable across sync runs), F14-0662 = 8 (untouched),
+remaining broken = 0.
 
 ## Hazards / follow-ups
 - ⛔ Manual `POST /api/krs/sync-stock` (Data Flow tab) is an ABSOLUTE overwrite from the global
@@ -41,7 +48,11 @@ Verified after: F01-0217 stock = 52, F14-0662 = 8 (untouched), remaining broken 
   where `@Warehouse='WH03'` returns stock (example F01-0217 → 52)? ~667 items affected. Is the
   all-warehouse aggregate filtered by branch/DeptCode/doc-type differently from the scoped call?"
 - If new discrepancies appear before the vendor fix (e.g. new goods receive at a branch not
-  reflected globally), re-running the same patch SQL is safe and idempotent (condition
-  `Σ warehouse > global baseline`).
+  reflected globally), re-run the **Attempt 2** stock-only SQL (safe, idempotent, baselines
+  untouched).
+- ⚠️ **When the vendor fixes the global sp_Onhand**: the first healed run will report the real
+  quantities against a 0 baseline → the delta engine would ADD them on top of the patched stock
+  (double count). At that moment, run the manual absolute sync-stock ONCE instead — that is the
+  point where the button becomes the correct tool (it overwrites to the now-correct truth).
 - Longer-term (existing branch-warehouse backlog): branch-scoped checkout stock would decouple
   selling from the global aggregate entirely.
