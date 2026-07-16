@@ -36,6 +36,8 @@ import {
   promoBadgeLabel,
   promoRewardLabel,
 } from "@/components/promotions/promotionMeta";
+import { useKrsEvents } from "@/lib/useKrsEvents";
+import type { KrsStockUpdateItem } from "@/lib/krsEventTypes";
 import { CategoryPanel, type CategoryChip } from "@/components/pos/CategoryPanel";
 import { ProductCard } from "@/components/pos/ProductCard";
 import { CartLine } from "@/components/pos/CartLine";
@@ -294,6 +296,51 @@ export default function POSPage() {
     loadPromotions(ctrl.signal);
     return () => ctrl.abort();
   }, [loadPromotions]);
+
+  // ---- live KRS stock/product push (krs-realtime-inbound P2) ----
+  // Patch the grid in place from an SSE `stock-update`: rewrite ONLY the changed
+  // skus' stock and RETURN THE SAME OBJECT for every untouched (and no-op) product so
+  // the React.memo'd ProductCard re-renders only the cards that actually changed. If
+  // nothing changed, return the previous array unchanged (no re-render at all).
+  // ⚠️ `item.stock` is the GLOBAL Product.stock; the warehouse-scoped display nuance
+  // for assigned users is documented in @/lib/useKrsEvents (eventual-consistency,
+  // never a checkout-correctness issue — a product-update refetch/navigation corrects it).
+  const patchStockBySku = useCallback((items: KrsStockUpdateItem[]) => {
+    if (items.length === 0) return;
+    const stockBySku = new Map(items.map((i) => [i.sku, i.stock]));
+    setProducts((prev) => {
+      let changed = false;
+      const next = prev.map((p) => {
+        const nextStock = stockBySku.get(p.sku);
+        if (nextStock === undefined || nextStock === p.stock) return p; // same ref
+        changed = true;
+        return { ...p, stock: nextStock };
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
+  // Background product refetch for an SSE `product-update` (name/price/active/image
+  // changed KRS-side). Deliberately does NOT flip loadState to "loading" (that would
+  // blank the grid) — it silently swaps in the fresh list on success and keeps the
+  // last-known list on failure. product-update is rare, so replacing every product
+  // reference (a full grid re-render) here is acceptable; the mount fetch remains the
+  // source of truth for first paint / fallback.
+  const refetchProducts = useCallback(() => {
+    fetch("/api/products")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: Product[] | null) => {
+        if (Array.isArray(data)) setProducts(data);
+      })
+      .catch(() => {
+        /* keep the last-known products — server stays authoritative */
+      });
+  }, []);
+
+  useKrsEvents({
+    onStockUpdate: patchStockBySku,
+    onProductUpdate: refetchProducts,
+  });
 
   // Receipt print-size settings (Receipt print-size feature). Fetched once on
   // mount so the receipt print path can apply the admin-configured size. Errors
