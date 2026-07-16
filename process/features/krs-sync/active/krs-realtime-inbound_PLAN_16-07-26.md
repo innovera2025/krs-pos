@@ -1,8 +1,11 @@
 # KRS Realtime Inbound Sync (Change Tracking) — Program Plan
 
 **Created:** 16-07-26 · **Type:** multi-phase program (single-file plan, branch-warehouse-style —
-see "Program fit" below) · **Status:** P0 vendor/discovery gate — BLOCKING, not yet sent · P1–P3
-BLOCKED until P0 confirmed
+see "Program fit" below) · **Status:** P0.1 discovery PASSED 16-07-26 (all 3 tables have PKs; server
+is actually SQL Server 2019 **Enterprise**, not Express — Express caps moot, CT choice unchanged; CT
+not yet enabled by anyone; DB 72MB. Results + ready-to-send letter:
+`references/krs-ct-vendor-request_P0_16-07-26.md`) · **P0.2 letter awaiting owner to send to vendor**
+· P1–P3 BLOCKED until vendor confirms
 
 **Feature:** krs-sync · **Scope:** ERP(KRS) → POS inbound stock/product sync, realtime (target 1–5s
 end-to-end). **Outbound POS → KRS is explicitly OUT OF SCOPE** — it is already event-driven realtime
