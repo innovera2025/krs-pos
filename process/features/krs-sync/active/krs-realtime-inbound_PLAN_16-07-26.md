@@ -4,8 +4,13 @@
 see "Program fit" below) · **Status:** P0.1 discovery PASSED 16-07-26 (all 3 tables have PKs; server
 is actually SQL Server 2019 **Enterprise**, not Express — Express caps moot, CT choice unchanged; CT
 not yet enabled by anyone; DB 72MB. Results + ready-to-send letter:
-`references/krs-ct-vendor-request_P0_16-07-26.md`) · **P0.2 letter awaiting owner to send to vendor**
-· P1–P3 BLOCKED until vendor confirms
+`references/krs-ct-vendor-request_P0_16-07-26.md`) · **VARIANT SWITCH (owner, 16-07-26): vendor-free
+watermark detector** — no KRS-side DDL required; P0.2 CT letter is now OPTIONAL (future upgrade, still
+worth bundling with Q1-Q9). Watermark discovery PASSED: `InventoryFlowHdr.EntryDate` + `ApprovedDate`
+both live and recent (see `references/krs-watermark-discovery_16-07-26.md` — that doc's "Detector
+contract" REPLACES the CHANGETABLE mechanics in P1.1; everything else in P1-P3 — shared reconcile
+engine, cursor storage, endpoint+sidecar shape, SSE, autoSync demotion, 667-item regression gate —
+applies unchanged; read `KrsCtCursor` as the watermark cursor row). **P1 UNBLOCKED — in progress.**
 
 **Feature:** krs-sync · **Scope:** ERP(KRS) → POS inbound stock/product sync, realtime (target 1–5s
 end-to-end). **Outbound POS → KRS is explicitly OUT OF SCOPE** — it is already event-driven realtime
