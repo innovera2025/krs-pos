@@ -586,6 +586,33 @@ model KrsStockSnapshot {
   @@id([itemCode, warehouseCode])
 }
 
+// KRS realtime-inbound WATERMARK cursor (krs-realtime-inbound P1). Singleton — mirrors
+// ShopSettings / KrsConnectionSettings (id @default("singleton")). Stores the last-seen
+// KRS change WATERMARKS so the 2-second realtime poller (POST /api/krs/rt-poll) can
+// cheaply detect "did anything move since last cycle?" with a single 4-aggregate probe.
+//
+// VARIANT NOTE: the plan (krs-realtime-inbound_PLAN_16-07-26.md) originally called this
+// `KrsCtCursor` and stored a single SQL Server Change-Tracking version. The owner's
+// 16-07-26 VARIANT SWITCH replaced Change Tracking with a vendor-free WATERMARK detector
+// (references/krs-watermark-discovery_16-07-26.md), so this cursor stores the four
+// observed watermarks instead of a CT version. Hence the rename to KrsWatermarkCursor.
+//
+// The watermarks come from `dbo.InventoryFlowHdr` (TransactionNo running number +
+// EntryDate + ApprovedDate — the three signals that a stock movement/approval happened)
+// and `dbo.InventoryItem` (EntryDate — a new product master row). A cursor value is
+// advanced ONLY after a poll cycle fully applies (crash-safe replay: re-processing the
+// same docs is idempotent because the reconcile re-reads scoped sp_Onhand truth, it does
+// not blindly re-apply deltas).
+model KrsWatermarkCursor {
+  id              String    @id @default("singleton")
+  lastTxn         Int       @default(0) // last-seen MAX(InventoryFlowHdr.TransactionNo)
+  lastEntryAt     DateTime?             // last-seen MAX(InventoryFlowHdr.EntryDate)
+  lastApprovedAt  DateTime?             // last-seen MAX(InventoryFlowHdr.ApprovedDate)
+  lastItemEntryAt DateTime?             // last-seen MAX(InventoryItem.EntryDate)
+  lastCycleAt     DateTime?             // wall-clock time the last cycle that MOVED stock completed
+  updatedAt       DateTime  @updatedAt
+}
+
 // Warehouse master (Branch/Warehouse program, Phase 1). Mirrors the KRS
 // `dbo.Warehouse` table, pulled into POS the SAME way products are pulled
 // (src/lib/krs/warehouses.ts → importWarehouses.ts → POST /api/krs/pull-warehouses).

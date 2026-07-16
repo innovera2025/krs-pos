@@ -118,6 +118,51 @@ services:
           sleep "$${KRS_DISPATCH_INTERVAL_SECONDS}"
         done
 
+  # KRS REALTIME inbound poll scheduler (krs-realtime-inbound P1, watermark variant). Twin
+  # of krs-cron / krs-dispatch-cron, but it drives the ~2s realtime stock sync (POST
+  # /api/krs/rt-poll) instead of the ≤60s full reconcile or the outbound drain. Same design:
+  # a plain unprivileged sh curl+sleep loop, NOT a cron daemon (curlimages/curl runs as a
+  # non-root user; busybox crond needs root). Interval = KRS_RT_POLL_INTERVAL_SECONDS
+  # (default 2 = every 2 seconds — the realtime latency target).
+  #
+  # The endpoint is the real safety gate: bearer-authenticated (KRS_RT_POLL_SECRET), opt-in
+  # (KRS_RT_POLL_ENABLED — returns 422 when off, so NO stock changes and the loop just logs
+  # the HTTP status), single-run-locked (shared lock with the safety-net sweep), and
+  # fail-open. The 2s hot path is one KRS probe + zero DB writes when nothing moved. If
+  # KRS_RT_POLL_SECRET is unset the endpoint returns 503 and nothing happens — the sidecar
+  # just logs the HTTP status. NEVER bake the secret into the image: it comes from the
+  # git-ignored .env at runtime, and only the HTTP status (not the secret or response body)
+  # is logged.
+  krs-rt-poll:
+    image: curlimages/curl:latest
+    container_name: krs-pos-rt-poll
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      # Bearer secret for the rt-poll endpoint (from the git-ignored .env). Sent as
+      # `Authorization: Bearer <value>`. NEVER committed; NEVER logged by the app.
+      KRS_RT_POLL_SECRET: ${KRS_RT_POLL_SECRET:-}
+      # Poll interval in SECONDS. Default 2 (every 2 seconds — realtime target).
+      KRS_RT_POLL_INTERVAL_SECONDS: ${KRS_RT_POLL_INTERVAL_SECONDS:-2}
+    # Poll loop: every interval, POST the internal rt-poll endpoint (the app probes the KRS
+    # watermarks and reconciles only what changed, idempotently). Only the HTTP status is
+    # logged — never the secret or response body. No `set -e`: a transient curl failure must
+    # not kill the loop.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "krs-rt-poll: polling http://app:3000/api/krs/rt-poll every $${KRS_RT_POLL_INTERVAL_SECONDS}s"
+        while true; do
+          curl -s -o /dev/null -w "krs-rt-poll: HTTP %{http_code}\n" -X POST \
+            -H "Authorization: Bearer $${KRS_RT_POLL_SECRET}" \
+            -H "Content-Type: application/json" -d '{}' \
+            http://app:3000/api/krs/rt-poll || echo "krs-rt-poll: request failed"
+          sleep "$${KRS_RT_POLL_INTERVAL_SECONDS}"
+        done
+
 volumes:
   caddy_data:
   caddy_config:

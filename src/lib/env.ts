@@ -133,6 +133,28 @@ const EnvSchema = z.object({
     .max(20, "KRS_AUTO_SYNC_WAREHOUSE must be at most 20 characters")
     .optional(),
 
+  // --- KRS REALTIME inbound poll (krs-realtime-inbound P1, watermark variant). Two knobs
+  // for the ~2s realtime stock-sync endpoint POST /api/krs/rt-poll. ALL OPTIONAL at boot
+  // (a deploy that never enables realtime sync, and CI/e2e, must still boot). SHAPE is
+  // validated when present; the operational gates (missing secret → 503, disabled → 422)
+  // are enforced at the endpoint, not here. (KRS_RT_POLL_INTERVAL_SECONDS is a sidecar-only
+  // knob — read by the compose sidecar's sleep loop, NOT by the app — so it is intentionally
+  // NOT declared here, mirroring KRS_AUTO_SYNC_INTERVAL_SECONDS / KRS_DISPATCH_INTERVAL_SECONDS.)
+  //
+  // KRS_RT_POLL_SECRET — the shared bearer secret the rt-poll sidecar sends as
+  // `Authorization: Bearer <value>`. Min 32 chars when present (high-entropy:
+  // openssl rand -hex 32). When unset, the endpoint returns 503. NEVER logged or returned.
+  // Generated the SAME way as KRS_SYNC_TRIGGER_SECRET / KRS_DISPATCH_SECRET.
+  KRS_RT_POLL_SECRET: z
+    .string()
+    .min(32, "KRS_RT_POLL_SECRET must be at least 32 characters")
+    .optional(),
+  // KRS_RT_POLL_ENABLED — kill switch. The rt-poll endpoint runs ONLY when this is exactly
+  // "true"; any other value (including the default) returns 422. Opt-in by design (mirrors
+  // KRS_AUTO_SYNC_ENABLED) — this is the highest-risk stock path, so it defaults OFF and is
+  // flipped to "true" by the OWNER only after a dry-run proves the reconcile engine on prod.
+  KRS_RT_POLL_ENABLED: z.enum(["true", "false"]).default("false"),
+
   // --- KRS outbound write-back (krs-sync P2 — POS → KRS cash-sale outbox/dispatcher).
   // ALL OPTIONAL at boot (a deploy that never enables outbound, and CI/e2e, must still
   // boot). The feature is OFF by default; the SyncJob outbox row is still enqueued at
@@ -250,6 +272,13 @@ function loadEnv(): z.infer<typeof EnvSchema> {
       KRS_AUTO_SYNC_ENABLED:
         process.env.KRS_AUTO_SYNC_ENABLED === "true" ? "true" : "false",
       KRS_AUTO_SYNC_WAREHOUSE: process.env.KRS_AUTO_SYNC_WAREHOUSE,
+      // KRS realtime poll knobs (krs-realtime-inbound P1) — passed through unvalidated
+      // during the build phase (the rt-poll endpoint never runs at build time); real shape
+      // validation + the endpoint gates apply at runtime. The enum normalizes to the
+      // "true"/"false" string so the build object matches the parsed type exactly.
+      KRS_RT_POLL_SECRET: process.env.KRS_RT_POLL_SECRET,
+      KRS_RT_POLL_ENABLED:
+        process.env.KRS_RT_POLL_ENABLED === "true" ? "true" : "false",
       // KRS outbound write-back knobs (krs-sync P2) — passed through unvalidated
       // during the build phase (the dispatcher/checkout outbox never runs at build
       // time); real shape validation + the endpoint/dispatcher gates apply at
