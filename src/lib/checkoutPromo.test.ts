@@ -117,6 +117,7 @@ function buildSalePayload(
   return {
     orderNumber: "POS-20260714-0001",
     createdAt: new Date().toISOString(),
+    paymentType: "CASH",
     total: satang(totals.totalSatang),
     subtotal: satang(totals.subtotalSatang),
     tax: satang(totals.vatSatang),

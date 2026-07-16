@@ -914,6 +914,8 @@ export async function POST(req: Request) {
         tax: taxBaht,
         discount: discountBaht,
         amountPaid: amountPaidBaht,
+        // Primary payment method → SalesInvoiceHdr.Receipt_Type (vendor 16-07-26).
+        paymentType: primaryMethod,
         cashierId,
         cashierName: created.cashier?.name ?? "",
         customerId: created.customer?.id ?? null,

@@ -587,6 +587,17 @@ export async function writeKrsSale(
       .input("BranchCode", sql.NVarChar, payload.branchCode)
       .input("BranchName", sql.NVarChar, payload.branchName)
       .input("EntryBy", sql.NVarChar, payload.cashierName)
+      // Vendor request 16-07-26: cash-sale INSERT must also carry Receipt_Type + PosBillNo.
+      // PosBillNo = the POS bill number (nvarchar(30) on the KRS side — truncate defensively).
+      // Receipt_Type (tinyint) = payment-method code (1=เงินสด 2=โอน 4=บัตร …) mapped from
+      // the bill's primary payment method via RECEIPT_TYPE_BY_PAYMENT; unknown/legacy
+      // payloads default to เงินสด (1).
+      .input(
+        "ReceiptType",
+        sql.TinyInt,
+        KRS_WRITE_CONFIG.RECEIPT_TYPE_BY_PAYMENT[payload.paymentType] ?? 1
+      )
+      .input("PosBillNo", sql.NVarChar(30), payload.orderNumber.slice(0, 30))
       .query(
         `INSERT INTO dbo.SalesInvoiceHdr
            (TransactionNo, InvoiceType, SaleType, ItemType, TransactionTypeI, TransactionTypeT,
@@ -594,14 +605,14 @@ export async function writeKrsSale(
             Address, DeliveryAddress, DueDate, IsVAT, IsClosed, IsPaid, Currency, ExchangeRate,
             AccountsDescription, TotalAmount, SubTotalAmnt, DepositAmount, VATForValue, VATPercent,
             VATAmount, AmountDue, AmountDueBht, TotalDR, CashValue, TotalCR, BranchCode, BranchName,
-            EntryBy, EntryDate)
+            EntryBy, EntryDate, Receipt_Type, PosBillNo)
          VALUES
            (@TransactionNo, @InvoiceType, @SaleType, @ItemType, @TransactionTypeI, @TransactionTypeT,
             @CompanyCode, @VoucherNo, @VoucherDate, @DocuType, @CustOrSuppCode, @CustOrSuppName,
             @Address, @DeliveryAddress, @DueDate, @IsVAT, @IsClosed, @IsPaid, @Currency, @ExchangeRate,
             @AccountsDescription, @TotalAmount, @SubTotalAmnt, @DepositAmount, @VATForValue, @VATPercent,
             @VATAmount, @AmountDue, @AmountDueBht, @TotalDR, @CashValue, @TotalCR, @BranchCode, @BranchName,
-            @EntryBy, GETDATE());`
+            @EntryBy, GETDATE(), @ReceiptType, @PosBillNo);`
       );
 
     // ── Step 5: INSERT SalesInvoiceDtl (1 row per line, §6 column subset) ──

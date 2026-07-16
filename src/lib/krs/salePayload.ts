@@ -67,6 +67,10 @@ export type SalePayload = {
   billPromotionName: string | null;
   /** Order.amountPaid as a 2dp Decimal string → CashValue. */
   amountPaid: string;
+  /** Order.paymentType (primary method, e.g. "CASH"/"TRANSFER"/"CARD") →
+   *  SalesInvoiceHdr.Receipt_Type via RECEIPT_TYPE_BY_PAYMENT (vendor 16-07-26).
+   *  Parsed LENIENTLY: legacy snapshots without it default to "CASH". */
+  paymentType: string;
   /** User.id of the cashier (SalePerson). */
   cashierId: string;
   /** User.name of the cashier (SaleName / EntryBy), or "" when unknown. */
@@ -183,6 +187,12 @@ export function parseSalePayload(value: unknown): SalePayload {
     billPromotionName:
       typeof v.billPromotionName === "string" ? v.billPromotionName : null,
     amountPaid: str("amountPaid"),
+    // Lenient (legacy in-flight snapshots predate the field): default the primary
+    // payment method to CASH — matching the pre-16-07 cash-sale-only envelope.
+    paymentType:
+      typeof v.paymentType === "string" && v.paymentType.length > 0
+        ? v.paymentType
+        : "CASH",
     cashierId: str("cashierId"),
     cashierName: typeof v.cashierName === "string" ? v.cashierName : "",
     customerId: nullableStr("customerId"),

@@ -29,6 +29,20 @@ export const TODO_FROM_VENDOR = "TODO_FROM_VENDOR" as const;
 // (stock-cut) constants + the per-product unit source remain TODO_FROM_VENDOR (the
 // xlsx sample did not include the InventoryFlow rows).
 export const KRS_WRITE_CONFIG = {
+  // === SalesInvoiceHdr.Receipt_Type codes (vendor, 16-07-26) ===
+  // 1=เงินสด, 2=เงินโอน, 3=เช็ค, 4=บัตรเครดิต, 5=ไทยช่วยไทย. Mapped from the POS
+  // Order.paymentType (the bill's PRIMARY method — cash wins a split, else the first
+  // line's method). QR PromptPay + e-wallet are posted as โอน (2) and OTHER falls back
+  // to เงินสด (1) — one-line changes here if the vendor assigns dedicated codes later.
+  RECEIPT_TYPE_BY_PAYMENT: {
+    CASH: 1,
+    TRANSFER: 2,
+    QR: 2,
+    EWALLET: 2,
+    CARD: 4,
+    OTHER: 1,
+  } as Readonly<Record<string, number>>,
+
   // === RunningNumber keys (sheet3 of the sample) ===
   RUNNING_NUMBER_NAME_INVOICE: "SaleInvoiceTrNo", // CONFIRMED — Hdr TransactionNo seq
   RUNNING_NUMBER_NAME_RECEIPT: "Receipt", // CONFIRMED — TheJournal JnlCode seq
