@@ -972,9 +972,9 @@ export default function POSPage() {
   // Open payment. If an in-progress split was preserved (closed via X), reuse it;
   // otherwise seed a single cash line = total (action-open-payment). This keeps
   // the documented "X preserves payLines" behavior from being defeated by a reset
-  // on re-open. cashReceived/reference are likewise only cleared when seeding a
-  // fresh split, so a preserved split keeps its full state on re-open. (The
-  // success-confirm path is the one that fully resets all payment state.)
+  // on re-open. cashReceived/reference are always cleared on close now
+  // (closePayment, owner request), so a re-opened split starts with an empty
+  // cash-received either way. (The success-confirm path fully resets all state.)
   function openPayment() {
     if (cart.length === 0) {
       showToast("ตะกร้าว่าง · Cart is empty");
@@ -988,14 +988,22 @@ export default function POSPage() {
       setCashReceived("");
       setReference("");
     }
-    // else: a preserved split exists (closed via X) — leave payLines/cash/ref intact.
+    // else: a preserved split exists (closed via X) — leave payLines intact
+    // (cash/ref were already cleared on close by closePayment).
     setPayError("");
     setPayOpen(true);
   }
 
-  // Close (X): mark closed but PRESERVE payLines/cash/reference for re-open.
+  // Close (X / Escape / backdrop): mark closed and PRESERVE the split payLines for
+  // re-open, but CLEAR the cash-received + reference fields (owner request). A
+  // cashier often closes payment to add more items to a bigger bill; a stale
+  // "รับเงินสด" (e.g. ฿100 on what is now a larger total) must never linger on
+  // re-open. This is the single choke point for every non-confirm close, so all
+  // close paths are covered here. The confirm/success path resets independently.
   function closePayment() {
     setPayOpen(false);
+    setCashReceived("");
+    setReference("");
   }
 
   // Select a method: applies to the LAST payment line — the one just added via
