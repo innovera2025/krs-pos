@@ -124,6 +124,27 @@ async function requeuePending(jobId: string): Promise<void> {
   });
 }
 
+/** How long a DISCOUNT_HELD bill steps aside before being re-checked. Held bills MUST
+ *  NOT stay immediately eligible: the claim query is `ORDER BY createdAt ASC LIMIT 10`,
+ *  so instantly-requeued held bills monopolize every batch and STARVE the clean bills
+ *  behind them (16-07-26 incident: zero-discount sales never reached KRS because the
+ *  10 oldest held bills were re-claimed on every run). 5 min keeps the queue flowing
+ *  while the flag is off and bounds the post-flag-flip drain lag to ≤5 min. */
+const DISCOUNT_HOLD_RECHECK_MS = 5 * 60_000;
+
+/** Re-queue a DISCOUNT_HELD job attempt-free but with a recheck delay so it cannot
+ *  block the head of the claim queue (see DISCOUNT_HOLD_RECHECK_MS). */
+async function requeueHeld(jobId: string): Promise<void> {
+  await prisma.syncJob.update({
+    where: { id: jobId },
+    data: {
+      status: SyncJobStatus.PENDING,
+      lockedAt: null,
+      nextAttemptAt: new Date(Date.now() + DISCOUNT_HOLD_RECHECK_MS),
+    },
+  });
+}
+
 /** One sale line reduced to the two fields the snapshot-advance needs: the snapshot key
  *  (= POS sku = KRS ItemCode = SalePayloadItem.itemCode bound to InventoryFlowDtl.ItemCode)
  *  and the positive integer quantity that the write-back cut from KRS on-hand. */
@@ -472,7 +493,7 @@ export async function runDispatch(): Promise<DispatchResult> {
     // waits, PENDING, until the owner enables the verified net-out writeback. Zero-discount
     // bills pass straight through.
     if (env.KRS_DISCOUNT_WRITE_ENABLED !== "true" && salePayloadHasDiscount(payload)) {
-      await requeuePending(job.id);
+      await requeueHeld(job.id);
       result.skipped += 1;
       logger.info(
         { krsDispatch: { jobId: job.id, ref: job.ref, code: "DISCOUNT_HELD" } },
