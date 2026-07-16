@@ -104,6 +104,11 @@ services:
       KRS_OUTBOUND_ENABLED: ${KRS_OUTBOUND_ENABLED:-false}
       KRS_DISCOUNT_WRITE_ENABLED: ${KRS_DISCOUNT_WRITE_ENABLED:-false}
       KRS_DISPATCH_SECRET: ${KRS_DISPATCH_SECRET:-}
+      #  - KRS_RT_POLL_SECRET / KRS_RT_POLL_ENABLED: bearer secret + kill switch for the
+      #    realtime inbound poll endpoint (must match the krs-rt-poll sidecar in
+      #    docker-compose.prod.yml). Empty secret = 503; enabled != "true" = 422 no-op.
+      KRS_RT_POLL_SECRET: ${KRS_RT_POLL_SECRET:-}
+      KRS_RT_POLL_ENABLED: ${KRS_RT_POLL_ENABLED:-false}
       KRS_SANDBOX_HOST: ${KRS_SANDBOX_HOST:-}
       KRS_SANDBOX_PORT: ${KRS_SANDBOX_PORT:-1433}
       KRS_SANDBOX_DB: ${KRS_SANDBOX_DB:-}
