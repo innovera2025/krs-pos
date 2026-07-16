@@ -65,3 +65,13 @@ Outbound currently authenticates as `sa` (sysadmin). Request a dedicated least-p
 - **Enable is owner-run:** the auto-mode classifier hard-blocks the agent from flipping `KRS_OUTBOUND_ENABLED`/writing creds to prod — agent supplies the script, owner runs it on the box; agent does read-only verify.
 
 See `process/features/krs-sync/active/krs-writeback-idempotency_PLAN_27-06-26.md` (completed) and the `krs-sync-program-state` memory for the full design + history.
+
+## 9. Dispatcher must decrement PER-WAREHOUSE snapshots (added 16-07-26, realtime P1)
+
+The realtime P1 engine (`stockReconcile.ts`) made per-warehouse `KrsStockSnapshot` rows
+authoritative (`Product.stock` converges to Σ per-warehouse via deltas). The dispatcher's
+post-sale snapshot advance still only touches the GLOBAL sentinel row — now vestigial.
+**Before enabling outbound writeback (`KRS_OUTBOUND_ENABLED=true`), the dispatcher must also
+decrement the per-warehouse snapshot for the sale's warehouse**, else the first rt-poll/sweep
+after a synced sale will see the KRS-side cut as a "new" delta and double-count it.
+Flagged by the P1 execute report; blocked-on: none (code-only, do together with the flag-enable).
