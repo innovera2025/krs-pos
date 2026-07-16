@@ -99,6 +99,10 @@ export async function POST(req: Request) {
             updated: result.updated,
             barcodeSkipped: result.barcodeSkipped,
             categories: result.categories,
+            // Ghost-reconciliation (17-07-26 incident) — vanished KRS items
+            // auto-deactivated this pull + barcodes freed.
+            deactivated: result.deactivated,
+            freedBarcodes: result.freedBarcodes,
           },
         },
         "KRS pull-products completed"
@@ -109,6 +113,10 @@ export async function POST(req: Request) {
         updated: result.updated,
         barcodeSkipped: result.barcodeSkipped,
         categories: result.categories,
+        // ADDITIVE — existing fields above are unchanged; these expose the
+        // ghost-reconciliation outcome to the admin pull UI.
+        deactivated: result.deactivated,
+        freedBarcodes: result.freedBarcodes,
         total: records.length,
       });
     } catch (err) {

@@ -276,6 +276,17 @@ model Product {
   barcode     String?     @unique
   imageUrl    String?
   isActive    Boolean     @default(true)
+  // Ghost-product reconciliation (17-07-26 incident). true = this row is owned/
+  // synced by the KRS product import (importKrsProducts) and is therefore ELIGIBLE
+  // for automatic deactivation when its sku disappears from the KRS product master
+  // (a DELETED KRS ItemCode — the "ghost" the 17-07-26 incident left behind).
+  // false = manually created in the POS UI (POST /api/products) and NEVER
+  // auto-deactivated. NO BACKFILL MIGRATION: the importer STAMPS this true on every
+  // create AND update, so within one import cycle (~1 min in prod) every KRS-fed row
+  // converges to true with ZERO risk to manual/seed rows. The reconciler ONLY ever
+  // acts on rows where krsManaged = true, which by construction have been seen in a
+  // KRS feed at least once post-deploy.
+  krsManaged  Boolean     @default(false)
   // Multi-branch-ready data model (domain-multi-branch-ready) — deferred from
   // Phase 1, added here. Single-branch deployments use the BR-01 default.
   branchId    String      @default("BR-01")

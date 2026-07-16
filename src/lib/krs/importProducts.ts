@@ -12,7 +12,9 @@
 
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { logger } from "@/lib/logger";
 import type { KrsProductRecord } from "./products";
+import { planKrsGhostReconcile } from "./ghostReconcile";
 
 /** Outcome of an import run — drives the route response + the script's stdout. */
 export type ImportProductsResult = {
@@ -26,6 +28,15 @@ export type ImportProductsResult = {
   barcodeSkipped: number;
   /** New POS Categories created from distinct KRS `ItemTypename` values. */
   categories: number;
+  /** Ghost-reconciliation (17-07-26 incident): krsManaged-and-active POS products
+   *  whose sku vanished from THIS KRS feed and were auto-deactivated (isActive=false,
+   *  barcode freed). 0 when the reconcile pass skipped (fail-open) or found none.
+   *  ADDITIVE — existing consumers (autoSync `.created`, rt-poll `.created`,
+   *  pull-products response) are unaffected. */
+  deactivated: number;
+  /** How many of the `deactivated` ghosts had a barcode that was freed to null (so
+   *  the live KRS item re-claims it on the next cycle — holder-wins seeding). */
+  freedBarcodes: number;
 };
 
 /**
@@ -206,6 +217,11 @@ export async function importKrsProducts(
         // Raw KRS image filename (null when unmapped/blank); served by
         // /api/products/image. stock is POS-owned going forward — NOT touched.
         imageUrl: rec.imageUrl,
+        // Ghost-reconciliation stamp (17-07-26 incident): every row FED by the KRS
+        // import is owned by KRS and thus eligible for auto-deactivation when it
+        // later vanishes. Stamping on UPDATE too means every existing KRS-fed row
+        // converges to krsManaged=true within one import cycle (no backfill needed).
+        krsManaged: true,
       },
       create: {
         sku: rec.sku,
@@ -216,6 +232,8 @@ export async function importKrsProducts(
         categoryId,
         imageUrl: rec.imageUrl,
         stock: 0,
+        // New KRS-fed rows are KRS-owned from birth (see the UPDATE branch note).
+        krsManaged: true,
       },
       select: { id: true },
     });
@@ -224,5 +242,96 @@ export async function importKrsProducts(
     else created += 1;
   }
 
-  return { created, updated, barcodeSkipped, categories };
+  // 4) Ghost-reconciliation pass (17-07-26 incident). The KRS master DELETES obsolete
+  //    ItemCodes; without this pass a deleted item lived on in POS as an active
+  //    "ghost" (142 found on 17-07-26), and a dead ghost holding a barcode BLOCKED
+  //    the live item's re-claim. We deactivate krsManaged-and-active POS products
+  //    whose sku is absent from THIS feed and free their barcodes.
+  //
+  //    ZERO-ERROR PRECONDITION (cleanup script GUARD 3): the upsert loop above throws
+  //    on the FIRST failed upsert (each `await` propagates; there is no per-record
+  //    error swallowing / counter), so REACHING this line already proves every upsert
+  //    succeeded — the "only reconcile when the import had zero errors" guard holds
+  //    STRUCTURALLY. If a KRS-fed row were only partially imported we would have
+  //    thrown before here and never deactivated anything.
+  const { deactivated, freedBarcodes } = await reconcileGhosts(records);
+
+  return { created, updated, barcodeSkipped, categories, deactivated, freedBarcodes };
+}
+
+/**
+ * Deactivate krsManaged POS products that VANISHED from the latest KRS feed (deleted
+ * KRS ItemCodes) and free their barcodes. Called ONLY after every upsert in the batch
+ * succeeded (see the zero-error precondition at the call site).
+ *
+ * Safety (mirrors scripts/krs-ghost-products-cleanup.cjs, verified on the 17-07-26
+ * incident):
+ *  - Reads ONLY the `krsManaged = true, isActive = true` universe — a MANUALLY created
+ *    POS product (krsManaged=false, the schema default) is NEVER considered, so a
+ *    shop-authored item can never be auto-deactivated.
+ *  - GUARD 1 (fail-open): if the feed returned < 60% of that universe it is treated as
+ *    partial and the whole pass is SKIPPED (a partial KRS read must never mass-
+ *    deactivate). Empty feed ⇒ always skipped.
+ *  - GUARD 2 (stock): only ZERO-STOCK ghosts are deactivated; a ghost still holding
+ *    stock is left ACTIVE and logged for manual review.
+ *  - The final updateMany re-asserts `krsManaged, isActive, stock: 0` in its WHERE as
+ *    a write-time backstop, and touches ONLY isActive + barcode — stock,
+ *    WarehouseStock, and KrsStockSnapshot are never modified.
+ */
+async function reconcileGhosts(
+  records: KrsProductRecord[]
+): Promise<{ deactivated: number; freedBarcodes: number }> {
+  // The candidate universe: rows OWNED by the KRS import that are still active. By
+  // construction (the stamp above) these have appeared in a KRS feed at least once.
+  const candidates = await prisma.product.findMany({
+    where: { krsManaged: true, isActive: true },
+    select: { id: true, sku: true, stock: true, barcode: true },
+  });
+
+  // Skus present in THIS feed (every record was upserted above → every sku is live).
+  const fetchedSkus = new Set(records.map((r) => r.sku));
+
+  const plan = planKrsGhostReconcile(candidates, fetchedSkus, records.length);
+
+  if (plan.skip) {
+    logger.warn(
+      {
+        krsGhostReconcile: {
+          skipped: "suspicious_fetch",
+          fetched: plan.fetchedCount,
+          candidates: plan.candidateCount,
+        },
+      },
+      "KRS ghost-reconcile SKIPPED — feed below 60% of krsManaged-active (fail-open)"
+    );
+    return { deactivated: 0, freedBarcodes: 0 };
+  }
+
+  // Stock-holding ghosts are anomalous (a vanished item should be zero-stock) — leave
+  // them ACTIVE and surface for manual review instead of silently deactivating.
+  if (plan.stockedGhosts.length > 0) {
+    logger.warn(
+      { krsGhostReconcile: { stockedGhosts: plan.stockedGhosts } },
+      "KRS ghost-reconcile — ghost(s) still hold stock; left ACTIVE for manual review"
+    );
+  }
+
+  if (plan.ghostIds.length === 0) {
+    return { deactivated: 0, freedBarcodes: 0 };
+  }
+
+  // Deactivate + free barcode. The WHERE re-asserts every guard (krsManaged, isActive,
+  // stock: 0) so a concurrent change between the read and this write cannot deactivate
+  // a row that no longer qualifies. Only isActive + barcode change — stock untouched.
+  const res = await prisma.product.updateMany({
+    where: { id: { in: plan.ghostIds }, krsManaged: true, isActive: true, stock: 0 },
+    data: { isActive: false, barcode: null },
+  });
+
+  logger.info(
+    { krsGhostReconcile: { deactivated: res.count, freedBarcodes: plan.freedBarcodes } },
+    "KRS ghost-reconcile — deactivated vanished KRS product(s) + freed barcode(s)"
+  );
+
+  return { deactivated: res.count, freedBarcodes: plan.freedBarcodes };
 }
