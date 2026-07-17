@@ -60,9 +60,9 @@ async function main() {
   };
 
   await q("1. Columns exist? (type/nullable/default)", `
-    SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE, COLUMN_DEFAULT
+    SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE, COLUMN_DEFAULT
     FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'SalesInvoiceHdr'
+    WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME IN ('SalesInvoiceHdr', 'InventoryFlowHdr')
       AND COLUMN_NAME IN ('Receipt_Type', 'PosBillNo');`);
   await q("2. Receipt_Type values in existing rows", `
     SELECT Receipt_Type, COUNT(*) AS n
