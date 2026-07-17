@@ -476,13 +476,27 @@ export async function reconcileStock(
     // Read the changed products' CURRENT stock back after the commit (a relative-delta
     // engine does not know the final value — and the read-back also captures any
     // concurrent checkout decrement, so screens converge on the true row value).
+    //
+    // Publish set = the UNION of (a) skus whose GLOBAL Product.stock moved (intDelta≠0)
+    // and (b) skus whose PER-WAREHOUSE qty moved this cycle (present in warehouseWrites),
+    // limited to skus that map to a POS product. Case (b) is the assigned-user fix
+    // (17-07-26): a per-warehouse qty can change while Σ (global) delta is 0 — those items
+    // appear in warehouseWrites ONLY and would otherwise never publish, so a
+    // warehouse-scoped screen stayed stale until a manual refetch. `stock` is always the
+    // read-back Product.stock (global); the `warehouse` breakdown lets a warehouse-assigned
+    // client pick its own slice (see useKrsEvents / patchStockBySku).
     try {
-      const changedIds = itemWrites
-        .filter((i) => i.intDelta !== 0 && i.productId !== null)
-        .map((i) => i.productId as string);
-      if (changedIds.length > 0) {
+      const publishSkus = new Set<string>();
+      for (const it of itemWrites) {
+        if (it.intDelta !== 0 && it.productId !== null) publishSkus.add(it.itemCode);
+      }
+      for (const w of warehouseWrites) {
+        if (productIdMap.has(w.itemCode)) publishSkus.add(w.itemCode);
+      }
+      if (publishSkus.size > 0) {
+        // Single read-back query (by sku — both sources are keyed by KRS itemCode = sku).
         const rows = await prisma.product.findMany({
-          where: { id: { in: changedIds } },
+          where: { sku: { in: Array.from(publishSkus) } },
           select: { sku: true, stock: true },
         });
         const whBySku = new Map<string, { code: string; qty: number }[]>();

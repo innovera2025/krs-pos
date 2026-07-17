@@ -15,6 +15,7 @@ import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
 import type { KrsProductRecord } from "./products";
 import { planKrsGhostReconcile } from "./ghostReconcile";
+import { publishKrsEvent } from "./events";
 
 /** Outcome of an import run — drives the route response + the script's stdout. */
 export type ImportProductsResult = {
@@ -37,6 +38,13 @@ export type ImportProductsResult = {
   /** How many of the `deactivated` ghosts had a barcode that was freed to null (so
    *  the live KRS item re-claims it on the next cycle — holder-wins seeding). */
   freedBarcodes: number;
+  /** Skus of EXISTING products whose grid-shown fields (price / name / isActive /
+   *  barcode / imageUrl / categoryId) actually changed this import — the set the
+   *  POS is told to refetch via a `product-update` SSE event (published from inside
+   *  this function). Pure creates are EXCLUDED (they surface through the `created`
+   *  path / rt-poll's new-products publish). ADDITIVE — existing consumers
+   *  (`.created`, `.updated`, the pull-products response) are unaffected. */
+  changedSkus: string[];
 };
 
 /**
@@ -173,6 +181,10 @@ export async function importKrsProducts(
   let created = 0;
   let updated = 0;
   let barcodeSkipped = 0;
+  // Skus of EXISTING products whose grid-shown fields actually changed this import.
+  // Drives the single `product-update` publish below (creates are excluded — they
+  // reach the POS via the new-products publish in the rt-poll route).
+  const changedSkus: string[] = [];
 
   // 3) Upsert each product by sku.
   for (const rec of records) {
@@ -200,10 +212,21 @@ export async function importKrsProducts(
     const price = toPriceDecimal(rec.price);
 
     // Detect create vs update for the counters. We pre-check by sku (the natural
-    // key) so we can report created/updated; the upsert is still atomic.
+    // key) so we can report created/updated; the upsert is still atomic. The select
+    // also pulls the grid-shown fields so we can detect a REAL change below and tell
+    // the POS to refetch (price/name/active/barcode/image/category edits otherwise
+    // reach the DB but never trigger a screen refresh).
     const existing = await prisma.product.findUnique({
       where: { sku: rec.sku },
-      select: { id: true },
+      select: {
+        id: true,
+        name: true,
+        price: true,
+        isActive: true,
+        barcode: true,
+        imageUrl: true,
+        categoryId: true,
+      },
     });
 
     await prisma.product.upsert({
@@ -238,8 +261,23 @@ export async function importKrsProducts(
       select: { id: true },
     });
 
-    if (existing) updated += 1;
-    else created += 1;
+    if (existing) {
+      updated += 1;
+      // Real-change detection on the grid-shown fields ONLY (compare the exact values
+      // the upsert wrote: resolved barcode/categoryId, the 2dp price Decimal). A pure
+      // touch (no field moved) is NOT reported, so an unchanged re-import publishes
+      // nothing. `price.equals` compares numeric value (no 2dp-formatting false hits).
+      const changed =
+        existing.name !== rec.name ||
+        !price.equals(existing.price) ||
+        existing.isActive !== rec.isActive ||
+        existing.barcode !== barcode ||
+        existing.imageUrl !== rec.imageUrl ||
+        existing.categoryId !== categoryId;
+      if (changed) changedSkus.push(rec.sku);
+    } else {
+      created += 1;
+    }
   }
 
   // 4) Ghost-reconciliation pass (17-07-26 incident). The KRS master DELETES obsolete
@@ -256,7 +294,30 @@ export async function importKrsProducts(
   //    thrown before here and never deactivated anything.
   const { deactivated, freedBarcodes } = await reconcileGhosts(records);
 
-  return { created, updated, barcodeSkipped, categories, deactivated, freedBarcodes };
+  // 5) SINGLE product-update publish (17-07-26 realtime polish). Both callers of
+  //    importKrsProducts — the 2s rt-poll AND the 60s auto-sync safety net — funnel
+  //    through here, so a price/name/active/barcode/image/category edit reaches every
+  //    open POS screen without a second publish site. The client refetches
+  //    /api/products WHOLESALE on any product-update (it ignores the sku list), so a
+  //    large batch is capped: > 200 changed → send `skus: []` ("refetch all") rather
+  //    than a huge payload. Best-effort: publishKrsEvent never throws (it swallows
+  //    per-subscriber errors), so this can never fail the import.
+  if (changedSkus.length > 0) {
+    publishKrsEvent({
+      type: "product-update",
+      skus: changedSkus.length > 200 ? [] : changedSkus,
+    });
+  }
+
+  return {
+    created,
+    updated,
+    barcodeSkipped,
+    categories,
+    deactivated,
+    freedBarcodes,
+    changedSkus,
+  };
 }
 
 /**

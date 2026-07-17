@@ -38,6 +38,7 @@ import {
 } from "@/components/promotions/promotionMeta";
 import { useKrsEvents } from "@/lib/useKrsEvents";
 import type { KrsStockUpdateItem } from "@/lib/krsEventTypes";
+import { useRole } from "@/components/RoleProvider";
 import { CategoryPanel, type CategoryChip } from "@/components/pos/CategoryPanel";
 import { ProductCard } from "@/components/pos/ProductCard";
 import { CartLine } from "@/components/pos/CartLine";
@@ -119,6 +120,11 @@ type LoadState = "loading" | "ready" | "error";
 
 export default function POSPage() {
   const { showToast } = useToast();
+  // The signed-in user's assigned KRS warehouse (null when unassigned). Read from the
+  // session via RoleProvider — the SAME source GET /api/products uses server-side to
+  // scope display stock. Consumed by the SSE stock patch so a live push resolves the
+  // user's per-warehouse qty instead of overwriting it with the global figure (Item B).
+  const { warehouseCode } = useRole();
 
   const [products, setProducts] = useState<Product[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
@@ -130,6 +136,12 @@ export default function POSPage() {
   const [activePromos, setActivePromos] = useState<ActivePromotion[]>([]);
 
   const [cart, setCart] = useState<CartItem[]>([]);
+  // Latest-cart ref (mirrors `cart` every render). Lets the referentially-stable
+  // `addToCart` useCallback read the CURRENT cart quantity for its stock clamp WITHOUT
+  // taking `cart` as a dep (which would defeat the React.memo'd ProductCard). Same
+  // "latest ref" pattern useKrsEvents uses for its handlers.
+  const cartRef = useRef<CartItem[]>(cart);
+  cartRef.current = cart;
   const [search, setSearch] = useState("");
   // Low-priority mirror of `search` used for the heavy grid filter only.
   // useDeferredValue lets React defer the (up to ~2020-card) grid re-render so the
@@ -302,23 +314,40 @@ export default function POSPage() {
   // skus' stock and RETURN THE SAME OBJECT for every untouched (and no-op) product so
   // the React.memo'd ProductCard re-renders only the cards that actually changed. If
   // nothing changed, return the previous array unchanged (no re-render at all).
-  // ⚠️ `item.stock` is the GLOBAL Product.stock; the warehouse-scoped display nuance
-  // for assigned users is documented in @/lib/useKrsEvents (eventual-consistency,
-  // never a checkout-correctness issue — a product-update refetch/navigation corrects it).
-  const patchStockBySku = useCallback((items: KrsStockUpdateItem[]) => {
-    if (items.length === 0) return;
-    const stockBySku = new Map(items.map((i) => [i.sku, i.stock]));
-    setProducts((prev) => {
-      let changed = false;
-      const next = prev.map((p) => {
-        const nextStock = stockBySku.get(p.sku);
-        if (nextStock === undefined || nextStock === p.stock) return p; // same ref
-        changed = true;
-        return { ...p, stock: nextStock };
+  //
+  // WAREHOUSE-AWARE (Item B): each item carries the GLOBAL `stock` plus an optional
+  // per-warehouse `warehouse` breakdown. We resolve the DISPLAY stock the same way GET
+  // /api/products does — an assigned user (warehouseCode set) whose warehouse appears in
+  // the breakdown gets THAT qty; everyone else (unassigned, or no breakdown row for their
+  // warehouse) falls back to the global `stock`. This stops a live push from overwriting
+  // a warehouse-scoped figure (e.g. 339) with the global one (e.g. 338 = warehouse − locally-
+  // sold-not-yet-synced). Depends on `warehouseCode`; useKrsEvents reads handlers via a ref
+  // so recreating this callback never reconnects the SSE stream.
+  const patchStockBySku = useCallback(
+    (items: KrsStockUpdateItem[]) => {
+      if (items.length === 0) return;
+      const displayBySku = new Map<string, number>();
+      for (const item of items) {
+        let display = item.stock;
+        if (warehouseCode !== null && item.warehouse) {
+          const row = item.warehouse.find((w) => w.code === warehouseCode);
+          if (row) display = row.qty;
+        }
+        displayBySku.set(item.sku, display);
+      }
+      setProducts((prev) => {
+        let changed = false;
+        const next = prev.map((p) => {
+          const nextStock = displayBySku.get(p.sku);
+          if (nextStock === undefined || nextStock === p.stock) return p; // same ref
+          changed = true;
+          return { ...p, stock: nextStock };
+        });
+        return changed ? next : prev;
       });
-      return changed ? next : prev;
-    });
-  }, []);
+    },
+    [warehouseCode]
+  );
 
   // Background product refetch for an SSE `product-update` (name/price/active/image
   // changed KRS-side). Deliberately does NOT flip loadState to "loading" (that would
@@ -595,10 +624,24 @@ export default function POSPage() {
   // every keystroke. setCart is a stable setter (no dep needed); showToast is a
   // stable useCallback from ToastProvider.
   const addToCart = useCallback((product: Product) => {
-    if (effectiveStock(product) === 0) return;
+    const stock = effectiveStock(product);
+    // Item A.1 — out of stock: never add, and tell the cashier why (the scan path
+    // reaches here too, where the card's disabled state does not apply).
+    if (stock <= 0) {
+      showToast(`สินค้าหมด ไม่สามารถขายได้ · ${product.name}`);
+      return;
+    }
+    // Item A.2 — can't exceed the displayed stock: read the CURRENT cart qty via the
+    // latest-cart ref (keeps this callback stable) and reject the increment with a
+    // clamp message. The server still guards authoritatively at checkout.
+    const existing = cartRef.current.find((i) => i.product.id === product.id);
+    if (existing && existing.quantity >= stock) {
+      showToast(`จำนวนไม่พอขาย · เหลือ ${stock} ชิ้น`);
+      return;
+    }
     setCart((prev) => {
-      const existing = prev.find((i) => i.product.id === product.id);
-      if (existing) {
+      const inCart = prev.find((i) => i.product.id === product.id);
+      if (inCart) {
         return prev.map((i) =>
           i.product.id === product.id ? { ...i, quantity: i.quantity + 1 } : i
         );
@@ -609,6 +652,19 @@ export default function POSPage() {
   }, [showToast]);
 
   function incLine(productId: string) {
+    // Item A.2 — clamp the cart's + button at the displayed stock. This is a plain
+    // (non-memoized) function, so reading `cart`/`products` directly is safe. Prefer the
+    // live grid product (SSE-patched, warehouse-scoped) over the cart's captured product
+    // so the ceiling reflects the freshest displayed stock.
+    const line = cart.find((i) => i.product.id === productId);
+    if (line) {
+      const live = products.find((p) => p.id === productId);
+      const stock = effectiveStock(live ?? line.product);
+      if (line.quantity >= stock) {
+        showToast(`จำนวนไม่พอขาย · เหลือ ${stock} ชิ้น`);
+        return;
+      }
+    }
     setCart((prev) =>
       prev.map((i) =>
         i.product.id === productId ? { ...i, quantity: i.quantity + 1 } : i

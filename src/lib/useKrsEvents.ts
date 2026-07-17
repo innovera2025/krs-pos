@@ -13,13 +13,16 @@ import type { KrsStockUpdateItem } from "@/lib/krsEventTypes";
  *   - `product-update`→ `onProductUpdate(skus)` — a rare full `/api/products` refetch.
  *   - `sync-status`   → ignored here (P3's admin status surface owns it).
  *
- * ⚠️ WAREHOUSE-SCOPING NOTE: `KrsStockUpdateItem.stock` is the GLOBAL `Product.stock`.
- * For a warehouse-ASSIGNED user, GET /api/products overrides display stock with that
- * warehouse's on-hand server-side, so patching by the global `stock` can briefly
- * diverge from the warehouse figure until the next `product-update` refetch /
- * navigation. That is an eventual-consistency display nuance (never a checkout-
- * correctness issue) flagged for the P1↔P2 wiring decision (publish per-warehouse-
- * resolved stock, or make the client warehouse-aware) — not resolved in this hook.
+ * WAREHOUSE-SCOPING (RESOLVED 17-07-26): `KrsStockUpdateItem.stock` is the GLOBAL
+ * `Product.stock`, but each item ALSO carries an optional per-warehouse `warehouse`
+ * breakdown (`{ code, qty }[]`) for the warehouses that moved this cycle. GET /api/products
+ * overrides display stock with the signed-in user's warehouse on-hand server-side, and the
+ * `/pos` patch handler (`patchStockBySku`) now MIRRORS that convention: a warehouse-ASSIGNED
+ * user patches from the breakdown row matching their `warehouseCode` when present, and an
+ * UNASSIGNED user (or an item with no breakdown for that warehouse) falls back to the global
+ * `stock`. This keeps a warehouse-scoped screen from flipping to the global figure on a live
+ * push (the previous off-by-one until the next refetch). Postgres + the mount fetch remain the
+ * authoritative fallback; a dropped frame is still only ever an eventual-consistency nuance.
  *
  * RECONNECT: EventSource auto-reconnects on its own, but we take EXPLICIT control so
  * the backoff is capped-exponential (1s → 30s) and a permanently-dead endpoint can't
