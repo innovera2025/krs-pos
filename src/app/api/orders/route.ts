@@ -178,12 +178,18 @@ type OrderRequestBody = {
   idempotencyKey?: string;
 };
 
-// The six valid tender methods (mirrors the PaymentType enum).
+// The valid tender methods (mirrors the PaymentType enum). This Set is the
+// authoritative accept-list for `isPaymentType` → 422 BAD_METHOD; the Zod schema
+// keeps `method` as a plain string on purpose (so it never shadows this coded
+// guard). CHEQUE + THAICHUAYTHAI are the live buttons (vendor 17-07-26); EWALLET +
+// OTHER stay accepted so a held/replayed pre-change cart still checks out.
 const VALID_METHODS = new Set<PaymentType>([
   PaymentType.CASH,
   PaymentType.CARD,
   PaymentType.QR,
   PaymentType.TRANSFER,
+  PaymentType.CHEQUE,
+  PaymentType.THAICHUAYTHAI,
   PaymentType.EWALLET,
   PaymentType.OTHER,
 ]);

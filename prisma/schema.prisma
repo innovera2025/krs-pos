@@ -434,8 +434,14 @@ enum PaymentType {
   CARD
   QR
   TRANSFER
+  // Retired as POS tender buttons (vendor 17-07-26) but KEPT here so historical rows
+  // that already stored these values continue to read/serialize correctly.
   EWALLET
   OTHER
+  // Added 17-07-26 so POS tender methods map 1:1 onto the KRS Receipt_Type codes
+  // (CHEQUE→3 เช็ค, THAICHUAYTHAI→5 ไทยช่วยไทย). Schema-additive — no value removed.
+  CHEQUE
+  THAICHUAYTHAI
 }
 
 model PaymentLine {

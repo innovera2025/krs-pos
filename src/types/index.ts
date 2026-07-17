@@ -115,14 +115,22 @@ export type CategorySlug =
 export type DiscountType = "amount" | "percent";
 
 /**
- * The six POS tender methods (mirrors the Prisma PaymentType enum). Lowercase
- * keys are the UI/state representation; they are upper-cased at the API boundary.
+ * The POS tender methods (mirrors the Prisma PaymentType enum). Lowercase keys are
+ * the UI/state representation; they are upper-cased at the API boundary
+ * (methodToEnum → CHEQUE / THAICHUAYTHAI / …).
+ *
+ * Vendor 17-07-26: `cheque` + `thaichuaythai` are the live tender buttons that map
+ * 1:1 onto the KRS Receipt_Type codes (เช็ค=3, ไทยช่วยไทย=5), replacing e-Wallet /
+ * อื่นๆ. `ewallet` / `other` are RETIRED as buttons but kept in the union so
+ * historical orders + any queued/replayed cart still type-check and render.
  */
 export type PayMethod =
   | "cash"
   | "transfer"
   | "qr"
   | "card"
+  | "cheque"
+  | "thaichuaythai"
   | "ewallet"
   | "other";
 

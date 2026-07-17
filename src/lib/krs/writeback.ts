@@ -723,15 +723,20 @@ export async function writeKrsSale(
       .input("Department", sql.NVarChar, cfg.INV_DEPARTMENT_NAME)
       .input("VoucherNo", sql.NVarChar, flowVoucherNo)
       .input("EntryBy", sql.NVarChar, payload.cashierName)
+      // Vendor request 17-07-26: the InventoryFlowHdr insert must ALSO carry the POS
+      // bill number (mirrors the SalesInvoiceHdr addition from 16-07-26). PosBillNo is
+      // nvarchar(30) on the KRS side → truncate defensively. Deploy is gated on the
+      // column existing KRS-side (verified separately); this is just the code path.
+      .input("PosBillNo", sql.NVarChar(30), payload.orderNumber.slice(0, 30))
       .query(
         `INSERT INTO dbo.InventoryFlowHdr
            (TransactionNo, IsStock, TransactionType, Approved, ApprovedBy, ApprovedDate,
             IsAssetForm, IsClosed, InOutDate, InOut, ReasonIndex, ReasonName, CompanyCode,
-            DeptCode, Department, VoucherNo, EntryBy, EntryDate)
+            DeptCode, Department, VoucherNo, EntryBy, EntryDate, PosBillNo)
          VALUES
            (@TransactionNo, @IsStock, @TransactionType, @Approved, @ApprovedBy, @ApprovedDate,
             @IsAssetForm, @IsClosed, @InOutDate, @InOut, @ReasonIndex, @ReasonName, @CompanyCode,
-            @DeptCode, @Department, @VoucherNo, @EntryBy, GETDATE());`
+            @DeptCode, @Department, @VoucherNo, @EntryBy, GETDATE(), @PosBillNo);`
       );
 
     // ── Step 7b: INSERT InventoryFlowDtl (1 row per line, §7 column subset) ──
