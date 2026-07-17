@@ -302,10 +302,14 @@ export async function importKrsProducts(
   //    large batch is capped: > 200 changed → send `skus: []` ("refetch all") rather
   //    than a huge payload. Best-effort: publishKrsEvent never throws (it swallows
   //    per-subscriber errors), so this can never fail the import.
-  if (changedSkus.length > 0) {
+  // Deactivated ghosts (KRS deletions) must ALSO wake open screens — a pure isolated
+  // deletion changes no fed record, so changedSkus alone would miss it and the item
+  // would linger on already-open grids until their next natural refetch (17-07-26
+  // realtime-deletion request). The client refetches wholesale, so skus: [] suffices.
+  if (changedSkus.length > 0 || deactivated > 0) {
     publishKrsEvent({
       type: "product-update",
-      skus: changedSkus.length > 200 ? [] : changedSkus,
+      skus: changedSkus.length > 200 || deactivated > 0 ? [] : changedSkus,
     });
   }
 

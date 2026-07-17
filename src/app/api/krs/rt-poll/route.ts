@@ -84,6 +84,7 @@ async function loadCursor(): Promise<WatermarkCursorState> {
     lastEntryAt: row.lastEntryAt,
     lastApprovedAt: row.lastApprovedAt,
     lastItemEntryAt: row.lastItemEntryAt,
+    lastItemCount: row.lastItemCount,
   };
 }
 
@@ -96,6 +97,7 @@ async function advanceCursor(cursor: WatermarkCursorState, probe: Watermarks): P
     lastEntryAt: next.lastEntryAt,
     lastApprovedAt: next.lastApprovedAt,
     lastItemEntryAt: next.lastItemEntryAt,
+    lastItemCount: next.lastItemCount,
     lastCycleAt: new Date(),
   };
   await prisma.krsWatermarkCursor.upsert({

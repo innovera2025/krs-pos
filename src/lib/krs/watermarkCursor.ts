@@ -16,15 +16,28 @@
 // InventoryItem.EntryDate (a NEW product master row). The stored cursor remembers the
 // last-observed value of each; a probe that reads a strictly-greater value on ANY of the
 // four means "something moved — fetch and reconcile."
+//
+// DELETION DETECTOR (added 17-07-26): the four MAX watermarks above can only ADVANCE, so a
+// pure DELETE of an InventoryItem row (a KRS master purge) moves NONE of them — it would
+// only ride the ≤60s full-reconcile sweep. But a delete DOES change COUNT(*) of the tiny
+// (~4k row) dbo.InventoryItem table, and that count is effectively free on the existing 2s
+// probe round-trip. So the probe also carries `itemCount`, and a change in that count IN
+// EITHER DIRECTION (a delete lowers it; a re-add or add+delete net raises it) is treated as
+// "item-master work needed" — making deletions realtime instead of sweep-latency. The count
+// baseline starts UNOBSERVED (-1); until the first cursor advance records a real count it is
+// not compared (deletions in that brief window still ride the ≤60s sweep).
 
-/** The four watermarks observed from a single KRS probe (the aggregate MAX values).
- *  `maxTxn` is the running document number (0 when the table is empty); the three dates
- *  are null when their column has no non-null value yet (e.g. no approvals so far). */
+/** The watermarks observed from a single KRS probe: the aggregate MAX values plus the
+ *  InventoryItem row COUNT (the deletion detector). `maxTxn` is the running document number
+ *  (0 when the table is empty); the three dates are null when their column has no non-null
+ *  value yet (e.g. no approvals so far). `itemCount` is COUNT(*) of dbo.InventoryItem (>= 0
+ *  in practice; a defensive/degenerate probe reports -1 = "not observed", ignored below). */
 export type Watermarks = {
   maxTxn: number;
   maxEntry: Date | null;
   maxApproved: Date | null;
   maxItemEntry: Date | null;
+  itemCount: number;
 };
 
 /** The persisted cursor state (mirrors the `KrsWatermarkCursor` singleton columns we
@@ -35,16 +48,24 @@ export type WatermarkCursorState = {
   lastEntryAt: Date | null;
   lastApprovedAt: Date | null;
   lastItemEntryAt: Date | null;
+  /** COUNT(*) of dbo.InventoryItem at the last applied cycle; -1 = not yet observed
+   *  (fresh field / pre-migration cursor). A negative value is never comparable, so the
+   *  deletion detector reports "no change" until a real count is recorded (see
+   *  `itemCountChanged`). */
+  lastItemCount: number;
 };
 
 /** The zero cursor for a first-ever run (no row yet, or a freshly-created default). All
  *  watermarks unset → the first probe will always look "advanced", and the caller treats
- *  a fresh cursor as a full-reconcile trigger (see `isFreshCursor`). */
+ *  a fresh cursor as a full-reconcile trigger (see `isFreshCursor`). `lastItemCount` starts
+ *  at -1 ("not yet observed") so the deletion detector stays quiet until the first advance
+ *  records a real count. */
 export const ZERO_CURSOR: WatermarkCursorState = {
   lastTxn: 0,
   lastEntryAt: null,
   lastApprovedAt: null,
   lastItemEntryAt: null,
+  lastItemCount: -1,
 };
 
 /** True when the cursor has never observed anything (first run / retention re-init).
@@ -69,10 +90,23 @@ function dateAdvanced(probe: Date | null, cursor: Date | null): boolean {
   return probe.getTime() > cursor.getTime();
 }
 
-/** True when ANY of the four watermarks advanced strictly past the stored cursor — i.e.
- *  a stock movement, an approval flip, or a new product/master row happened since the
- *  last successful cycle. This is the cheap gate that keeps the 2s hot path a no-op
- *  (probe-only, zero writes) when the shop is idle. */
+/** True when the InventoryItem row COUNT changed since the cursor last observed it — the
+ *  DELETION detector (a delete lowers COUNT but advances no MAX watermark). Detects a
+ *  change in EITHER direction (deletes lower it; a re-add / add+delete net raises it).
+ *  A negative value on EITHER side means "not yet observed" (fresh field / pre-migration
+ *  cursor, or a degenerate probe) and is NEVER comparable → reports false, so the count is
+ *  bootstrapped by the first cursor advance and deletions in that brief window still ride
+ *  the ≤60s full-reconcile safety net. */
+function itemCountChanged(cursor: WatermarkCursorState, probe: Watermarks): boolean {
+  if (cursor.lastItemCount < 0 || probe.itemCount < 0) return false;
+  return probe.itemCount !== cursor.lastItemCount;
+}
+
+/** True when ANY watermark advanced strictly past the stored cursor OR the InventoryItem
+ *  row count changed — i.e. a stock movement, an approval flip, a new product/master row,
+ *  or a product DELETION happened since the last successful cycle. This is the cheap gate
+ *  that keeps the 2s hot path a no-op (probe-only, zero writes) when the shop is idle: it
+ *  exits false ONLY when nothing moved AND the count is unchanged. */
 export function watermarksAdvanced(
   cursor: WatermarkCursorState,
   probe: Watermarks
@@ -81,17 +115,23 @@ export function watermarksAdvanced(
   if (dateAdvanced(probe.maxEntry, cursor.lastEntryAt)) return true;
   if (dateAdvanced(probe.maxApproved, cursor.lastApprovedAt)) return true;
   if (dateAdvanced(probe.maxItemEntry, cursor.lastItemEntryAt)) return true;
+  if (itemCountChanged(cursor, probe)) return true;
   return false;
 }
 
-/** True when specifically the InventoryItem.EntryDate watermark advanced — the signal
- *  that a NEW product-master row exists, so the route should run the (existing) product
- *  import before reconciling stock (a brand-new item needs its POS Product row first). */
+/** True when item-master work is needed: the InventoryItem.EntryDate watermark advanced
+ *  (a NEW product-master row — adds/possible edits) OR the InventoryItem row count changed
+ *  (a DELETION, or an add+delete net not covered by EntryDate). Either way the route runs
+ *  the (existing) product import, whose ghost-reconcile pass upserts new items AND
+ *  deactivates vanished ones + frees their barcodes, before stock is reconciled. */
 export function itemMasterAdvanced(
   cursor: WatermarkCursorState,
   probe: Watermarks
 ): boolean {
-  return dateAdvanced(probe.maxItemEntry, cursor.lastItemEntryAt);
+  return (
+    dateAdvanced(probe.maxItemEntry, cursor.lastItemEntryAt) ||
+    itemCountChanged(cursor, probe)
+  );
 }
 
 /** The larger of two nullable dates (null = lowest). Used so a cursor advance never
@@ -121,6 +161,11 @@ export function nextCursorFromProbe(
     lastEntryAt: maxDate(cursor.lastEntryAt, probe.maxEntry),
     lastApprovedAt: maxDate(cursor.lastApprovedAt, probe.maxApproved),
     lastItemEntryAt: maxDate(cursor.lastItemEntryAt, probe.maxItemEntry),
+    // Carry the OBSERVED row count verbatim — unlike the MAX watermarks there is NO
+    // max()/monotonic guard, because a delete legitimately LOWERS the count and we must
+    // track the exact current value to detect the NEXT change. A degenerate probe (<0)
+    // is ignored so it never poisons the baseline to an un-comparable sentinel.
+    lastItemCount: probe.itemCount < 0 ? cursor.lastItemCount : probe.itemCount,
   };
 }
 

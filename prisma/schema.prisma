@@ -620,6 +620,7 @@ model KrsWatermarkCursor {
   lastEntryAt     DateTime?             // last-seen MAX(InventoryFlowHdr.EntryDate)
   lastApprovedAt  DateTime?             // last-seen MAX(InventoryFlowHdr.ApprovedDate)
   lastItemEntryAt DateTime?             // last-seen MAX(InventoryItem.EntryDate)
+  lastItemCount   Int       @default(-1) // -1 = not yet observed; COUNT(*) of dbo.InventoryItem at last cycle — deletion detector (a delete advances no MAX watermark but changes this count)
   lastCycleAt     DateTime?             // wall-clock time the last cycle that MOVED stock completed
   updatedAt       DateTime  @updatedAt
 }

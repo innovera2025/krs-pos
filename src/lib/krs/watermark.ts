@@ -159,10 +159,12 @@ function cleanCode(v: unknown): string | null {
 }
 
 /**
- * The single cheap probe (one round-trip, four scalar aggregates over the tiny flow/item
- * tables) — the every-2s hot path. Returns the current MAX watermarks; the caller
- * compares them to the stored cursor (via `watermarksAdvanced`) and does nothing further
- * when nothing moved. See references/krs-watermark-discovery_16-07-26.md.
+ * The single cheap probe (one round-trip, FIVE scalar aggregates over the tiny flow/item
+ * tables) — the every-2s hot path. Returns the current MAX watermarks PLUS COUNT(*) of
+ * dbo.InventoryItem (the deletion detector: a pure delete advances no MAX watermark but
+ * changes this count; the table is ~4k rows so the count is effectively free on the same
+ * round-trip). The caller compares them to the stored cursor (via `watermarksAdvanced`)
+ * and does nothing further when nothing moved. See references/krs-watermark-discovery_16-07-26.md.
  */
 export async function probeWatermarks(pool: sql.ConnectionPool): Promise<Watermarks> {
   try {
@@ -171,24 +173,33 @@ export async function probeWatermarks(pool: sql.ConnectionPool): Promise<Waterma
       maxEntry: unknown;
       maxApproved: unknown;
       maxItemEntry: unknown;
+      itemCount: unknown;
     }>(
       `SELECT
          (SELECT MAX(TransactionNo) FROM dbo.InventoryFlowHdr) AS maxTxn,
          (SELECT MAX(EntryDate)     FROM dbo.InventoryFlowHdr) AS maxEntry,
          (SELECT MAX(ApprovedDate)  FROM dbo.InventoryFlowHdr) AS maxApproved,
-         (SELECT MAX(EntryDate)     FROM dbo.InventoryItem)    AS maxItemEntry;`
+         (SELECT MAX(EntryDate)     FROM dbo.InventoryItem)    AS maxItemEntry,
+         (SELECT COUNT(*)           FROM dbo.InventoryItem)    AS itemCount;`
     );
     const row = result.recordset[0] ?? {
       maxTxn: 0,
       maxEntry: null,
       maxApproved: null,
       maxItemEntry: null,
+      // Degenerate (a scalar-aggregate SELECT always returns one row, so this branch is
+      // unreachable) — -1 = "not observed", which the pure detector ignores rather than
+      // mistaking for a mass deletion.
+      itemCount: -1,
     };
     return {
       maxTxn: toIntOrZero(row.maxTxn),
       maxEntry: toDateOrNull(row.maxEntry),
       maxApproved: toDateOrNull(row.maxApproved),
       maxItemEntry: toDateOrNull(row.maxItemEntry),
+      // COUNT(*) is a finite non-negative integer in practice; toIntOrZero preserves the
+      // -1 sentinel from the degenerate fallback above (Math.trunc(-1) === -1).
+      itemCount: toIntOrZero(row.itemCount),
     };
   } catch (e) {
     throwSanitizedQuery(e, "watermark probe");
