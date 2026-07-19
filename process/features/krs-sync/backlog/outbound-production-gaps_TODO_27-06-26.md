@@ -66,12 +66,20 @@ Outbound currently authenticates as `sa` (sysadmin). Request a dedicated least-p
 
 See `process/features/krs-sync/active/krs-writeback-idempotency_PLAN_27-06-26.md` (completed) and the `krs-sync-program-state` memory for the full design + history.
 
-## 9. Dispatcher must decrement PER-WAREHOUSE snapshots (added 16-07-26, realtime P1)
+## 9. Dispatcher must decrement PER-WAREHOUSE snapshots (added 16-07-26, realtime P1) — ✅ RESOLVED 19-07-26
 
 The realtime P1 engine (`stockReconcile.ts`) made per-warehouse `KrsStockSnapshot` rows
 authoritative (`Product.stock` converges to Σ per-warehouse via deltas). The dispatcher's
-post-sale snapshot advance still only touches the GLOBAL sentinel row — now vestigial.
+post-sale snapshot advance still only touched the GLOBAL sentinel row — now vestigial.
 **Before enabling outbound writeback (`KRS_OUTBOUND_ENABLED=true`), the dispatcher must also
 decrement the per-warehouse snapshot for the sale's warehouse**, else the first rt-poll/sweep
 after a synced sale will see the KRS-side cut as a "new" delta and double-count it.
 Flagged by the P1 execute report; blocked-on: none (code-only, do together with the flag-enable).
+
+**✅ RESOLVED 19-07-26** by krs-void-writeback Phase 1
+(`process/features/krs-sync/active/krs-void-writeback_PLAN_19-07-26.md`, Touchpoint 1):
+the dispatcher's post-sale advance (`applySnapshotDelta` in `src/lib/krs/dispatcher.ts`, formerly
+`advanceGlobalSnapshotForSale`) now decrements BOTH the per-warehouse row (`SalePayload.warehouseCode`)
+AND the global sentinel, inside the same `snapshotAdvancedAt`-guarded exactly-once transaction, so the
+next reconcile sweep computes delta=0 for the cut. Already-drifted `Product.stock` is trued up by the
+new Postgres-only `scripts/krs-stock-trueup.cjs` (dry-run report + guarded `--apply`).

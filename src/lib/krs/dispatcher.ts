@@ -151,57 +151,90 @@ async function requeueHeld(jobId: string): Promise<void> {
 type SnapshotAdvanceLine = { itemCode: string; qty: number };
 
 /**
- * Advance the GLOBAL stock snapshot (warehouseCode = "") to reflect this sale's KRS
- * stock-cut: for each line, decrement KrsStockSnapshot.lastQty by the sold qty. This
- * "burns" the write-back's on-hand drop into the same baseline the inbound auto-sync
- * delta engine reads, so the next auto-sync computes delta=0 for the cut (instead of
- * seeing the KRS on-hand drop as a fresh negative delta and re-applying it to a
- * Product.stock that checkout ALREADY decremented → double-count).
+ * Advance BOTH the PER-WAREHOUSE KrsStockSnapshot row AND the GLOBAL sentinel row
+ * (warehouseCode = "") for each line, in `direction`, to reflect this sale's KRS
+ * stock-cut. This "burns" the write-back's on-hand drop into the SAME baseline the
+ * realtime reconcile engine reads.
  *
- * Keyed on (itemCode, warehouseCode="") — the global all-warehouse sentinel rows that
- * sync-stock baselines and autoSync's global pass own. An item that was never baselined
- * (count === 0) is logged and SKIPPED: we do NOT create a 0 row, because a 0 baseline
- * would make the next auto-sync treat the full KRS on-hand as a fresh positive delta.
+ * WHY BOTH ROWS (the fix): stockReconcile.ts STEP 7 computes its per-item delta from the
+ * PER-WAREHOUSE snapshot row only (`prior = lastQty` keyed `${itemCode}\u0000${warehouseCode}`,
+ * stockReconcile.ts:350-370) — the global sentinel is legacy/global-pass display. Before
+ * this fix only the sentinel was decremented, so the next ≤60s reconcile sweep saw the
+ * KRS-side cut as a brand-new negative delta on the PER-WAREHOUSE row and re-applied it on
+ * top of a Product.stock that checkout ALREADY decremented, DOUBLE-COUNTING it (the shop's
+ * "ERP 339 vs POS 338"; backlog outbound-production-gaps_TODO_27-06-26.md §9). Decrementing
+ * the per-warehouse row too makes that sweep compute delta = 0 for the cut.
+ *
+ * `direction` is "decrement" for a SALE cut. (An "increment" — a KRS-side restore — is
+ * reserved for a future cancel/void path; no caller passes it today.)
+ *
+ * An item with no existing snapshot row for a key (count === 0) is logged and SKIPPED for
+ * THAT key — it NEVER creates a 0 row, because a fabricated 0 baseline would make the next
+ * reconcile treat the full KRS on-hand as a fresh delta in the wrong direction (bootstrap
+ * self-squares once the first reconcile sweep writes the real baseline).
  *
  * Runs INSIDE the caller's Prisma `$transaction(tx)` so the SYNCED flip and the snapshot
- * decrement commit atomically together (the exactly-once guard lives on the SyncJob row).
+ * delta commit atomically together (the exactly-once guard lives on the SyncJob row).
  */
-async function advanceGlobalSnapshotForSale(
+async function applySnapshotDelta(
   tx: Prisma.TransactionClient,
-  lines: SnapshotAdvanceLine[]
+  lines: SnapshotAdvanceLine[],
+  warehouseCode: string,
+  direction: "decrement" | "increment"
 ): Promise<void> {
   for (const line of lines) {
-    const res = await tx.krsStockSnapshot.updateMany({
+    const delta =
+      direction === "decrement"
+        ? { decrement: line.qty }
+        : { increment: line.qty };
+    // GLOBAL sentinel row (warehouseCode = "") — legacy/global-pass baseline; kept in sync.
+    const globalRes = await tx.krsStockSnapshot.updateMany({
       where: { itemCode: line.itemCode, warehouseCode: "" },
-      data: { lastQty: { decrement: line.qty } },
+      data: { lastQty: delta },
     });
-    if (res.count === 0) {
+    if (globalRes.count === 0) {
       logger.warn(
-        { krsDispatch: { itemCode: line.itemCode } },
+        { krsDispatch: { itemCode: line.itemCode, key: "global" } },
         "KRS dispatch: snapshot-advance skipped — item not baselined in global snapshot (no 0 row created)"
+      );
+    }
+    // PER-WAREHOUSE row — the one stockReconcile.ts STEP 7 actually reads for its delta.
+    const whRes = await tx.krsStockSnapshot.updateMany({
+      where: { itemCode: line.itemCode, warehouseCode },
+      data: { lastQty: delta },
+    });
+    if (whRes.count === 0) {
+      logger.warn(
+        { krsDispatch: { itemCode: line.itemCode, key: "warehouse", warehouseCode } },
+        "KRS dispatch: snapshot-advance skipped — item not baselined in per-warehouse snapshot (no 0 row created)"
       );
     }
   }
 }
 
 /**
- * Mark a job SYNCED after a successful KRS write AND advance the global stock snapshot
- * EXACTLY ONCE for this sale's lines. Clears the lock, records the KRS document numbers
- * in `response`, and bumps `attempts` (the succeeding attempt).
+ * Mark a job SYNCED after a successful KRS write AND apply the stock-snapshot delta
+ * (per-warehouse + global) EXACTLY ONCE for this sale's lines. Clears the lock, records
+ * the KRS document numbers in `response`, and bumps `attempts` (the succeeding attempt).
  *
  * EXACTLY-ONCE: the mssql document write already committed (the two engines cannot share
- * a tx), so the snapshot advance must not double-apply across retries / burned-anchor
+ * a tx), so the snapshot delta must not double-apply across retries / burned-anchor
  * reclaims. The conditional `updateMany({ where: { snapshotAdvancedAt: null } })` is the
  * boundary: only the FIRST attempt to reach SYNCED flips snapshotAdvancedAt and runs the
- * decrement, both in the SAME pg tx. A later attempt finds count===0 and re-asserts the
+ * delta, both in the SAME pg tx. A later attempt finds count===0 and re-asserts the
  * SYNCED bookkeeping WITHOUT touching the snapshot or the advance timestamp. The SYNCED
  * fields (status, lockedAt, attempts, response, lastError) match the prior markSynced exactly.
+ *
+ * `warehouseCode` = the sale's cut warehouse (SalePayload.warehouseCode, already defaulted
+ * to the HQ warehouse by parseSalePayload). `direction` = "decrement" for a SALE.
  */
 async function markSyncedAndAdvance(
   jobId: string,
   currentAttempts: number,
   response: string,
-  lines: SnapshotAdvanceLine[]
+  lines: SnapshotAdvanceLine[],
+  warehouseCode: string,
+  direction: "decrement" | "increment"
 ): Promise<void> {
   const attempts = currentAttempts + 1;
   await prisma.$transaction(async (tx) => {
@@ -217,8 +250,8 @@ async function markSyncedAndAdvance(
       },
     });
     if (claimed.count === 1) {
-      // First time this job reaches SYNCED → advance the global snapshot once.
-      await advanceGlobalSnapshotForSale(tx, lines);
+      // First time this job reaches SYNCED → apply the snapshot delta once (per-warehouse + global).
+      await applySnapshotDelta(tx, lines, warehouseCode, direction);
     } else {
       // A prior attempt already advanced the snapshot (snapshotAdvancedAt set). Ensure the
       // SYNCED bookkeeping WITHOUT re-advancing the snapshot or re-stamping the timestamp.
@@ -411,7 +444,9 @@ export async function runDispatch(): Promise<DispatchResult> {
             job.id,
             job.attempts,
             JSON.stringify({ transactionNo: job.krsClaimedTxnNo, recovered: true }),
-            payload.items.map((it) => ({ itemCode: it.itemCode, qty: it.quantity }))
+            payload.items.map((it) => ({ itemCode: it.itemCode, qty: it.quantity })),
+            payload.warehouseCode,
+            "decrement"
           );
           result.synced += 1;
           logger.info(
@@ -534,7 +569,9 @@ export async function runDispatch(): Promise<DispatchResult> {
           flowVoucherNo: writeResult.flowVoucherNo,
           jnlCode: writeResult.jnlCode,
         }),
-        payload.items.map((it) => ({ itemCode: it.itemCode, qty: it.quantity }))
+        payload.items.map((it) => ({ itemCode: it.itemCode, qty: it.quantity })),
+        payload.warehouseCode,
+        "decrement"
       );
       result.synced += 1;
     } catch (e) {
