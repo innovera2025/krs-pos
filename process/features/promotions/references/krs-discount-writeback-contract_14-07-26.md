@@ -178,3 +178,77 @@ Plus: the **owner/vendor opens each test bill in the KRS app UI** to confirm it 
 2. Provision + point at sandbox; run the 7-case matrix; all proof SELECTs pass; owner/vendor UI check OK.
 3. **OWNER** flips `KRS_DISCOUNT_WRITE_ENABLED=true` on production (an agent must **never** flip it —
    same invariant as `KRS_OUTBOUND_ENABLED`). Held discounted jobs then drain to SYNCED.
+
+---
+
+## Addendum — Vendor answers 19-07-26 (SUPERSEDES the net-out mapping above)
+
+The vendor answered the discount-writeback questions and **demonstrated the confirmed model in
+their ERP UI on live bill `SC-2607-0023`**. Their model **differs** from the §1 net-out
+allocation: discounts are carried as **explicit KRS discount fields**, not by netting the line
+`Amount`. `src/lib/krs/writeback.ts` now implements this split. **Q-AMOUNT and Q-HDR are CLOSED.**
+
+### Confirmed model (the mapping that now ships)
+
+| Level | KRS column | Value |
+|---|---|---|
+| **Line** | `SalesInvoiceDtl.Amount` | `lineTotal` (gross − LINE-level discounts only — **reverted** from net) |
+| **Line** | `SalesInvoiceDtl.DiscountAmount` | **computed** `gross − lineTotal` (`gross = UnitPrice × Qty`); `DiscountPercent = 0` |
+| **Bill** | `SalesInvoiceHdr.DiscountAmount` | `payload.discount` (COMBINED bill-level manual + promo) — their UI **มูลค่าส่วนลด** at header |
+
+Vendor UI proof (their example): header discount 10.00 on a 50.00 bill → หลังหัก **40.00** net incl
+VAT, ex-VAT **37.38**, VAT **2.62**.
+
+`DiscountAmount` on the line is **computed** (`gross − lineTotal`), NOT read from the `lineDiscount`
+field, so a truly-legacy folded payload (`lineDiscount` "0.00", `lineNet` null) also writes
+correctly. `lineNet` is **no longer load-bearing** (the §1 net-out amount) — it survives only as a
+soft, log-only consistency warning in the writeback.
+
+### Mapping change (net-out → header/line split)
+
+- **Was (§1):** `Dtl.Amount = net` (fully-net after bill-discount allocation),
+  `Dtl.DiscountAmount = gross − net`, header carried only net totals (no header discount field).
+  Reconcile identity: `Σ Dtl.Amount == Hdr.TotalAmount`.
+- **Now:** `Dtl.Amount = lineTotal`, `Dtl.DiscountAmount = gross − lineTotal`,
+  `Hdr.DiscountAmount = discount`. New reconcile identity:
+  **`Σ Dtl.Amount − Hdr.DiscountAmount == Hdr.TotalAmount`**
+  (= `Σ lineTotal − discount == subtotal − discount == total`).
+
+### UNCHANGED (vendor-confirmed)
+
+Header **totals stay NET**: `TotalAmount / AmountDue / …` = net total; `SubTotalAmnt / VATForValue`
+= net ex-VAT; `VATAmount` on the net base. The **journal, `SalePurchaseTax`, and `InventoryFlow*`
+are UNCHANGED** — vendor confirmed **no GL split by payment type** and "ลงยอดที่หักส่วนลดแล้ว"
+(post the already-discounted / net amounts). So the 3 `TheJournal` rows (D cash = total /
+C revenue = net − VAT / C VAT) and the tax log all still post **NET**. The **no-regression property
+still holds** for a zero-discount bill: `DiscountAmount` is 0 everywhere and `Amount = lineTotal`
+(= gross) → the Hdr/Dtl inserts are byte-identical to the pre-discount behavior.
+
+### New enforced assertions (integer satang, `writeback.ts` §2)
+
+- `sat(total) === sat(subtotal) − sat(discount)` (header balance — kept)
+- `sat(total) > 0` (kept; Q-ZERO still pending)
+- per line `0 ≤ gross` and `0 ≤ lineTotal ≤ gross` (⇒ `DiscountAmount ∈ [0, gross]`; line discount never negative)
+- `Σ lineTotal === sat(subtotal)`
+- `Σ lineTotal − sat(discount) === sat(total)` (explicit cross-doc identity)
+- The `Σ lineNet === total` gate and the "legacy discounted payload without lineNet" throw are
+  **REMOVED**. If `lineNet` fields are present a soft warn logs on mismatch (never throws/blocks).
+  **All** payload generations now write correctly — `lineTotal` + `discount` always existed.
+
+`salePayloadHasDiscount` and the dispatcher `DISCOUNT_HELD` gate are **unchanged** — discounted
+bills stay HELD until the owner flips `KRS_DISCOUNT_WRITE_ENABLED`.
+
+### Deploy gate + test permission/conditions
+
+- **Deploy gate:** `scripts/krs-hdr-fields-discovery.cjs` now also checks `DiscountAmount` exists on
+  `SalesInvoiceHdr` (and `InventoryFlowHdr`) KRS-side before enabling.
+- **Test permission (vendor-granted):** we MAY test **on the live KRS DB**. Conditions:
+  - **remove the test-bill stock** afterward (the InventoryFlow cut is real on the live DB), and
+  - **report the list of test transactions** written (TransactionNo / VoucherNo) back to the vendor.
+
+### Status
+
+**Q-AMOUNT — CLOSED** (Amount is read as the pre-discount line value; discount is a separate column).
+**Q-HDR — CLOSED** (a discounted cash sale DOES populate `SalesInvoiceHdr.DiscountAmount`; header
+totals otherwise stay net). Remaining open: Q-TAD, Q-PCT (percent 0 with amount > 0 — shipping as such),
+Q-GL/Q-VAT (confirmed NET, effectively answered), Q-ZERO, Q-REMARKS.

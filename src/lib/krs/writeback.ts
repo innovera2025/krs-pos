@@ -31,12 +31,25 @@
 //     hardcodes or opens its own connection target.
 //   - VAT-INCLUSIVE money: UnitPrice / Amount / Total are the gross POS amounts (the sample
 //     proved 10×10 = 100 incl-VAT; UNIT_PRICE_INCL_VAT=true). All money binds as DECIMAL(18,2).
-//   - NET-OUT DISCOUNT (krs-sync discount-safety Phase 1): SalesInvoiceDtl carries the
-//     net-out mapping — Amount = net (fully-net line after the bill-discount allocation),
-//     DiscountAmount = gross − net (UnitPrice×Qty − Amount), DiscountPercent = 0. This makes
-//     Σ Dtl.Amount == Hdr.TotalAmount reconcile even on a discounted bill. NO-REGRESSION
-//     PROPERTY: for a ZERO-discount payload gross == net on every line, so DiscountAmount is
-//     0 and Amount == lineTotal — the Dtl inserts are BYTE-IDENTICAL to the previous behavior.
+//   - VENDOR-CONFIRMED DISCOUNT SPLIT (vendor answer 19-07-26, demonstrated in their ERP UI
+//     on live bill SC-2607-0023 — SUPERSEDES the earlier net-out allocation): discounts are
+//     carried as EXPLICIT KRS discount fields, NOT by netting the line Amount.
+//       • LINE-level discounts ride each SalesInvoiceDtl:
+//           Amount        = lineTotal            (gross − LINE-level discounts only)
+//           DiscountAmount = gross − lineTotal    (gross = UnitPrice × Qty), always ∈ [0, gross]
+//           DiscountPercent = 0                   (amount is authoritative; see Step 5 note)
+//       • BILL-level discount rides the header:
+//           SalesInvoiceHdr.DiscountAmount = payload.discount (combined manual + promo bill discount)
+//     Header/journal/tax/InventoryFlow totals stay NET and are UNCHANGED: TotalAmount = net total,
+//     SubTotalAmnt/VATForValue = net ex-VAT, VATAmount on the net base; the 3 TheJournal rows and
+//     the SalePurchaseTax row post the NET amounts (vendor confirmed no GL split by payment type,
+//     "ลงยอดที่หักส่วนลดแล้ว"). CROSS-DOC IDENTITY (enforced up-front):
+//           Σ Dtl.Amount − Hdr.DiscountAmount == Hdr.TotalAmount
+//       (= Σ lineTotal − discount == subtotal − discount == total).
+//     NO-REGRESSION PROPERTY: for a ZERO-discount bill DiscountAmount is 0 on every line AND on
+//     the header, and Amount == lineTotal — the Hdr/Dtl inserts are BYTE-IDENTICAL to the
+//     pre-discount behavior. `lineNet` (the earlier per-line net-out amount) is NO LONGER
+//     load-bearing; if present it is used only for a soft, log-only consistency warning.
 //
 // IDEMPOTENCY (burned-anchor design, krs-writeback-idempotency_PLAN_27-06-26.md v3):
 // SaleInvoiceTrNo is claimed in a SEPARATE COMMITTED phase-0 tx before the SERIALIZABLE
@@ -54,7 +67,7 @@
 // Field map: process/features/krs-sync/references/krs-writeback-field-analysis_24-06-26.md §5–§7
 
 import sql from "mssql";
-import { salePayloadHasDiscount, type SalePayload } from "./salePayload";
+import { type SalePayload } from "./salePayload";
 import { safeErrorParts } from "./client";
 import {
   KRS_WRITE_CONFIG,
@@ -379,75 +392,90 @@ export async function writeKrsSale(
 
   const cfg = KRS_WRITE_CONFIG;
 
-  // (2) Snapshot balance + net-out gate (integer satang — no float). Every check here
-  // runs BEFORE any pool/connection opens and BEFORE any SaleInvoiceTrNo anchor is
-  // burned, so a malformed / unbalanced / legacy-discounted snapshot is rejected without
-  // ever burning an anchor. The POS is VAT-INCLUSIVE: subtotal = gross line totals (incl
-  // VAT, before the bill discount); total = subtotal − discount (both incl VAT); tax is
-  // EXTRACTED from total (round(total × 7/107)). `discount` is the COMBINED bill-level
-  // discount (manual + promotion), so the header identity total == subtotal − discount is
-  // UNCHANGED from the pre-discount behavior. The ex-VAT base = total − tax is what KRS
-  // records as SubTotalAmnt / VATForValue and as the revenue journal line.
+  // (2) Snapshot balance + discount-split gate (integer satang — no float). Every check
+  // here runs BEFORE any pool/connection opens and BEFORE any SaleInvoiceTrNo anchor is
+  // burned, so a malformed / unbalanced snapshot is rejected without ever burning an
+  // anchor. The POS is VAT-INCLUSIVE: subtotal = Σ lineTotal (per-line gross MINUS LINE-level
+  // discounts, incl VAT, before the bill discount); total = subtotal − discount (both incl
+  // VAT); tax is EXTRACTED from total (round(total × 7/107)). Under the vendor-confirmed
+  // split (19-07-26) `discount` is the COMBINED bill-level discount (manual + promotion) and
+  // rides SalesInvoiceHdr.DiscountAmount; each line's LINE-level discount (gross − lineTotal)
+  // rides SalesInvoiceDtl.DiscountAmount. The ex-VAT base = total − tax is what KRS records
+  // (NET) as SubTotalAmnt / VATForValue and as the revenue journal line — unchanged.
   const totalSatang = toSatang(payload.total);
   const subtotalSatang = toSatang(payload.subtotal);
   const taxSatang = toSatang(payload.tax);
   const discountSatang = toSatang(payload.discount);
 
-  // (2a) Header balance — LITERALLY UNCHANGED: payload.discount keeps its combined
-  // (manual + promotion) bill-discount meaning, so this assert is identical to before.
+  // (2a) Header balance: total == subtotal − discount (`discount` = combined bill discount).
   if (totalSatang !== subtotalSatang - discountSatang) {
     throw new KrsWriteError(
       `Snapshot imbalance: total ${payload.total} != subtotal ${payload.subtotal} - discount ${payload.discount}`
     );
   }
 
-  // (2b) Per-line net-out (gross → net after the bill-discount allocation). `gross[i]` is
-  // the catalog line amount (UnitPrice × Qty); `net[i]` is the fully-net line amount that
-  // reconciles to Hdr.TotalAmount. `lineNet` is the authoritative per-line net from the
-  // pricing recompute. A LEGACY payload (lineNet == null, enqueued before the discount-safe
-  // snapshot) can be net-reconstructed ONLY when the WHOLE bill carries no discount — then
-  // net := lineTotal, which is byte-identical to the pre-discount behavior (no-regression).
-  // A legacy payload that DOES carry a discount cannot be safely mapped and is refused for
-  // manual review rather than writing an unreconciled bill to the ERP.
-  const payloadHasDiscount = salePayloadHasDiscount(payload);
+  // (2b) Per-line gross + lineTotal (integer satang). Under the split model each
+  // SalesInvoiceDtl carries Amount = lineTotal (gross − LINE-level discounts only) and
+  // DiscountAmount = gross − lineTotal — both COMPUTED here, NEVER read from the
+  // `lineNet`/`lineDiscount` fields, so a truly-legacy payload (discounts folded into
+  // lineTotal, lineDiscount "0.00", lineNet null) also writes correctly. `gross[i]` =
+  // UnitPrice × Qty. Per-line guards: 0 ≤ gross, and 0 ≤ lineTotal ≤ gross so that
+  // DiscountAmount = gross − lineTotal is always in [0, gross] (line discount never negative).
   const grossSatang: number[] = [];
-  const netSatang: number[] = [];
-  for (const item of payload.items) {
+  const lineTotalSatang: number[] = [];
+  for (let i = 0; i < payload.items.length; i++) {
+    const item = payload.items[i];
     const gross = toSatang(item.unitPrice) * item.quantity;
-    let net: number;
-    if (item.lineNet != null) {
-      net = toSatang(item.lineNet);
-    } else if (!payloadHasDiscount) {
-      net = toSatang(item.lineTotal);
-    } else {
+    const lineTotal = toSatang(item.lineTotal);
+    if (gross < 0) {
+      throw new KrsWriteError(`Line ${i + 1} gross negative: ${(gross / 100).toFixed(2)}`);
+    }
+    if (lineTotal < 0 || lineTotal > gross) {
       throw new KrsWriteError(
-        "legacy discounted payload without lineNet — manual review required"
+        `Line ${i + 1} amount out of range: lineTotal ${(lineTotal / 100).toFixed(2)} not in [0, gross ${(gross / 100).toFixed(2)}]`
       );
     }
     grossSatang.push(gross);
-    netSatang.push(net);
+    lineTotalSatang.push(lineTotal);
   }
 
-  // (2c) Σ net === total: the net-out per-line amounts must reconcile to the bill total,
-  // so Σ SalesInvoiceDtl.Amount == SalesInvoiceHdr.TotalAmount.
-  const netTotalSatang = netSatang.reduce((s, n) => s + n, 0);
-  if (netTotalSatang !== totalSatang) {
+  // (2c) Σ lineTotal === subtotal: the per-line Amounts (= Σ Dtl.Amount) reconcile to the
+  // bill subtotal (which is itself the gross-minus-line-discount total).
+  const lineTotalSum = lineTotalSatang.reduce((s, n) => s + n, 0);
+  if (lineTotalSum !== subtotalSatang) {
     throw new KrsWriteError(
-      `Net-out imbalance: Σ lineNet ${(netTotalSatang / 100).toFixed(2)} != total ${payload.total}`
+      `Line-total imbalance: Σ lineTotal ${(lineTotalSum / 100).toFixed(2)} != subtotal ${payload.subtotal}`
     );
   }
 
-  // (2d) 0 ≤ net[i] ≤ gross[i] per line: a line never goes negative and never exceeds its
-  // catalog gross, so DiscountAmount = gross − net is always in [0, gross].
-  for (let i = 0; i < netSatang.length; i++) {
-    if (netSatang[i] < 0 || netSatang[i] > grossSatang[i]) {
-      throw new KrsWriteError(
-        `Line ${i + 1} net-out out of range: net ${(netSatang[i] / 100).toFixed(2)} not in [0, gross ${(grossSatang[i] / 100).toFixed(2)}]`
-      );
-    }
+  // (2d) Explicit cross-doc identity: Σ Dtl.Amount − Hdr.DiscountAmount == Hdr.TotalAmount,
+  // i.e. Σ lineTotal − discount == total. Follows algebraically from (2a)+(2c), but asserted
+  // directly so the KRS reconcile identity is guarded at the source before any anchor burns.
+  if (lineTotalSum - discountSatang !== totalSatang) {
+    throw new KrsWriteError(
+      `Cross-doc imbalance: Σ lineTotal ${(lineTotalSum / 100).toFixed(2)} - discount ${payload.discount} != total ${payload.total}`
+    );
   }
 
-  // (2e) total > 0: KRS must not receive a zero/negative bill (Q-ZERO is a pending vendor
+  // (2e) Soft consistency check on the now-SECONDARY `lineNet` fields: LOG-ONLY, never
+  // throw/block. `lineNet` is no longer load-bearing under the split model, but if a payload
+  // still carries it we warn when it fails to reconcile to the bill total — purely diagnostic.
+  // Wrapped so a malformed secondary lineNet can never block the write.
+  try {
+    const withLineNet = payload.items.filter((it) => it.lineNet != null);
+    if (withLineNet.length > 0) {
+      const lineNetSum = withLineNet.reduce((s, it) => s + toSatang(it.lineNet as string), 0);
+      if (lineNetSum !== totalSatang) {
+        console.warn(
+          `[krs-writeback] lineNet is no longer load-bearing: Σ lineNet ${(lineNetSum / 100).toFixed(2)} != total ${payload.total} (informational only)`
+        );
+      }
+    }
+  } catch {
+    // A malformed secondary lineNet must never block the write under the split model.
+  }
+
+  // (2f) total > 0: KRS must not receive a zero/negative bill (Q-ZERO is a pending vendor
   // question; until answered a non-positive total is refused rather than posted).
   if (totalSatang <= 0) {
     throw new KrsWriteError(`Non-positive total ${payload.total} — refused`);
@@ -579,6 +607,11 @@ export async function writeKrsSale(
       .input("VATForValue", sql.Decimal(18, 2), exVatSatang / 100)
       .input("VATPercent", sql.Decimal(18, 2), cfg.VAT_PERCENT)
       .input("VATAmount", sql.Decimal(18, 2), money(payload.tax))
+      // Vendor answer 19-07-26: the COMBINED bill-level discount rides the header here,
+      // superseding the earlier net-out allocation. Header totals below stay NET; this column
+      // is the ERP's มูลค่าส่วนลด at the header. For a zero-discount bill this binds 0.00
+      // (byte-identical to the pre-discount insert). Cross-doc: Σ Dtl.Amount − @HdrDiscountAmount == TotalAmount.
+      .input("HdrDiscountAmount", sql.Decimal(18, 2), money(payload.discount))
       .input("AmountDue", sql.Decimal(18, 2), money(payload.total))
       .input("AmountDueBht", sql.Decimal(18, 2), money(payload.total))
       .input("TotalDR", sql.Decimal(18, 2), money(payload.total))
@@ -604,14 +637,14 @@ export async function writeKrsSale(
             CompanyCode, VoucherNo, VoucherDate, DocuType, CustOrSuppCode, CustOrSuppName,
             Address, DeliveryAddress, DueDate, IsVAT, IsClosed, IsPaid, Currency, ExchangeRate,
             AccountsDescription, TotalAmount, SubTotalAmnt, DepositAmount, VATForValue, VATPercent,
-            VATAmount, AmountDue, AmountDueBht, TotalDR, CashValue, TotalCR, BranchCode, BranchName,
+            VATAmount, DiscountAmount, AmountDue, AmountDueBht, TotalDR, CashValue, TotalCR, BranchCode, BranchName,
             EntryBy, EntryDate, Receipt_Type, PosBillNo)
          VALUES
            (@TransactionNo, @InvoiceType, @SaleType, @ItemType, @TransactionTypeI, @TransactionTypeT,
             @CompanyCode, @VoucherNo, @VoucherDate, @DocuType, @CustOrSuppCode, @CustOrSuppName,
             @Address, @DeliveryAddress, @DueDate, @IsVAT, @IsClosed, @IsPaid, @Currency, @ExchangeRate,
             @AccountsDescription, @TotalAmount, @SubTotalAmnt, @DepositAmount, @VATForValue, @VATPercent,
-            @VATAmount, @AmountDue, @AmountDueBht, @TotalDR, @CashValue, @TotalCR, @BranchCode, @BranchName,
+            @VATAmount, @HdrDiscountAmount, @AmountDue, @AmountDueBht, @TotalDR, @CashValue, @TotalCR, @BranchCode, @BranchName,
             @EntryBy, GETDATE(), @ReceiptType, @PosBillNo);`
       );
 
@@ -632,14 +665,18 @@ export async function writeKrsSale(
         // DiscountPercent stays literal 0 by DELIBERATE DECISION: a percent cannot exactly
         // round-trip a satang-level discount (a 100%-free line would divide by a zero base;
         // rounding drift elsewhere), so DiscountAmount is the AUTHORITATIVE discount and the
-        // percent column carries no value. See the net-out mapping in the module header.
+        // percent column carries no value. See the vendor split mapping in the module header.
         .input("DiscountPercent", sql.Decimal(18, 2), 0)
-        // DiscountAmount = gross − net (the bill + line discount allocated to this line), in
-        // baht. Bound as DECIMAL(18,2); the (2d) gate proved it is in [0, gross].
-        .input("DiscountAmount", sql.Decimal(18, 2), (grossSatang[i] - netSatang[i]) / 100)
-        // Amount = net (the fully-net line amount). Σ Amount == Hdr.TotalAmount by gate (2c).
-        // For a zero-discount line net == lineTotal, so this is byte-identical to before.
-        .input("Amount", sql.Decimal(18, 2), netSatang[i] / 100)
+        // Vendor answer 19-07-26: DiscountAmount = the LINE-level discount only, COMPUTED as
+        // gross − lineTotal (gross = UnitPrice × Qty) — NOT read from the lineDiscount field,
+        // so a truly-legacy folded payload also writes correctly. Bound as DECIMAL(18,2); the
+        // (2b) gate proved it is in [0, gross]. Bill-level discount rides Hdr.DiscountAmount.
+        .input("DiscountAmount", sql.Decimal(18, 2), (grossSatang[i] - lineTotalSatang[i]) / 100)
+        // Amount = lineTotal (gross − LINE-level discounts only) — REVERTED from the net-out
+        // value. Σ Amount == subtotal by gate (2c); the KRS reconcile identity is
+        // Σ Amount − Hdr.DiscountAmount == Hdr.TotalAmount (gate (2d)). For a zero-discount
+        // line lineTotal == gross, so this is byte-identical to the pre-discount insert.
+        .input("Amount", sql.Decimal(18, 2), lineTotalSatang[i] / 100)
         .query(
           `INSERT INTO dbo.SalesInvoiceDtl
              (TransactionNo, ItemOrder, ItemCode, Description, MainQuantity, MainUnits,

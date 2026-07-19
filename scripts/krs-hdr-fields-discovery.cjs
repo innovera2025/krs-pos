@@ -2,10 +2,12 @@
 // =============================================================================
 // KRS POS — SalesInvoiceHdr Receipt_Type/PosBillNo discovery (READ-ONLY)  [ops]
 // =============================================================================
-// Vendor asked the cash-sale INSERT to also carry Receipt_Type + PosBillNo.
-// Before writing anything we discover: do the columns exist (type/nullable),
-// what Receipt_Type values existing rows use, and a sample of recent rows.
-// READ-ONLY: INFORMATION_SCHEMA + SELECT only.
+// Vendor asked the cash-sale INSERT to also carry Receipt_Type + PosBillNo, and
+// (vendor answer 19-07-26) the discount split writes SalesInvoiceHdr.DiscountAmount
+// (bill-level) + SalesInvoiceDtl.DiscountAmount (line-level). Before writing anything
+// we discover: do the columns exist (type/nullable) — the deploy gate verifies
+// Hdr.DiscountAmount exists KRS-side — what Receipt_Type values existing rows use, and
+// a sample of recent rows. READ-ONLY: INFORMATION_SCHEMA + SELECT only.
 //
 // Run (same migrate-image pattern as krs-ct-precheck.cjs):
 //   docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm --no-deps \
@@ -63,7 +65,7 @@ async function main() {
     SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE, COLUMN_DEFAULT
     FROM INFORMATION_SCHEMA.COLUMNS
     WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME IN ('SalesInvoiceHdr', 'InventoryFlowHdr')
-      AND COLUMN_NAME IN ('Receipt_Type', 'PosBillNo');`);
+      AND COLUMN_NAME IN ('Receipt_Type', 'PosBillNo', 'DiscountAmount');`);
   await q("2. Receipt_Type values in existing rows", `
     SELECT Receipt_Type, COUNT(*) AS n
     FROM dbo.SalesInvoiceHdr GROUP BY Receipt_Type ORDER BY n DESC;`);
