@@ -32,7 +32,7 @@
 //
 // Plan: process/features/krs-sync/active/krs-outbound-writeback_PLAN_25-06-26.md §8
 
-import { Prisma, SyncJobStatus, SyncJobType } from "@prisma/client";
+import { Prisma, SyncJobStatus, SyncJobType, SyncStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
 import { env } from "@/lib/env";
@@ -40,6 +40,9 @@ import { buildSandboxConfig } from "./sandboxClient";
 import { parseSalePayload, salePayloadHasDiscount } from "./salePayload";
 import { writeKrsSale, WriteConfigNotReadyError, checkKrsSaleExists } from "./writeback";
 import type { KrsWriteOpts } from "./writeback";
+import { cancelSaleInKrs } from "./cancelSale";
+import { parseVoidPayload } from "./voidPayload";
+import { LOCK_STALE_MS } from "./dispatchConstants";
 
 /** Jobs claimed per dispatch call. */
 const BATCH_SIZE = 10;
@@ -48,8 +51,8 @@ const MAX_ATTEMPTS = 5;
 /** Backoff base (30s) and cap (1h): nextAttemptAt = now + min(BASE*2^attempts, MAX). */
 const BASE_DELAY_MS = 30_000;
 const MAX_DELAY_MS = 3_600_000;
-/** A lock older than this is stale (a crashed prior dispatch) and is re-claimable. */
-const LOCK_STALE_MS = 10 * 60 * 1000; // 10 minutes
+// LOCK_STALE_MS (a stale/re-claimable dispatch lock window) moved to ./dispatchConstants
+// so the orders VOID path can share it without importing this mssql-heavy module.
 
 /** The structured result of one dispatch run (returned to the endpoint). */
 export type DispatchResult = {
@@ -101,7 +104,7 @@ async function claimJobs(): Promise<string[]> {
            "updatedAt" = NOW()
      WHERE id IN (
        SELECT id FROM "SyncJob"
-        WHERE "type" = ${SyncJobType.SALE}::"SyncJobType"
+        WHERE "type" IN (${SyncJobType.SALE}::"SyncJobType", ${SyncJobType.VOID}::"SyncJobType")
           AND "status" IN (${SyncJobStatus.PENDING}::"SyncJobStatus", ${SyncJobStatus.RETRYING}::"SyncJobStatus")
           AND ("lockedAt" IS NULL OR "lockedAt" < ${staleBefore})
           AND ("nextAttemptAt" IS NULL OR "nextAttemptAt" <= ${now})
@@ -226,7 +229,16 @@ async function applySnapshotDelta(
  * fields (status, lockedAt, attempts, response, lastError) match the prior markSynced exactly.
  *
  * `warehouseCode` = the sale's cut warehouse (SalePayload.warehouseCode, already defaulted
- * to the HQ warehouse by parseSalePayload). `direction` = "decrement" for a SALE.
+ * to the HQ warehouse by parseSalePayload). `direction` = "decrement" for a SALE,
+ * "increment" for a VOID (KRS-side stock restore).
+ *
+ * `orderNumber` = the SyncJob.ref (= Order.orderNumber). krs-void-writeback closes the
+ * "Order.syncStatus never reaches SYNCED via real code" gap (plan Critical Prerequisite
+ * Finding): this flips the Order to SYNCED CONDITIONALLY — only when it is still PENDING —
+ * so it never clobbers a VOIDED-then-SKIPPED order (a bill voided-while-unsynced) nor an
+ * already-SYNCED one. Idempotent-always (unlike the exactly-once snapshot delta above):
+ * safe to re-assert on every reclaim/retry branch and on the VOID path (whose order is
+ * already SYNCED, so the conditional updateMany matches 0 rows — a true no-op).
  */
 async function markSyncedAndAdvance(
   jobId: string,
@@ -234,7 +246,8 @@ async function markSyncedAndAdvance(
   response: string,
   lines: SnapshotAdvanceLine[],
   warehouseCode: string,
-  direction: "decrement" | "increment"
+  direction: "decrement" | "increment",
+  orderNumber: string
 ): Promise<void> {
   const attempts = currentAttempts + 1;
   await prisma.$transaction(async (tx) => {
@@ -266,6 +279,16 @@ async function markSyncedAndAdvance(
         },
       });
     }
+    // krs-void-writeback: flip Order.syncStatus PENDING → SYNCED (the Critical Prerequisite
+    // fix). CONDITIONAL on syncStatus PENDING so it never overwrites SKIPPED (a
+    // voided-while-unsynced bill) or an already-SYNCED order — and so a VOID job's call
+    // here (order already SYNCED) is a harmless no-op. Runs unconditionally after the
+    // if/else because it is idempotent (re-asserting the same terminal transition matches
+    // 0 rows), unlike the exactly-once snapshot delta.
+    await tx.order.updateMany({
+      where: { orderNumber, syncStatus: SyncStatus.PENDING },
+      data: { syncStatus: SyncStatus.SYNCED },
+    });
   });
 }
 
@@ -348,6 +371,7 @@ export async function runDispatch(): Promise<DispatchResult> {
         attempts: true,
         ref: true,
         krsClaimedTxnNo: true,   // ← ADD: burned anchor for reclaim detection
+        type: true,              // ← ADD: branch VOID vs SALE (krs-void-writeback)
       },
     });
     if (!job) {
@@ -392,6 +416,89 @@ export async function runDispatch(): Promise<DispatchResult> {
     if (!sandboxConfig) {
       await requeuePending(job.id);
       result.skipped += 1;
+      continue;
+    }
+
+    // === VOID BRANCH (early continue — the SALE path below is unchanged for VOID) ===
+    // A VOID job cancels a previously-synced sale via cancelSaleInKrs's 4 idempotent
+    // UPDATEs. This continues before the SALE-only reclaim/burned-anchor + discount-gate
+    // + KRS-write blocks, so none of them run for a VOID job (VOID has no burned anchor —
+    // see plan Invariant #1). Everything below this branch is byte-identical to the SALE
+    // path apart from the 3 trailing markSyncedAndAdvance args already added in Phase 1.
+    if (job.type === SyncJobType.VOID) {
+      // VOID-WRITE GATE — held pattern (mirrors DISCOUNT_HELD): re-queue WITHOUT counting
+      // an attempt until the owner flips KRS_VOID_WRITE_ENABLED. Checked BEFORE parsing
+      // the payload (cheap, no payload dependency). The Postgres-side void (status VOIDED,
+      // stock restored) already happened at PATCH time regardless — only the KRS write is held.
+      if (env.KRS_VOID_WRITE_ENABLED !== "true") {
+        await requeueHeld(job.id);
+        result.skipped += 1;
+        logger.info(
+          { krsDispatch: { jobId: job.id, ref: job.ref, code: "VOID_HELD" } },
+          "KRS dispatch: VOID held — KRS_VOID_WRITE_ENABLED is off"
+        );
+        continue;
+      }
+
+      let voidPayload;
+      try {
+        voidPayload = parseVoidPayload(job.payload);
+      } catch (e) {
+        const msg = `Invalid VOID payload: ${safeErrMsg(e)}`;
+        logger.error(
+          { krsDispatch: { jobId: job.id, ref: job.ref, code: "BAD_PAYLOAD" } },
+          "KRS dispatch: invalid VOID SyncJob payload"
+        );
+        const { terminal } = await markFailedOrRetry(job.id, job.attempts, msg);
+        result.failed += 1;
+        if (terminal) {
+          logger.error(
+            { krsDispatch: { jobId: job.id, ref: job.ref } },
+            "KRS dispatch: VOID job reached terminal FAILED (bad payload)"
+          );
+        }
+        continue;
+      }
+
+      // No reclaim needed — cancelSaleInKrs's 4 UPDATEs are naturally idempotent (see
+      // cancelSale.ts header). A crash mid-write just rolls back; the next attempt
+      // re-resolves the documents and re-runs cleanly. On success advance the snapshot in
+      // the "increment" direction (KRS-side restore) EXACTLY ONCE, symmetric to the SALE cut.
+      try {
+        const cancelResult = await cancelSaleInKrs(voidPayload, sandboxConfig);
+        await markSyncedAndAdvance(
+          job.id,
+          job.attempts,
+          JSON.stringify(cancelResult),
+          voidPayload.items.map((it) => ({ itemCode: it.itemCode, qty: it.qty })),
+          voidPayload.warehouseCode,
+          "increment",
+          job.ref
+        );
+        result.synced += 1;
+      } catch (e) {
+        const sanitized = safeErrMsg(e);
+        logger.error(
+          {
+            krsDispatch: {
+              jobId: job.id,
+              ref: job.ref,
+              attempts: job.attempts + 1,
+              code: safeErrCode(e),
+              message: sanitized,
+            },
+          },
+          "KRS dispatch: VOID write failed"
+        );
+        const { terminal } = await markFailedOrRetry(job.id, job.attempts, sanitized);
+        result.failed += 1;
+        if (terminal) {
+          logger.error(
+            { krsDispatch: { jobId: job.id, ref: job.ref } },
+            "KRS dispatch: VOID job reached terminal FAILED"
+          );
+        }
+      }
       continue;
     }
 
@@ -446,7 +553,8 @@ export async function runDispatch(): Promise<DispatchResult> {
             JSON.stringify({ transactionNo: job.krsClaimedTxnNo, recovered: true }),
             payload.items.map((it) => ({ itemCode: it.itemCode, qty: it.quantity })),
             payload.warehouseCode,
-            "decrement"
+            "decrement",
+            job.ref
           );
           result.synced += 1;
           logger.info(
@@ -571,7 +679,8 @@ export async function runDispatch(): Promise<DispatchResult> {
         }),
         payload.items.map((it) => ({ itemCode: it.itemCode, qty: it.quantity })),
         payload.warehouseCode,
-        "decrement"
+        "decrement",
+        job.ref
       );
       result.synced += 1;
     } catch (e) {

@@ -172,6 +172,14 @@ const EnvSchema = z.object({
   // zero-discount bill is unaffected. Opt-in by design (mirrors KRS_OUTBOUND_ENABLED);
   // the OWNER flips it after sandbox verification (an agent must never flip it).
   KRS_DISCOUNT_WRITE_ENABLED: z.enum(["true", "false"]).default("false"),
+  // KRS_VOID_WRITE_ENABLED — kill switch for writing a VOID (cancel) of a synced sale
+  // to KRS. When not exactly "true", the dispatcher HOLDS any VOID job — re-queued
+  // PENDING without counting an attempt (mirrors KRS_DISCOUNT_WRITE_ENABLED) — so no
+  // cancel document reaches KRS until the vendor-confirmed 4-UPDATE pattern is verified
+  // live. The Postgres-side void (status VOIDED, stock restored) still happens
+  // immediately regardless — this flag only gates the KRS-side write. Opt-in by
+  // design; the OWNER flips it after live verification (an agent must never flip it).
+  KRS_VOID_WRITE_ENABLED: z.enum(["true", "false"]).default("false"),
   // KRS_DISPATCH_SECRET — the shared bearer secret the dispatch cron sidecar sends as
   // `Authorization: Bearer <value>` to POST /api/krs/dispatch. Min 32 chars when
   // present (high-entropy: openssl rand -hex 32). When unset, the endpoint returns
@@ -288,6 +296,8 @@ function loadEnv(): z.infer<typeof EnvSchema> {
         process.env.KRS_OUTBOUND_ENABLED === "true" ? "true" : "false",
       KRS_DISCOUNT_WRITE_ENABLED:
         process.env.KRS_DISCOUNT_WRITE_ENABLED === "true" ? "true" : "false",
+      KRS_VOID_WRITE_ENABLED:
+        process.env.KRS_VOID_WRITE_ENABLED === "true" ? "true" : "false",
       KRS_DISPATCH_SECRET: process.env.KRS_DISPATCH_SECRET,
       KRS_SANDBOX_HOST: process.env.KRS_SANDBOX_HOST,
       KRS_SANDBOX_PORT: process.env.KRS_SANDBOX_PORT,

@@ -47,11 +47,12 @@ export function syncMeta(sync: SyncStatus): BadgeMeta {
   return SYNC_META[sync] ?? STATUS_FALLBACK;
 }
 
-/** Sales History filter chips (ported from Simple POS salesFilterDef). */
+/** Sales History filter chips (ported from Simple POS salesFilterDef). The "refunded"
+ *  chip was removed (krs-void-writeback, 19-07-26 — no new refunds can be created); the
+ *  REFUNDED badge (STATUS_META.REFUNDED) still renders for historical rows. */
 export type SalesFilter =
   | "all"
   | "paid"
-  | "refunded"
   | "voided"
   | "failed"
   | "tax";
@@ -59,7 +60,6 @@ export type SalesFilter =
 export const SALES_FILTERS: { key: SalesFilter; label: string }[] = [
   { key: "all", label: "ทั้งหมด" },
   { key: "paid", label: "ชำระแล้ว" },
-  { key: "refunded", label: "คืนเงิน" },
   { key: "voided", label: "ยกเลิก" },
   { key: "failed", label: "ซิงค์ล้มเหลว" },
   { key: "tax", label: "ขอใบกำกับ" },
@@ -72,8 +72,6 @@ export function matchesFilter(order: OrderDTO, filter: SalesFilter): boolean {
       return true;
     case "paid":
       return order.status === "COMPLETED";
-    case "refunded":
-      return order.status === "REFUNDED";
     case "voided":
       return order.status === "VOIDED";
     case "failed":

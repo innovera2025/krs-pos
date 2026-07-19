@@ -97,12 +97,15 @@ services:
       #  - KRS_DISCOUNT_WRITE_ENABLED: kill switch for writing DISCOUNTED sales; when not
       #    "true" the dispatcher HOLDS any discounted bill (PENDING) until sandbox-verified.
       #    Zero-discount bills are unaffected. Default false (opt-in) — owner flips it.
+      #  - KRS_VOID_WRITE_ENABLED: kill switch for writing a VOID (cancel) of a synced
+      #    sale; when not "true" the dispatcher HOLDS the VOID job (PENDING). Default false.
       #  - KRS_DISPATCH_SECRET: bearer secret the krs-dispatch-cron sidecar authenticates
       #    with (must match the sidecar value in docker-compose.prod.yml). Empty = 503.
       #  - KRS_SANDBOX_*: the SEPARATE sandbox write target (NOT the prod inbound KRS).
       #    Empty host/db/user/pass = sandbox unconfigured → the write refuses cleanly.
       KRS_OUTBOUND_ENABLED: ${KRS_OUTBOUND_ENABLED:-false}
       KRS_DISCOUNT_WRITE_ENABLED: ${KRS_DISCOUNT_WRITE_ENABLED:-false}
+      KRS_VOID_WRITE_ENABLED: ${KRS_VOID_WRITE_ENABLED:-false}
       KRS_DISPATCH_SECRET: ${KRS_DISPATCH_SECRET:-}
       #  - KRS_RT_POLL_SECRET / KRS_RT_POLL_ENABLED: bearer secret + kill switch for the
       #    realtime inbound poll endpoint (must match the krs-rt-poll sidecar in

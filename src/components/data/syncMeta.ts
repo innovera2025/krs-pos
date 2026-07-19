@@ -45,6 +45,7 @@ const JOB_TYPE_LABEL: Record<SyncJobType, string> = {
   TAX_INVOICE: "ใบกำกับภาษี · Tax invoice",
   STOCK_ADJ: "ปรับสต็อก · Stock adj.",
   RECEIVE: "รับสินค้าเข้า · Goods receipt",
+  VOID: "ยกเลิกบิล · Void",
 };
 
 export function jobTypeLabel(type: SyncJobType): string {

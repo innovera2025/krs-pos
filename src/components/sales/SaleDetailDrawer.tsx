@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X, Printer } from "lucide-react";
 import type { OrderDTO } from "@/types";
 import { money } from "@/lib/money";
+import { Modal } from "@/components/Modal";
 import { methodLabel } from "@/components/pos/paymentMeta";
 import {
   statusMeta,
@@ -14,10 +15,9 @@ import {
 
 type SaleDetailDrawerProps = {
   order: OrderDTO | null;
-  /** Disable action buttons while a refund/void/request-tax request is in flight. */
+  /** Disable action buttons while a void/request-tax request is in flight. */
   busy: boolean;
   onClose: () => void;
-  onRefund: (order: OrderDTO) => void;
   onVoid: (order: OrderDTO) => void;
   /** Request a tax invoice (action-request-tax-invoice). Phase 6a. */
   onRequestTax: (order: OrderDTO) => void;
@@ -37,8 +37,9 @@ type SaleDetailDrawerProps = {
  * panel stops click propagation so inner clicks never reach the backdrop.
  *
  * Contextual actions (Simple POS gating):
- *  - คืนเงิน · Refund — only when status COMPLETED (canRefund)
- *  - ยกเลิก · Void   — only when COMPLETED AND syncStatus !== SYNCED (canVoid)
+ *  - ยกเลิก · Void   — any COMPLETED bill (krs-void-writeback: a SYNCED bill is now
+ *    voidable too — it fires a confirm dialog first, then closes the KRS documents via
+ *    a VOID SyncJob). Refund was removed (19-07-26 owner decision).
  *  - พิมพ์ · Print   — always
  *  - ขอใบกำกับ      — enabled only when the bill has a customer with a taxId
  *    (canTax); a walk-in / no-tax-customer bill keeps it disabled with a note
@@ -48,7 +49,6 @@ export function SaleDetailDrawer({
   order,
   busy,
   onClose,
-  onRefund,
   onVoid,
   onRequestTax,
   onPrint,
@@ -56,6 +56,10 @@ export function SaleDetailDrawer({
 }: SaleDetailDrawerProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
+  // Void confirm dialog (krs-void-writeback): the Void button opens this Modal-based
+  // confirm (NOT window.confirm) before firing onVoid — the copy branches on whether
+  // this bill was ever synced (a synced void ALSO cancels the KRS documents).
+  const [confirmingVoid, setConfirmingVoid] = useState(false);
   const open = order !== null;
 
   // Focus capture/restore + body-scroll lock + Tab focus-trap (depends on [open]
@@ -120,8 +124,9 @@ export function SaleDetailDrawer({
   const sy = syncMeta(order.syncStatus);
   const acctNo = order.accountingDocNo ?? "— ยังไม่ออกเอกสาร —";
   const acctColor = order.accountingDocNo ? "#15803d" : "var(--soft)";
-  const canRefund = order.status === "COMPLETED";
-  const canVoid = order.status === "COMPLETED" && order.syncStatus !== "SYNCED";
+  // krs-void-writeback: a SYNCED bill is now voidable (the whole point of the program),
+  // so canVoid no longer excludes SYNCED. Refund was removed entirely.
+  const canVoid = order.status === "COMPLETED";
   // Phase 6a: a tax invoice can only be requested when the bill is COMPLETED AND
   // has a customer with a non-empty taxId (domain-tax-invoice-requires-tax-
   // customer). Walk-in / no-tax-customer / non-COMPLETED bills keep the button
@@ -147,6 +152,7 @@ export function SaleDetailDrawer({
     order.accountingDocNo.trim().length > 0;
 
   return (
+    <>
     <div
       onClick={onClose}
       className="fixed inset-0 z-50 flex justify-end"
@@ -282,31 +288,19 @@ export function SaleDetailDrawer({
             </button>
           )}
 
-          {(canRefund || canVoid) && (
-            <div className="flex gap-[9px]">
-              {canRefund && (
-                <button
-                  type="button"
-                  onClick={() => onRefund(order)}
-                  disabled={busy}
-                  className="flex h-[46px] flex-1 items-center justify-center rounded-[11px] border text-[13px] font-semibold transition hover:bg-[#fff7ed] disabled:opacity-50"
-                  style={{ borderColor: "#fed7aa", color: "#c2410c" }}
-                >
-                  คืนเงิน · Refund
-                </button>
-              )}
-              {canVoid && (
-                <button
-                  type="button"
-                  onClick={() => onVoid(order)}
-                  disabled={busy}
-                  className="flex h-[46px] flex-1 items-center justify-center rounded-[11px] border text-[13px] font-semibold transition hover:bg-[#fef2f2] disabled:opacity-50"
-                  style={{ borderColor: "#fecaca", color: "#dc2626" }}
-                >
-                  ยกเลิก · Void
-                </button>
-              )}
-            </div>
+          {/* ยกเลิก · Void — any COMPLETED bill (krs-void-writeback: SYNCED bills are
+              now voidable). Opens a confirm dialog first (below); the confirm copy
+              branches on whether the bill was synced. Its own row (no Refund sibling). */}
+          {canVoid && (
+            <button
+              type="button"
+              onClick={() => setConfirmingVoid(true)}
+              disabled={busy}
+              className="flex h-[46px] items-center justify-center rounded-[11px] border text-[13px] font-semibold transition hover:bg-[#fef2f2] disabled:opacity-50"
+              style={{ borderColor: "#fecaca", color: "#dc2626" }}
+            >
+              ยกเลิก · Void
+            </button>
           )}
 
           <button
@@ -321,6 +315,65 @@ export function SaleDetailDrawer({
         </div>
       </div>
     </div>
+
+    {/* Void confirm dialog (krs-void-writeback). Rendered as a fragment SIBLING of the
+        drawer backdrop (not a child) so the Modal's portal-bubbling onClose never
+        reaches the drawer's own backdrop onClose. Modal returns null when closed. */}
+    <Modal
+      open={confirmingVoid}
+      onClose={() => setConfirmingVoid(false)}
+      label="ยืนยันยกเลิกบิล"
+    >
+      <div
+        className="w-[380px] max-w-[92vw] rounded-[16px] bg-white p-[22px]"
+        style={{ boxShadow: "0 20px 60px rgba(0,0,0,.25)" }}
+      >
+        <h2 className="m-0 text-[16px] font-bold" style={{ color: "var(--ink)" }}>
+          ยกเลิกบิล · Void bill
+        </h2>
+        <p className="mt-2 text-[13px] leading-[1.5]" style={{ color: "var(--soft)" }}>
+          {order.syncStatus === "SYNCED" ? (
+            <>
+              ยกเลิกบิลนี้และส่งยกเลิกเข้าระบบบัญชี ERP ใช่หรือไม่
+              <br />
+              <span className="text-[12px]">
+                Void this bill and send the cancellation to KRS?
+              </span>
+            </>
+          ) : (
+            <>
+              ยกเลิกบิลนี้ใช่หรือไม่
+              <br />
+              <span className="text-[12px]">Void this bill?</span>
+            </>
+          )}
+        </p>
+        <div className="mt-5 flex gap-[9px]">
+          <button
+            type="button"
+            onClick={() => setConfirmingVoid(false)}
+            disabled={busy}
+            className="flex h-[44px] flex-1 items-center justify-center rounded-[11px] border text-[13px] font-semibold transition hover:bg-[var(--surface-2)] disabled:opacity-50"
+            style={{ borderColor: "var(--line)", color: "#475569" }}
+          >
+            ไม่ใช่ · Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setConfirmingVoid(false);
+              onVoid(order);
+            }}
+            disabled={busy}
+            className="flex h-[44px] flex-1 items-center justify-center rounded-[11px] text-[13px] font-bold text-white transition hover:bg-[#b91c1c] disabled:opacity-50"
+            style={{ background: "#dc2626" }}
+          >
+            ยืนยันยกเลิกบิล · Confirm
+          </button>
+        </div>
+      </div>
+    </Modal>
+    </>
   );
 }
 

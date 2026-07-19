@@ -330,7 +330,8 @@ export type SyncJobType =
   | "PULL"
   | "TAX_INVOICE"
   | "STOCK_ADJ"
-  | "RECEIVE";
+  | "RECEIVE"
+  | "VOID";
 
 /** Sync job lifecycle (mirrors the Prisma SyncJobStatus enum). */
 export type SyncJobStatus =

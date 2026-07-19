@@ -120,9 +120,15 @@ export async function POST(req: Request) {
       return NextResponse.json(job, { status: 201 });
     }
 
-    // insert-all — drain only PENDING (FAILED stay FAILED).
+    // insert-all — drain only PENDING jobs of the SIMULATED types (never SALE/VOID,
+    // which have a REAL dispatcher at POST /api/krs/dispatch; fake-SYNCing one of those
+    // here would corrupt SyncJob bookkeeping without ever writing to KRS). FAILED stay
+    // FAILED (a field-map mismatch must be fixed, not silently synced).
     const result = await prisma.syncJob.updateMany({
-      where: { status: SyncJobStatus.PENDING },
+      where: {
+        status: SyncJobStatus.PENDING,
+        type: { notIn: [SyncJobType.SALE, SyncJobType.VOID] },
+      },
       data: {
         status: SyncJobStatus.SYNCED,
         response: 'HTTP 200 · INSERT KRS · {"rows":1}',

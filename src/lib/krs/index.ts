@@ -53,6 +53,13 @@ export type { KrsWriteResult, KrsWriteOpts } from "./writeback";
 export { buildSandboxConfig, isSandboxConfigured } from "./sandboxClient";
 export { parseSalePayload } from "./salePayload";
 export type { SalePayload, SalePayloadItem } from "./salePayload";
+// VOID writeback (krs-void-writeback): cancel a previously-synced sale. The cancel
+// module + the pure payload contract/validator, exported so the dispatch route + a
+// verification harness import the public surface, not the deep paths.
+export { cancelSaleInKrs } from "./cancelSale";
+export type { CancelSaleResult } from "./cancelSale";
+export { parseVoidPayload } from "./voidPayload";
+export type { VoidPayload, VoidPayloadItem, VoidSaleRef } from "./voidPayload";
 export {
   KRS_WRITE_CONFIG,
   assertWriteConfigReady,

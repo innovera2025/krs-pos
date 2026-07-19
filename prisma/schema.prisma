@@ -102,6 +102,7 @@ enum SyncJobType {
   TAX_INVOICE
   STOCK_ADJ
   RECEIVE
+  VOID   // krs-void-writeback: cancel a previously-synced sale (4-UPDATE close pattern)
 }
 
 // Outbound (POS → KRS) vs inbound (KRS → POS) data flow.

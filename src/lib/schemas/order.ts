@@ -63,10 +63,13 @@ export const OrderPostBodySchema = z.object({
 
 export type OrderPostBody = z.infer<typeof OrderPostBodySchema>;
 
-/** PATCH /api/orders/[id] — action shape only; the route keeps RBAC + state-machine. */
+/** PATCH /api/orders/[id] — action shape only; the route keeps RBAC + state-machine.
+ *  `refund` was removed (krs-void-writeback, 19-07-26 owner decision — the shop has no
+ *  refunds); historical REFUNDED orders keep their badge, but no new refund can be
+ *  created, so the Zod enum now rejects {action:"refund"} with 400 BAD_ACTION. */
 export const OrderPatchBodySchema = z.object({
-  action: z.enum(["refund", "void", "request-tax"], {
-    message: "action must be 'refund', 'void', or 'request-tax'",
+  action: z.enum(["void", "request-tax"], {
+    message: "action must be 'void' or 'request-tax'",
   }),
 });
 

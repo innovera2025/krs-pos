@@ -108,21 +108,31 @@ export default function SalesPage() {
     });
   }, [orders, query, filter]);
 
-  // ---- refund / void (PATCH /api/orders/[id]) ----
-  async function patchOrder(order: OrderDTO, action: "refund" | "void") {
+  // ---- void (PATCH /api/orders/[id] {action:"void"}) ----
+  // Refund was removed (krs-void-writeback, 19-07-26). The success toast branches on
+  // the response's syncStatus: a SYNCED bill's void ALSO enqueues a KRS cancel, so it
+  // reports that the cancellation is being sent to accounting.
+  async function voidOrder(order: OrderDTO) {
     if (actionBusy) return;
     setActionBusy(true);
     try {
       const res = await fetch(`/api/orders/${order.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action: "void" }),
       });
       if (!res.ok) {
-        let msg = action === "refund" ? "คืนเงินไม่สำเร็จ" : "ยกเลิกบิลไม่สำเร็จ";
+        let msg = "ยกเลิกบิลไม่สำเร็จ";
         try {
           const data = await res.json();
-          if (data?.error) msg = data.error;
+          // Friendly branch for the mid-flight / needs-reconcile case: the SALE is being
+          // sent to accounting right now (or is held for review) — ask the cashier to
+          // retry shortly rather than surfacing the raw server message.
+          if (data?.code === "VOID_SALE_IN_FLIGHT") {
+            msg = "บิลกำลังส่งเข้าบัญชี ลองใหม่อีกครั้งในสักครู่ครับ";
+          } else if (data?.error) {
+            msg = data.error;
+          }
         } catch {
           /* keep default */
         }
@@ -133,12 +143,12 @@ export default function SalesPage() {
       setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
       setDetail(null);
       showToast(
-        action === "refund"
-          ? "สร้างรายการคืนเงิน + ใบลดหนี้แล้ว"
+        updated.syncStatus === "SYNCED"
+          ? "ยกเลิกบิลแล้ว · กำลังส่งยกเลิกเข้าระบบบัญชี"
           : "ยกเลิกบิลแล้ว (Void)"
       );
     } catch {
-      showToast(action === "refund" ? "คืนเงินไม่สำเร็จ" : "ยกเลิกบิลไม่สำเร็จ");
+      showToast("ยกเลิกบิลไม่สำเร็จ");
     } finally {
       setActionBusy(false);
     }
@@ -319,8 +329,7 @@ export default function SalesPage() {
         order={detail}
         busy={actionBusy}
         onClose={() => setDetail(null)}
-        onRefund={(o) => patchOrder(o, "refund")}
-        onVoid={(o) => patchOrder(o, "void")}
+        onVoid={voidOrder}
         onRequestTax={requestTax}
         onPrint={reprint}
         onPrintTaxInvoice={printTaxInvoice}
