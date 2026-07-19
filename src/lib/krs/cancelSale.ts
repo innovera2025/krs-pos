@@ -4,20 +4,30 @@
 // NEVER import from a client component, `src/auth.config.ts`, or `src/middleware.ts`
 // (it pulls in the `mssql` driver).
 //
-// THE 4 UPDATES (vendor-confirmed, verbatim):
-//   UPDATE dbo.SalesInvoiceHdr  SET IsClosed = 1                         WHERE VoucherNo = @sc;
-//   UPDATE dbo.SalePurchaseTax  SET IsClosed = 0                         WHERE VoucherNo = @sc;  -- asymmetric, vendor-confirm pending
-//   UPDATE dbo.TheJournal       SET IsClosed = 1                         WHERE VoucherNo = @sc;  -- 3 rows expected
-//   UPDATE dbo.InventoryFlowHdr SET IsClosed = 1, IsClosedBy = @by, IsClosedDate = GETDATE() WHERE VoucherNo = @osl;
-// @sc = the sale's SC-{YYMM}-{NNNN} voucher (SalesInvoiceHdr/TheJournal/SalePurchaseTax
-// VoucherNo). @osl = the sale's OSL-{YYMM}-{NNNN} InventoryFlow voucher.
+// THE 4 UPDATES (vendor-confirmed, REVISED 19-07-26 — now target WHERE PosBillNo = @ref):
+//   UPDATE dbo.SalesInvoiceHdr  SET IsClosed = 1                         WHERE PosBillNo = @ref;
+//   UPDATE dbo.SalePurchaseTax  SET IsClosed = 0                         WHERE PosBillNo = @ref;  -- asymmetric, vendor-confirm pending
+//   UPDATE dbo.TheJournal       SET IsClosed = 1                         WHERE PosBillNo = @ref;  -- 3 rows expected
+//   UPDATE dbo.InventoryFlowHdr SET IsClosed = 1, IsClosedBy = @by, IsClosedDate = GETDATE() WHERE PosBillNo = @ref;
+// @ref = payload.orderNumber.slice(0,30) — the PosBillNo stamped on every POS-authored doc
+// (SalesInvoiceHdr/InventoryFlowHdr since 16/17-07; TheJournal/SalePurchaseTax since 19-07,
+// see writeback.ts). @sc/@osl (the SC-/OSL-{YYMM}-{NNNN} VoucherNos) are still resolved for
+// the era fallbacks below.
 //
-// DOCUMENT RESOLUTION: PosBillNo lookup against SalesInvoiceHdr/InventoryFlowHdr is
-// PRIMARY (works for any bill sold after the 16/17-07-26 PosBillNo columns landed:
-// writeback.ts:633,767). payload.saleRef is the FALLBACK for a pre-16-07 bill with no
-// PosBillNo in KRS. If NEITHER resolves both VoucherNo values, this throws a
-// KrsWriteError (an operator/manual case, never a silent no-op). The pure decision
-// logic lives in cancelSaleResolve.ts (unit-tested there).
+// DOCUMENT RESOLUTION: PosBillNo lookup against SalesInvoiceHdr/InventoryFlowHdr is PRIMARY
+// (works for any bill sold after the 16/17-07-26 PosBillNo columns landed). payload.saleRef
+// is the FALLBACK for a pre-16-07 bill with no PosBillNo in KRS. If NEITHER resolves both
+// VoucherNo values, this throws a KrsWriteError (operator/manual case, never a silent no-op).
+// The pure decision logic lives in cancelSaleResolve.ts (unit-tested there).
+//
+// ERA FALLBACKS (a PosBillNo UPDATE matching 0 rows because the column was NULL/absent):
+//   • SalesInvoiceHdr / InventoryFlowHdr — PosBillNo has existed since 16/17-07. A bill OLDER
+//     than that (PosBillNo lookup missed → saleFromLookup/flowFromLookup false) closes by
+//     WHERE VoucherNo = @sc/@osl instead (the pre-16-07 saleRef path, unchanged).
+//   • TheJournal / SalePurchaseTax — PosBillNo was added only 19-07-26. A bill written BEFORE
+//     this deploy has NULL there, so a 0-row PosBillNo UPDATE retries WHERE VoucherNo = @sc
+//     AND PosBillNo IS NULL (guarded so it can NEVER touch a row already stamped with a
+//     DIFFERENT PosBillNo).
 //
 // IDEMPOTENCY: unlike writeKrsSale, this needs NO burned anchor and NO reclaim check.
 // All 4 UPDATEs are naturally idempotent — re-running the WHOLE thing against an
@@ -122,7 +132,7 @@ export async function cancelSaleInKrs(
       // AND no saleRef fallback) — an operator/manual case, never a silent no-op.
       throw new KrsWriteError(resolution.reason);
     }
-    const { saleVoucherNo, flowVoucherNo } = resolution;
+    const { saleVoucherNo, flowVoucherNo, saleFromLookup, flowFromLookup } = resolution;
     if (resolution.saleVoucherMismatch || resolution.flowVoucherMismatch) {
       logger.warn(
         {
@@ -139,46 +149,83 @@ export async function cancelSaleInKrs(
     const closedBy = payload.requestedBy.slice(0, IS_CLOSED_BY_MAX);
 
     // === THE 4 UPDATES (one tx; READ COMMITTED — idempotent UPDATEs, no claim race) ===
+    // Vendor spec REVISED 19-07-26: primary key is WHERE PosBillNo = @ref on all 4 tables.
     tx = new sql.Transaction(pool);
     await tx.begin();
 
-    const hdrRes = await new sql.Request(tx)
-      .input("sc", sql.NVarChar, saleVoucherNo)
-      .query(`UPDATE dbo.SalesInvoiceHdr SET IsClosed = 1 WHERE VoucherNo = @sc;`);
+    // (1) SalesInvoiceHdr — PosBillNo since 16/17-07. Post-16-07 bill (saleFromLookup) →
+    // WHERE PosBillNo; a pre-16-07 bill (saleRef path) closes by VoucherNo (unchanged).
+    const hdrRes = saleFromLookup
+      ? await new sql.Request(tx)
+          .input("ref", sql.NVarChar(POS_BILL_NO_MAX), posBillNo)
+          .query(`UPDATE dbo.SalesInvoiceHdr SET IsClosed = 1 WHERE PosBillNo = @ref;`)
+      : await new sql.Request(tx)
+          .input("sc", sql.NVarChar, saleVoucherNo)
+          .query(`UPDATE dbo.SalesInvoiceHdr SET IsClosed = 1 WHERE VoucherNo = @sc;`);
 
-    // Vendor-confirmed asymmetry (IsClosed = 0, NOT 1) — implemented verbatim; do not "fix".
-    const taxRes = await new sql.Request(tx)
-      .input("sc", sql.NVarChar, saleVoucherNo)
-      .query(`UPDATE dbo.SalePurchaseTax SET IsClosed = 0 WHERE VoucherNo = @sc;`);
+    // (2) InventoryFlowHdr — same era logic as SalesInvoiceHdr.
+    const flowRes = flowFromLookup
+      ? await new sql.Request(tx)
+          .input("ref", sql.NVarChar(POS_BILL_NO_MAX), posBillNo)
+          .input("by", sql.NVarChar(IS_CLOSED_BY_MAX), closedBy)
+          .query(
+            `UPDATE dbo.InventoryFlowHdr
+                SET IsClosed = 1, IsClosedBy = @by, IsClosedDate = GETDATE()
+              WHERE PosBillNo = @ref;`
+          )
+      : await new sql.Request(tx)
+          .input("osl", sql.NVarChar, flowVoucherNo)
+          .input("by", sql.NVarChar(IS_CLOSED_BY_MAX), closedBy)
+          .query(
+            `UPDATE dbo.InventoryFlowHdr
+                SET IsClosed = 1, IsClosedBy = @by, IsClosedDate = GETDATE()
+              WHERE VoucherNo = @osl;`
+          );
 
-    const jnlRes = await new sql.Request(tx)
-      .input("sc", sql.NVarChar, saleVoucherNo)
-      .query(`UPDATE dbo.TheJournal SET IsClosed = 1 WHERE VoucherNo = @sc;`);
+    // (3) TheJournal — PosBillNo added only 19-07-26. Primary WHERE PosBillNo; if 0 rows
+    // (bill written before this deploy → NULL PosBillNo) retry WHERE VoucherNo AND
+    // PosBillNo IS NULL (guarded so it never touches a DIFFERENT bill's stamped rows).
+    let jnlRes = await new sql.Request(tx)
+      .input("ref", sql.NVarChar(POS_BILL_NO_MAX), posBillNo)
+      .query(`UPDATE dbo.TheJournal SET IsClosed = 1 WHERE PosBillNo = @ref;`);
+    let journalRowsUpdated = jnlRes.rowsAffected[0] ?? 0;
+    if (journalRowsUpdated === 0) {
+      jnlRes = await new sql.Request(tx)
+        .input("sc", sql.NVarChar, saleVoucherNo)
+        .query(
+          `UPDATE dbo.TheJournal SET IsClosed = 1 WHERE VoucherNo = @sc AND PosBillNo IS NULL;`
+        );
+      journalRowsUpdated = jnlRes.rowsAffected[0] ?? 0;
+    }
 
-    const flowRes = await new sql.Request(tx)
-      .input("osl", sql.NVarChar, flowVoucherNo)
-      .input("by", sql.NVarChar(IS_CLOSED_BY_MAX), closedBy)
-      .query(
-        `UPDATE dbo.InventoryFlowHdr
-            SET IsClosed = 1, IsClosedBy = @by, IsClosedDate = GETDATE()
-          WHERE VoucherNo = @osl;`
-      );
+    // (4) SalePurchaseTax — same era logic. Vendor-confirmed asymmetry (IsClosed = 0, NOT
+    // 1) — implemented verbatim; do not "fix".
+    let taxRes = await new sql.Request(tx)
+      .input("ref", sql.NVarChar(POS_BILL_NO_MAX), posBillNo)
+      .query(`UPDATE dbo.SalePurchaseTax SET IsClosed = 0 WHERE PosBillNo = @ref;`);
+    let taxRowsUpdated = taxRes.rowsAffected[0] ?? 0;
+    if (taxRowsUpdated === 0) {
+      taxRes = await new sql.Request(tx)
+        .input("sc", sql.NVarChar, saleVoucherNo)
+        .query(
+          `UPDATE dbo.SalePurchaseTax SET IsClosed = 0 WHERE VoucherNo = @sc AND PosBillNo IS NULL;`
+        );
+      taxRowsUpdated = taxRes.rowsAffected[0] ?? 0;
+    }
 
     const hdrRowsUpdated = hdrRes.rowsAffected[0] ?? 0;
     const flowRowsUpdated = flowRes.rowsAffected[0] ?? 0;
-    const journalRowsUpdated = jnlRes.rowsAffected[0] ?? 0;
-    const taxRowsUpdated = taxRes.rowsAffected[0] ?? 0;
 
     // STRICT: the two documents that gate "closed / stock reopened". A miss throws and
     // rolls back ALL 4 updates (never leave KRS half-closed).
     if (hdrRowsUpdated < 1) {
       throw new KrsWriteError(
-        `SalesInvoiceHdr cancel matched 0 rows for VoucherNo=${saleVoucherNo} (expected >=1)`
+        `SalesInvoiceHdr cancel matched 0 rows for ${payload.orderNumber} (PosBillNo=${posBillNo}, VoucherNo=${saleVoucherNo}) (expected >=1)`
       );
     }
     if (flowRowsUpdated < 1) {
       throw new KrsWriteError(
-        `InventoryFlowHdr cancel matched 0 rows for VoucherNo=${flowVoucherNo} (expected >=1)`
+        `InventoryFlowHdr cancel matched 0 rows for ${payload.orderNumber} (PosBillNo=${posBillNo}, VoucherNo=${flowVoucherNo}) (expected >=1)`
       );
     }
 

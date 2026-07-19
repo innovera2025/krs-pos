@@ -95,13 +95,28 @@ async function main() {
     }
 
     const sc = hdrRow.VoucherNo;
-    const tax = await pool.request().input("sc", sql.NVarChar, sc).query(
-      `SELECT t.IsClosed AS TaxIsClosed FROM dbo.SalePurchaseTax t WHERE t.VoucherNo = @sc;`
+    // Vendor revision 19-07-26: the cancel targets WHERE PosBillNo on all 4 tables, so the
+    // proof checks TheJournal / SalePurchaseTax by PosBillNo FIRST. Pre-19-07 bills have
+    // NULL PosBillNo on those two rows (the column was added only then), so fall back to
+    // VoucherNo — mirroring cancelSale.ts's era fallback (loosely; this is read-only).
+    let tax = await pool.request().input("ref", sql.NVarChar(30), ref).query(
+      `SELECT t.IsClosed AS TaxIsClosed FROM dbo.SalePurchaseTax t WHERE t.PosBillNo = @ref;`
     );
-    const jnl = await pool.request().input("sc", sql.NVarChar, sc).query(
+    if (tax.recordset.length === 0) {
+      tax = await pool.request().input("sc", sql.NVarChar, sc).query(
+        `SELECT t.IsClosed AS TaxIsClosed FROM dbo.SalePurchaseTax t WHERE t.VoucherNo = @sc;`
+      );
+    }
+    let jnl = await pool.request().input("ref", sql.NVarChar(30), ref).query(
       `SELECT j.IsClosed AS JnlIsClosed, COUNT(*) AS Rows FROM dbo.TheJournal j
-         WHERE j.VoucherNo = @sc GROUP BY j.IsClosed;`
+         WHERE j.PosBillNo = @ref GROUP BY j.IsClosed;`
     );
+    if (jnl.recordset.length === 0) {
+      jnl = await pool.request().input("sc", sql.NVarChar, sc).query(
+        `SELECT j.IsClosed AS JnlIsClosed, COUNT(*) AS Rows FROM dbo.TheJournal j
+           WHERE j.VoucherNo = @sc GROUP BY j.IsClosed;`
+      );
+    }
 
     const hdrClosed = Number(hdrRow.HdrIsClosed) === 1;
     // SalePurchaseTax must be IsClosed=0 (vendor-confirmed asymmetry). If no tax row

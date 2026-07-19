@@ -9,6 +9,12 @@
 // Hdr.DiscountAmount exists KRS-side — what Receipt_Type values existing rows use, and
 // a sample of recent rows. READ-ONLY: INFORMATION_SCHEMA + SELECT only.
 //
+// ⚠️ DEPLOY GATE (VOID writeback, 19-07-26 vendor revision): the cash-sale INSERT now
+// ALSO stamps PosBillNo on TheJournal + SalePurchaseTax (so the cancel path can target
+// WHERE PosBillNo). Query (1) below verifies BOTH new columns exist in live KRS. If
+// either is MISSING, DO NOT deploy the writeback INSERT change — every sale INSERT would
+// fail (column not found). Sequence: pull → run THIS discovery → only then build/up.
+//
 // Run (same migrate-image pattern as krs-ct-precheck.cjs):
 //   docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm --no-deps \
 //     -v ~/krs-pos/scripts/krs-hdr-fields-discovery.cjs:/q.cjs:ro \
@@ -61,11 +67,13 @@ async function main() {
     }
   };
 
-  await q("1. Columns exist? (type/nullable/default)", `
+  await q("1. Columns exist? (type/nullable/default) — DEPLOY GATE for TheJournal.PosBillNo + SalePurchaseTax.PosBillNo", `
     SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE, COLUMN_DEFAULT
     FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME IN ('SalesInvoiceHdr', 'InventoryFlowHdr')
-      AND COLUMN_NAME IN ('Receipt_Type', 'PosBillNo', 'DiscountAmount');`);
+    WHERE TABLE_SCHEMA = 'dbo'
+      AND TABLE_NAME IN ('SalesInvoiceHdr', 'InventoryFlowHdr', 'TheJournal', 'SalePurchaseTax')
+      AND COLUMN_NAME IN ('PosBillNo', 'DiscountAmount', 'Receipt_Type', 'IsClosed')
+    ORDER BY TABLE_NAME, COLUMN_NAME;`);
   await q("2. Receipt_Type values in existing rows", `
     SELECT Receipt_Type, COUNT(*) AS n
     FROM dbo.SalesInvoiceHdr GROUP BY Receipt_Type ORDER BY n DESC;`);

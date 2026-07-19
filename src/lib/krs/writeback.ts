@@ -579,6 +579,11 @@ export async function writeKrsSale(
     const custCode = payload.customerCode ?? cfg.WALK_IN_CUST_CODE;
     const custName = payload.customerName ?? cfg.WALK_IN_CUST_NAME;
     const custAddress = payload.customerAddress ?? "";
+    // Vendor request 16/17/19-07-26: PosBillNo (nvarchar(30) KRS-side) is stamped on ALL
+    // POS-authored docs so the cancel path can target `WHERE PosBillNo = @ref`. ONE shared
+    // truncated value so it matches BYTE-FOR-BYTE across SalesInvoiceHdr / InventoryFlowHdr /
+    // TheJournal / SalePurchaseTax (the WHERE key must agree across all 4 tables).
+    const posBillNo = payload.orderNumber.slice(0, 30);
     await new sql.Request(tx)
       .input("TransactionNo", sql.NVarChar, saleTxnNo)
       .input("InvoiceType", sql.NVarChar, cfg.INVOICE_TYPE)
@@ -630,7 +635,7 @@ export async function writeKrsSale(
         sql.TinyInt,
         KRS_WRITE_CONFIG.RECEIPT_TYPE_BY_PAYMENT[payload.paymentType] ?? 1
       )
-      .input("PosBillNo", sql.NVarChar(30), payload.orderNumber.slice(0, 30))
+      .input("PosBillNo", sql.NVarChar(30), posBillNo)
       .query(
         `INSERT INTO dbo.SalesInvoiceHdr
            (TransactionNo, InvoiceType, SaleType, ItemType, TransactionTypeI, TransactionTypeT,
@@ -729,15 +734,19 @@ export async function writeKrsSale(
         // HQ ("00000"/"สำนักงานใหญ่") for an unassigned cashier, matching the old constants.
         .input("BranchCode", sql.NVarChar, payload.branchCode)
         .input("BranchName", sql.NVarChar, payload.branchName)
+        // Vendor request 19-07-26: TheJournal now carries PosBillNo (vendor added the
+        // column) so the cancel path can `UPDATE ... WHERE PosBillNo = @ref`. Same shared
+        // truncated value as SalesInvoiceHdr so all 4 cancel-target tables agree.
+        .input("PosBillNo", sql.NVarChar(30), posBillNo)
         .query(
           `INSERT INTO dbo.TheJournal
              (JnlName, JnlCode, TransactionTypeI, TransactionTypeT, CompanyCode, Department,
               GLAccount, JnlDate, Description, DrCr, Currency, Amount, AmountBht, SourceType,
-              SourceNo, VoucherNo, JournalNo, ActualInvoiceNo, BranchCode, BranchName)
+              SourceNo, VoucherNo, JournalNo, ActualInvoiceNo, BranchCode, BranchName, PosBillNo)
            VALUES
              (@JnlName, @JnlCode, @TransactionTypeI, @TransactionTypeT, @CompanyCode, @Department,
               @GLAccount, @JnlDate, @Description, @DrCr, @Currency, @Amount, @AmountBht, @SourceType,
-              @SourceNo, @VoucherNo, @JournalNo, @ActualInvoiceNo, @BranchCode, @BranchName);`
+              @SourceNo, @VoucherNo, @JournalNo, @ActualInvoiceNo, @BranchCode, @BranchName, @PosBillNo);`
         );
     }
 
@@ -852,15 +861,19 @@ export async function writeKrsSale(
       .input("VATPercent", sql.Decimal(18, 2), cfg.VAT_PERCENT)
       .input("BranchCode", sql.NVarChar, payload.branchCode)
       .input("BranchName", sql.NVarChar, payload.branchName)
+      // Vendor request 19-07-26: SalePurchaseTax now carries PosBillNo (vendor added the
+      // column) so the cancel path can `UPDATE ... WHERE PosBillNo = @ref`. Same shared
+      // truncated value as SalesInvoiceHdr so all 4 cancel-target tables agree.
+      .input("PosBillNo", sql.NVarChar(30), posBillNo)
       .query(
         `INSERT INTO dbo.SalePurchaseTax
            (IsPurchaseTax, Type, VoucherTrNo, IsUndueVAT, IsFreeVAT, CompanyCode, CustOrSuppCode, CustOrSuppName,
             VoucherDate, VoucherNo, ActualInvoiceDate, ActualInvoiceNo, Description, BillAmount, VATAmount, TaxFil,
-            VATPercent, BranchCode, BranchName)
+            VATPercent, BranchCode, BranchName, PosBillNo)
          VALUES
            (@IsPurchaseTax, @Type, @VoucherTrNo, @IsUndueVAT, @IsFreeVAT, @CompanyCode, @CustOrSuppCode, @CustOrSuppName,
             @VoucherDate, @VoucherNo, @ActualInvoiceDate, @ActualInvoiceNo, @Description, @BillAmount, @VATAmount, @TaxFil,
-            @VATPercent, @BranchCode, @BranchName);`
+            @VATPercent, @BranchCode, @BranchName, @PosBillNo);`
       );
 
     // ── Step 8: COMMIT ──

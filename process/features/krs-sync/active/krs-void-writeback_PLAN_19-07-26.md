@@ -30,6 +30,48 @@ shop has no refunds (memory `no-refund-no-bill-edit`). `AuditAction.ORDER_REFUND
 `SaleStatus.REFUNDED`/its badge stay in the schema/UI for **historical** rows only; no
 new refund can be created going forward.
 
+### ADDENDUM (19-07-26, vendor SECOND message — REVISED cancel spec) ⚠️
+
+The vendor **revised** the cancel to target `WHERE PosBillNo = @ref` on **all 4** tables
+(was `WHERE VoucherNo`), and **added a `PosBillNo` column to `TheJournal` and
+`SalePurchaseTax`**, asking the cash-sale INSERT to populate them too:
+
+```sql
+UPDATE dbo.SalesInvoiceHdr  SET IsClosed = 1                                    WHERE PosBillNo = @ref;
+UPDATE dbo.SalePurchaseTax  SET IsClosed = 0                                    WHERE PosBillNo = @ref;
+UPDATE dbo.TheJournal       SET IsClosed = 1                                    WHERE PosBillNo = @ref;   -- 3 rows
+UPDATE dbo.InventoryFlowHdr SET IsClosed = 1, IsClosedBy = @user, IsClosedDate = GETDATE() WHERE PosBillNo = @ref;
+```
+
+`@ref` = `payload.orderNumber.slice(0,30)` — one shared truncated value stamped on every
+POS-authored doc so the WHERE key agrees byte-for-byte across all 4 tables.
+
+**Two new INSERT columns (`writeback.ts`):** the cash-sale write now stamps `PosBillNo` on
+the 3 `TheJournal` rows and the `SalePurchaseTax` row (in addition to the existing
+`SalesInvoiceHdr` / `InventoryFlowHdr` PosBillNo).
+
+**Era fallbacks in `cancelSale.ts`** (a PosBillNo UPDATE hitting 0 rows because the column
+was NULL/absent for older bills):
+- `SalesInvoiceHdr` / `InventoryFlowHdr` — PosBillNo since 16/17-07. A bill older than that
+  (PosBillNo lookup missed → `saleFromLookup`/`flowFromLookup` false) closes by
+  `WHERE VoucherNo = @sc/@osl` (the pre-16-07 saleRef path, unchanged). Strict rowcount ≥1.
+- `TheJournal` / `SalePurchaseTax` — PosBillNo added only 19-07. A bill written BEFORE this
+  deploy has NULL there, so a 0-row PosBillNo UPDATE retries
+  `WHERE VoucherNo = @sc AND PosBillNo IS NULL` (guarded so it can never touch a row already
+  stamped with a DIFFERENT PosBillNo). Warn-only rowcounts (journal 3 / tax 1).
+
+`cancelSaleResolve.ts` is UNCHANGED — it already returns `saleFromLookup`/`flowFromLookup`,
+which is exactly the era signal the revised UPDATEs branch on (no VoucherNo-primary logic
+was encoded there to unwind).
+
+**⚠️ CRITICAL DEPLOY-SEQUENCING INVARIANT:** the writeback INSERT change (stamping PosBillNo
+on `TheJournal` + `SalePurchaseTax`) **MUST NOT reach production before** the discovery gate
+confirms both new columns exist in live KRS. If either column is missing, **every sale
+INSERT fails** (column-not-found) — checkout breaks. Deploy sequence: **pull → run
+`scripts/krs-hdr-fields-discovery.cjs` (query 1 = the gate; it now covers
+`TheJournal`/`SalePurchaseTax` PosBillNo) → only then build/up.** `scripts/krs-void-proof.cjs`
+checks the 4 tables by PosBillNo (VoucherNo fallback for pre-19-07 rows).
+
 ---
 
 ## Critical Prerequisite Finding (new — not in the original research brief)
