@@ -90,6 +90,16 @@ const ORDER_INCLUDE = {
   customer: true,
 } satisfies Prisma.OrderInclude;
 
+/** One day in ms — used only for the range-span guard below (Bangkok has no DST). */
+const DAY_MS = 24 * 60 * 60 * 1000;
+/**
+ * Max span for the Sales History date+time range (Sales History range filter).
+ * Guards an unbounded index scan on a crafted huge range. Mirrors the
+ * promotions-report MAX_RANGE_DAYS (366) but a touch wider — a full year plus a
+ * margin — per the range-filter spec.
+ */
+const MAX_RANGE_DAYS = 400;
+
 // GET /api/orders — list recent orders (Phase 5 Sales History).
 //
 // AUTH (security-review FIX A): requires an authenticated session. Sales history
@@ -98,11 +108,23 @@ const ORDER_INCLUDE = {
 // gate an anonymous request would leak the full sales ledger incl. Customer PII
 // (name/taxId/phone/address), payment refs/amounts, cashier names, and totals.
 //
-// Optional query filters (validated against the enums; unknown values are
-// ignored so a stray param never 500s the history page):
+// Optional query filters (validated; unknown/invalid enum values are ignored so a
+// stray param never 500s the history page, but a malformed date/range returns a
+// coded 400):
 //   ?status=COMPLETED|REFUNDED|VOIDED|PENDING|CANCELLED
 //   ?sync=PENDING|DAILY|SYNCED|FAILED|SKIPPED
+//   ?from=<ISO UTC instant>&to=<ISO UTC instant>  (Sales History range filter)
 // `payments` is included so the sales list + reprint (ReceiptModal) have tenders.
+//
+// RESPONSE SHAPE (Sales History range filter): now returns
+//   { orders: OrderDTO[], summary: { billCount: number, totalSales: string } }
+// (was a bare OrderDTO[]). `summary` is a server-side aggregate over the WHOLE
+// filtered range — never the take:200 page — and PINS status=COMPLETED (the
+// money-aggregate rule: VOIDED/REFUNDED never count), so it ignores the ?status/
+// ?sync params and the UI status chip. It composes with the date range only; the
+// client-side text search does NOT narrow it, so it is the authoritative sales
+// total for the whole selected range. `totalSales` is a 2dp baht string via the
+// shared satang serializer ("0.00" on a zero-row range).
 export async function GET(req: Request) {
   return runWithRequestId(req, async () => {
     const gate = await requireUser();
@@ -111,22 +133,101 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const statusParam = searchParams.get("status");
     const syncParam = searchParams.get("sync");
+    const fromParam = searchParams.get("from");
+    const toParam = searchParams.get("to");
+
+    // --- optional date/time range (Sales History range filter) ---
+    // `from`/`to` carry ISO UTC instants (the client converts its Asia/Bangkok
+    // wall-clock datetime-local inputs to instants via bangkokLocalInputToInstant).
+    // Each is independently optional; a present-but-unparseable value returns a
+    // coded 400 (BAD_DATE) rather than being silently ignored, matching the
+    // route's error style. When BOTH are present the range is validated: from ≤ to
+    // (BAD_RANGE) and span ≤ MAX_RANGE_DAYS (RANGE_TOO_WIDE).
+    let fromDate: Date | null = null;
+    let toDate: Date | null = null;
+    if (fromParam) {
+      fromDate = new Date(fromParam);
+      if (Number.isNaN(fromDate.getTime())) {
+        return NextResponse.json(
+          { error: "รูปแบบวันที่เริ่มต้นไม่ถูกต้อง", code: "BAD_DATE" },
+          { status: 400 }
+        );
+      }
+    }
+    if (toParam) {
+      toDate = new Date(toParam);
+      if (Number.isNaN(toDate.getTime())) {
+        return NextResponse.json(
+          { error: "รูปแบบวันที่สิ้นสุดไม่ถูกต้อง", code: "BAD_DATE" },
+          { status: 400 }
+        );
+      }
+    }
+    if (fromDate && toDate) {
+      if (fromDate.getTime() > toDate.getTime()) {
+        return NextResponse.json(
+          { error: "ช่วงเวลาไม่ถูกต้อง (จากต้องไม่เกินถึง)", code: "BAD_RANGE" },
+          { status: 400 }
+        );
+      }
+      if (toDate.getTime() - fromDate.getTime() > MAX_RANGE_DAYS * DAY_MS) {
+        return NextResponse.json(
+          { error: "ช่วงเวลากว้างเกินไป (สูงสุด 400 วัน)", code: "RANGE_TOO_WIDE" },
+          { status: 400 }
+        );
+      }
+    }
+
+    // createdAt filter — INCLUSIVE on both present bounds (gte/lte), composable
+    // with the status/sync enum filters + the take:200 page.
+    const createdAt: Prisma.DateTimeFilter = {};
+    if (fromDate) createdAt.gte = fromDate;
+    if (toDate) createdAt.lte = toDate;
+    const hasRange = fromDate !== null || toDate !== null;
 
     const where: Prisma.OrderWhereInput = {};
     if (statusParam && isOrderStatus(statusParam)) where.status = statusParam;
     if (syncParam && isSyncStatus(syncParam)) where.syncStatus = syncParam;
+    if (hasRange) where.createdAt = createdAt;
+
+    // Range summary WHERE (money-aggregate rule): PINS status=COMPLETED — ignoring
+    // the ?status/?sync params + the UI status chip — and composes with the date
+    // range only. It is NEVER page-scoped (aggregate has no take), so it is the
+    // true total over the whole filtered range.
+    const summaryWhere: Prisma.OrderWhereInput = {
+      status: OrderStatus.COMPLETED,
+    };
+    if (hasRange) summaryWhere.createdAt = createdAt;
 
     // Error handling (production-readiness Phase 1, theme #4): wrap the findMany +
-    // serialize map so a DB failure returns a typed { error, code } 500 (with a
-    // server-side log line) instead of a raw Next.js 500 that blanks /sales.
+    // aggregate + serialize map so a DB failure returns a typed { error, code }
+    // 500 (with a server-side log line) instead of a raw Next.js 500 that blanks
+    // /sales.
     try {
-      const orders = await prisma.order.findMany({
-        where,
-        include: ORDER_INCLUDE,
-        orderBy: { createdAt: "desc" },
-        take: 200,
+      const [orders, agg] = await Promise.all([
+        prisma.order.findMany({
+          where,
+          include: ORDER_INCLUDE,
+          orderBy: { createdAt: "desc" },
+          take: 200,
+        }),
+        // ONE aggregate for the range summary: distinct COMPLETED bill count +
+        // sum of totals. `_sum.total` is null on a zero-row range → toSatang(null)
+        // = 0 → "0.00". Serialized as a 2dp baht string via the shared satang
+        // helpers so the money contract matches every other order response.
+        prisma.order.aggregate({
+          where: summaryWhere,
+          _count: true,
+          _sum: { total: true },
+        }),
+      ]);
+      return NextResponse.json({
+        orders: orders.map(serializeOrder),
+        summary: {
+          billCount: agg._count,
+          totalSales: satangToString(toSatang(agg._sum.total)),
+        },
       });
-      return NextResponse.json(orders.map(serializeOrder));
     } catch (err) {
       logger.error({ err }, "GET /api/orders failed");
       return NextResponse.json(

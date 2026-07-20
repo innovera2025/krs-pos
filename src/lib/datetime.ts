@@ -80,3 +80,43 @@ export function bangkokDayWindow(now: Date): { startOfDay: Date; startOfNextDay:
   const startOfNextDay = new Date(Date.UTC(y, m - 1, d + 1, -7, 0, 0, 0));
   return { startOfDay, startOfNextDay };
 }
+
+/**
+ * Convert a browser `<input type="datetime-local">` value — "YYYY-MM-DDTHH:mm"
+ * (optionally with ":ss") interpreted as an Asia/Bangkok WALL-CLOCK instant
+ * (fixed +07:00, no DST) — into a UTC ISO instant string. Used by the Sales
+ * History date+time range filter: the browser gives Bangkok wall-clock, but the
+ * orders API filters on UTC `createdAt`, so the client converts here before it
+ * sends `from`/`to`.
+ *
+ * Returns null for a malformed OR impossible date/time (bad shape, month > 12,
+ * hour > 23, or a calendar overflow like 2026-02-30T10:00). Bangkok = UTC + 7h,
+ * so the UTC instant is the wall-clock minus 7 hours; the result is round-tripped
+ * through bangkokDateParts to reject overflow dates (Feb 30 → Mar 2 would not
+ * round-trip). Pure — unit-tested.
+ */
+export function bangkokLocalInputToInstant(value: string): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(
+    value
+  );
+  if (!match) return null;
+  const y = Number(match[1]);
+  const mo = Number(match[2]);
+  const d = Number(match[3]);
+  const h = Number(match[4]);
+  const mi = Number(match[5]);
+  const s = match[6] ? Number(match[6]) : 0;
+  // Field-range guard before the Date math so an out-of-range component (e.g.
+  // hour 25, month 13) is rejected rather than silently normalized by Date.UTC.
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 59) {
+    return null;
+  }
+  // Bangkok wall-clock is +07:00 → subtract 7h to get the UTC instant.
+  const dt = new Date(Date.UTC(y, mo - 1, d, h - 7, mi, s, 0));
+  if (Number.isNaN(dt.getTime())) return null;
+  // Reject calendar overflow: the resulting instant's Bangkok date MUST equal the
+  // input date (2026-02-30 would land on Mar 2 in Bangkok and fail this check).
+  const parts = bangkokDateParts(dt);
+  if (parts.y !== y || parts.m !== mo || parts.d !== d) return null;
+  return dt.toISOString();
+}

@@ -73,7 +73,10 @@ test.describe("RBAC: seller (CASHIER) scope", () => {
     // fires before any DB lookup, so the cashier gets a 403.
     const ordersRes = await page.request.get("/api/orders");
     expect(ordersRes.status(), "GET /api/orders (seller)").toBe(200);
-    const orders = (await ordersRes.json()) as Array<{ id: string }>;
+    // GET /api/orders now returns { orders, summary } (Sales History range filter),
+    // not a bare array — read the `orders` field for a real id to void.
+    const body = (await ordersRes.json()) as { orders?: Array<{ id: string }> };
+    const orders = body.orders ?? [];
     const orderId =
       Array.isArray(orders) && orders.length > 0
         ? orders[0].id
