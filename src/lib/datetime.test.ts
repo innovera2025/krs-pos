@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   bangkokDayStamp,
-  bangkokLocalInputToInstant,
+  bangkokDayStringToWindow,
   bangkokYyyymmdd,
   formatOrderNumber,
 } from "@/lib/datetime";
@@ -94,80 +94,89 @@ describe("formatOrderNumber — POS-YYYYMMDD-#### zero-padding", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sales History range filter — bangkokLocalInputToInstant.
+// Sales History range filter — bangkokDayStringToWindow.
 //
-// The browser <input type="datetime-local"> gives Asia/Bangkok WALL-CLOCK
-// ("YYYY-MM-DDTHH:mm"), but the orders API filters on UTC createdAt. Bangkok is
-// a fixed +07:00 (no DST), so the UTC instant is the wall-clock minus 7 hours.
-// These pin that conversion, the optional-seconds shape, and the malformed /
-// calendar-overflow rejection (→ null).
+// The two <input type="date"> fields give an Asia/Bangkok CALENDAR day
+// ("YYYY-MM-DD"), but the orders API filters on UTC createdAt. Bangkok is a
+// fixed +07:00 (no DST), so a calendar day maps to the half-open UTC window
+// [Bangkok-00:00 − 7h, +24h). The client sends `from` → startOfDay (inclusive)
+// and `to` → startOfNextDay (the EXCLUSIVE upper bound the API compares with
+// `lt`). These pin that conversion, the single-day-covers-all-bills contract,
+// and the malformed / calendar-overflow rejection (→ null).
 // ---------------------------------------------------------------------------
 
-describe("bangkokLocalInputToInstant — Bangkok wall-clock → UTC instant", () => {
-  it("converts Bangkok midnight to 17:00 UTC of the PREVIOUS day", () => {
-    // Bangkok 2026-07-20 00:00 = 2026-07-19 17:00 UTC (−7h).
-    expect(bangkokLocalInputToInstant("2026-07-20T00:00")).toBe(
-      "2026-07-19T17:00:00.000Z"
-    );
+describe("bangkokDayStringToWindow — Bangkok calendar day → UTC [start, nextStart)", () => {
+  it("maps a day to Bangkok 00:00 (start) and the next Bangkok 00:00 (exclusive end)", () => {
+    // Bangkok 2026-07-20 00:00 = 2026-07-19 17:00 UTC (−7h); next day start = +24h.
+    const win = bangkokDayStringToWindow("2026-07-20");
+    expect(win).not.toBeNull();
+    expect(win!.startOfDay.toISOString()).toBe("2026-07-19T17:00:00.000Z");
+    expect(win!.startOfNextDay.toISOString()).toBe("2026-07-20T17:00:00.000Z");
   });
 
-  it("converts an afternoon Bangkok wall-clock (subtracts 7h)", () => {
-    // Bangkok 2026-07-20 14:30 = 2026-07-20 07:30 UTC.
-    expect(bangkokLocalInputToInstant("2026-07-20T14:30")).toBe(
-      "2026-07-20T07:30:00.000Z"
-    );
+  it("a single day (from=to=20/07) covers every bill of that Bangkok day", () => {
+    // Screenshot case: bills at 20 ก.ค. 16:45 / 16:46 Bangkok must fall inside
+    // [startOfDay, nextStart) when both fields pick 2026-07-20.
+    const from = bangkokDayStringToWindow("2026-07-20")!.startOfDay.getTime();
+    const to = bangkokDayStringToWindow("2026-07-20")!.startOfNextDay.getTime();
+    // 20 ก.ค. 16:45 Bangkok = 2026-07-20 09:45 UTC; 16:46 = 09:46 UTC.
+    const bill1645 = new Date("2026-07-20T09:45:00.000Z").getTime();
+    const bill1646 = new Date("2026-07-20T09:46:00.000Z").getTime();
+    expect(bill1645).toBeGreaterThanOrEqual(from);
+    expect(bill1645).toBeLessThan(to);
+    expect(bill1646).toBeGreaterThanOrEqual(from);
+    expect(bill1646).toBeLessThan(to);
   });
 
-  it("converts end-of-day Bangkok 23:59 (still the same UTC day)", () => {
-    // Bangkok 2026-07-20 23:59 = 2026-07-20 16:59 UTC.
-    expect(bangkokLocalInputToInstant("2026-07-20T23:59")).toBe(
-      "2026-07-20T16:59:00.000Z"
-    );
+  it("the exclusive end excludes the very first instant of the next Bangkok day", () => {
+    // Bangkok 2026-07-21 00:00 = 2026-07-20 17:00 UTC = startOfNextDay → NOT < to.
+    const to = bangkokDayStringToWindow("2026-07-20")!.startOfNextDay.getTime();
+    const nextDayStart = new Date("2026-07-20T17:00:00.000Z").getTime();
+    expect(nextDayStart).toBe(to);
+    expect(nextDayStart).not.toBeLessThan(to);
   });
 
-  it("an early-morning Bangkok wall-clock stays on the previous UTC day", () => {
-    // Bangkok 2026-07-20 06:00 = 2026-07-19 23:00 UTC.
-    expect(bangkokLocalInputToInstant("2026-07-20T06:00")).toBe(
-      "2026-07-19T23:00:00.000Z"
-    );
+  it("the window spans exactly 24h (Bangkok has no DST)", () => {
+    const win = bangkokDayStringToWindow("2026-07-20")!;
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    expect(win.startOfNextDay.getTime() - win.startOfDay.getTime()).toBe(DAY_MS);
   });
 
-  it("accepts an optional seconds component", () => {
-    // Bangkok 2026-07-20 14:30:45 = 2026-07-20 07:30:45 UTC.
-    expect(bangkokLocalInputToInstant("2026-07-20T14:30:45")).toBe(
-      "2026-07-20T07:30:45.000Z"
-    );
+  it("crosses a month boundary correctly", () => {
+    // Bangkok 2026-07-01 00:00 = 2026-06-30 17:00 UTC; next start = 2026-07-01 17:00 UTC.
+    const win = bangkokDayStringToWindow("2026-07-01")!;
+    expect(win.startOfDay.toISOString()).toBe("2026-06-30T17:00:00.000Z");
+    expect(win.startOfNextDay.toISOString()).toBe("2026-07-01T17:00:00.000Z");
   });
 
-  it("crosses a month boundary correctly at Bangkok midnight", () => {
-    // Bangkok 2026-07-01 00:00 = 2026-06-30 17:00 UTC.
-    expect(bangkokLocalInputToInstant("2026-07-01T00:00")).toBe(
-      "2026-06-30T17:00:00.000Z"
-    );
+  it("crosses a year boundary correctly (Dec 31 → Jan 1)", () => {
+    // Bangkok 2026-12-31 00:00 = 2026-12-30 17:00 UTC; next start = 2026-12-31 17:00 UTC.
+    const win = bangkokDayStringToWindow("2026-12-31")!;
+    expect(win.startOfDay.toISOString()).toBe("2026-12-30T17:00:00.000Z");
+    expect(win.startOfNextDay.toISOString()).toBe("2026-12-31T17:00:00.000Z");
   });
 
-  it("returns null for a malformed shape (missing time / not a date)", () => {
-    expect(bangkokLocalInputToInstant("")).toBeNull();
-    expect(bangkokLocalInputToInstant("2026-07-20")).toBeNull();
-    expect(bangkokLocalInputToInstant("not-a-date")).toBeNull();
-    expect(bangkokLocalInputToInstant("2026/07/20 14:30")).toBeNull();
+  it("startOfDay belongs to the requested Bangkok business day", () => {
+    const win = bangkokDayStringToWindow("2026-07-20")!;
+    expect(bangkokDayStamp(win.startOfDay)).toBe("20260720");
   });
 
-  it("returns null for out-of-range components (month 13, hour 25)", () => {
-    expect(bangkokLocalInputToInstant("2026-13-01T00:00")).toBeNull();
-    expect(bangkokLocalInputToInstant("2026-07-20T25:00")).toBeNull();
-    expect(bangkokLocalInputToInstant("2026-07-20T14:99")).toBeNull();
+  it("returns null for a malformed shape (not YYYY-MM-DD)", () => {
+    expect(bangkokDayStringToWindow("")).toBeNull();
+    expect(bangkokDayStringToWindow("2026-07")).toBeNull();
+    expect(bangkokDayStringToWindow("2026-07-20T14:30")).toBeNull();
+    expect(bangkokDayStringToWindow("not-a-date")).toBeNull();
+    expect(bangkokDayStringToWindow("2026/07/20")).toBeNull();
+  });
+
+  it("returns null for out-of-range components (month 13, day 0)", () => {
+    expect(bangkokDayStringToWindow("2026-13-01")).toBeNull();
+    expect(bangkokDayStringToWindow("2026-07-00")).toBeNull();
+    expect(bangkokDayStringToWindow("2026-07-32")).toBeNull();
   });
 
   it("returns null for an impossible calendar date (2026-02-30)", () => {
     // Feb 30 would normalize to Mar 2 in Date.UTC → the round-trip guard rejects it.
-    expect(bangkokLocalInputToInstant("2026-02-30T10:00")).toBeNull();
-  });
-
-  it("round-trips a valid instant back to the same Bangkok day stamp", () => {
-    const iso = bangkokLocalInputToInstant("2026-07-20T00:00");
-    expect(iso).not.toBeNull();
-    // The 00:00 Bangkok instant belongs to the 2026-07-20 Bangkok business day.
-    expect(bangkokDayStamp(new Date(iso as string))).toBe("20260720");
+    expect(bangkokDayStringToWindow("2026-02-30")).toBeNull();
   });
 });

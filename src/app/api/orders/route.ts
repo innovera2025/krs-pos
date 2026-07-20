@@ -136,13 +136,15 @@ export async function GET(req: Request) {
     const fromParam = searchParams.get("from");
     const toParam = searchParams.get("to");
 
-    // --- optional date/time range (Sales History range filter) ---
-    // `from`/`to` carry ISO UTC instants (the client converts its Asia/Bangkok
-    // wall-clock datetime-local inputs to instants via bangkokLocalInputToInstant).
-    // Each is independently optional; a present-but-unparseable value returns a
-    // coded 400 (BAD_DATE) rather than being silently ignored, matching the
-    // route's error style. When BOTH are present the range is validated: from ≤ to
-    // (BAD_RANGE) and span ≤ MAX_RANGE_DAYS (RANGE_TOO_WIDE).
+    // --- optional date range (Sales History range filter) ---
+    // `from`/`to` carry ISO UTC instants. The client converts its two Asia/Bangkok
+    // `<input type="date">` calendar days to instants via bangkokDayStringToWindow:
+    // `from` → START of that Bangkok day, `to` → START of the NEXT Bangkok day (the
+    // EXCLUSIVE upper bound — see the createdAt filter below, which uses `lt` on the
+    // to-bound). Each is independently optional; a present-but-unparseable value
+    // returns a coded 400 (BAD_DATE) rather than being silently ignored, matching
+    // the route's error style. When BOTH are present the range is validated:
+    // from ≤ to (BAD_RANGE) and span ≤ MAX_RANGE_DAYS (RANGE_TOO_WIDE).
     let fromDate: Date | null = null;
     let toDate: Date | null = null;
     if (fromParam) {
@@ -178,11 +180,15 @@ export async function GET(req: Request) {
       }
     }
 
-    // createdAt filter — INCLUSIVE on both present bounds (gte/lte), composable
-    // with the status/sync enum filters + the take:200 page.
+    // createdAt filter — HALF-OPEN [from, to): `from` is the INCLUSIVE lower bound
+    // (gte) and `to` is the EXCLUSIVE upper bound (lt). This matches the Sales
+    // History date filter (client sends `to` = START of the day AFTER the selected
+    // "ถึง" day) and the promotions-report convention (gte start, lt nextDay), so a
+    // single Bangkok day selected on both ends covers every bill of that day.
+    // Composable with the status/sync enum filters + the take:200 page.
     const createdAt: Prisma.DateTimeFilter = {};
     if (fromDate) createdAt.gte = fromDate;
-    if (toDate) createdAt.lte = toDate;
+    if (toDate) createdAt.lt = toDate;
     const hasRange = fromDate !== null || toDate !== null;
 
     const where: Prisma.OrderWhereInput = {};

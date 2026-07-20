@@ -10,7 +10,7 @@ import { SaleDetailDrawer } from "@/components/sales/SaleDetailDrawer";
 import { TaxInvoiceDocument } from "@/components/sales/TaxInvoiceDocument";
 import { matchesFilter, type SalesFilter } from "@/components/sales/saleMeta";
 import { printReceiptWithSize } from "@/lib/receiptPrint";
-import { bangkokLocalInputToInstant } from "@/lib/datetime";
+import { bangkokDayStringToWindow } from "@/lib/datetime";
 import { money } from "@/lib/money";
 import type { OrderDTO, SellerConfigDTO, ShopSettingsDTO } from "@/types";
 
@@ -19,7 +19,7 @@ type LoadState = "loading" | "ready" | "error";
 /** The range summary the orders API returns (COMPLETED-only, whole range). */
 type RangeSummary = { billCount: number; totalSales: string };
 
-/** Quick-pick presets for the date+time range (mirrors the promotions report tab). */
+/** Quick-pick presets for the date range (mirrors the promotions report tab). */
 type RangePreset = "today" | "last7" | "month";
 
 /** Current Asia/Bangkok wall-clock calendar date as "YYYY-MM-DD". */
@@ -30,21 +30,6 @@ function bangkokTodayDate(): string {
     month: "2-digit",
     day: "2-digit",
   }).format(new Date());
-}
-
-/** Current Asia/Bangkok wall-clock as a datetime-local value "YYYY-MM-DDTHH:mm". */
-function bangkokNowLocal(): string {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Bangkok",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date());
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
-  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
 }
 
 /** Shift a "YYYY-MM-DD" calendar date by `delta` days (UTC math → no DST drift). */
@@ -60,20 +45,20 @@ function firstOfMonth(dateStr: string): string {
 }
 
 /**
- * Resolve a preset to its [from, to] datetime-local bounds. Every preset spans
- * 00:00 of the start day → NOW (Bangkok wall-clock), so the chips fill both the
- * date AND time boundaries the two datetime-local inputs expect.
+ * Resolve a preset to its [from, to] date-only bounds ("YYYY-MM-DD", Bangkok
+ * calendar days). Every preset ends on TODAY (Bangkok); "วันนี้" is today on
+ * both ends. The date→instant conversion (start-of-day / end-exclusive
+ * next-day-start) happens once at fetch time in loadOrders.
  */
 function presetRange(preset: RangePreset): { from: string; to: string } {
   const today = bangkokTodayDate();
-  const now = bangkokNowLocal();
   switch (preset) {
     case "today":
-      return { from: `${today}T00:00`, to: now };
+      return { from: today, to: today };
     case "last7":
-      return { from: `${addDays(today, -6)}T00:00`, to: now };
+      return { from: addDays(today, -6), to: today };
     case "month":
-      return { from: `${firstOfMonth(today)}T00:00`, to: now };
+      return { from: firstOfMonth(today), to: today };
   }
 }
 
@@ -85,11 +70,13 @@ export default function SalesPage() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<SalesFilter>("all");
 
-  // Date+time range filter (Sales History range filter). Empty strings = no range
-  // (default = today's behavior). `fromLocal`/`toLocal` are Asia/Bangkok wall-clock
-  // datetime-local values; the server receives UTC instants (converted on fetch).
-  // `preset` highlights the active quick-pick chip (null once a manual edit clears
-  // it). `summary` is the server aggregate for the WHOLE range (COMPLETED-only).
+  // Date range filter (Sales History range filter). Empty strings = no range
+  // (default = today's behavior). `fromLocal`/`toLocal` are Asia/Bangkok calendar
+  // days ("YYYY-MM-DD") from the two <input type="date"> fields; the server
+  // receives UTC instants (converted on fetch: from → start of day, to → end of
+  // day / exclusive next-day-start). `preset` highlights the active quick-pick
+  // chip (null once a manual edit clears it). `summary` is the server aggregate
+  // for the WHOLE range (COMPLETED-only).
   const [fromLocal, setFromLocal] = useState("");
   const [toLocal, setToLocal] = useState("");
   const [preset, setPreset] = useState<RangePreset | null>(null);
@@ -125,10 +112,13 @@ export default function SalesPage() {
   const [taxInvoiceOpen, setTaxInvoiceOpen] = useState(false);
   const [seller, setSeller] = useState<SellerConfigDTO | null>(null);
 
-  // Load orders (+ the range summary) for the given Bangkok wall-clock range.
-  // Empty bounds = no range (default recent list). Bangkok wall-clock is converted
-  // to UTC instants for the API; an unparseable bound is simply dropped (the field
-  // guards its own value, and the server also 400s a bad instant defensively).
+  // Load orders (+ the range summary) for the given Bangkok calendar-day range.
+  // Empty bounds = no range (default recent list). Each Bangkok day is converted
+  // to a UTC instant for the API: `from` → START of that day (inclusive lower
+  // bound), `to` → START of the NEXT day (the EXCLUSIVE upper bound — the API
+  // filters createdAt < to), so a single day picked on both ends covers every
+  // bill of that day. An unparseable bound is simply dropped (the field guards
+  // its own value, and the server also 400s a bad instant defensively).
   // loadOrders OWNS loadState; the reqId token discards a superseded response.
   async function loadOrders(fromLocalVal: string, toLocalVal: string) {
     const reqId = ++reqIdRef.current;
@@ -136,9 +126,13 @@ export default function SalesPage() {
     try {
       const params = new URLSearchParams();
       const fromIso = fromLocalVal
-        ? bangkokLocalInputToInstant(fromLocalVal)
+        ? (bangkokDayStringToWindow(fromLocalVal)?.startOfDay.toISOString() ??
+          null)
         : null;
-      const toIso = toLocalVal ? bangkokLocalInputToInstant(toLocalVal) : null;
+      const toIso = toLocalVal
+        ? (bangkokDayStringToWindow(toLocalVal)?.startOfNextDay.toISOString() ??
+          null)
+        : null;
       if (fromIso) params.set("from", fromIso);
       if (toIso) params.set("to", toIso);
       const qs = params.toString();
@@ -392,8 +386,8 @@ export default function SalesPage() {
         <FilterChips active={filter} onChange={setFilter} />
       </div>
 
-      {/* Date+time range filter (Sales History range filter). Preset chips fill
-          both bounds (00:00 → now); the two datetime-local inputs allow a manual
+      {/* Date range filter (Sales History range filter). Preset chips fill both
+          bounds with Bangkok calendar days; the two date inputs allow a manual
           range. The clear affordance appears only when a range is active. */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-1.5">
@@ -415,11 +409,11 @@ export default function SalesPage() {
           >
             <span style={{ color: "var(--muted)" }}>จาก</span>
             <input
-              type="datetime-local"
+              type="date"
               value={fromLocal}
               max={toLocal || undefined}
               onChange={(e) => onFromChange(e.target.value)}
-              aria-label="ช่วงเวลาเริ่มต้น"
+              aria-label="วันที่เริ่มต้น"
               className="border-0 bg-transparent text-[13px] font-medium outline-none"
               style={{ color: "var(--ink)" }}
             />
@@ -430,11 +424,11 @@ export default function SalesPage() {
           >
             <span style={{ color: "var(--muted)" }}>ถึง</span>
             <input
-              type="datetime-local"
+              type="date"
               value={toLocal}
               min={fromLocal || undefined}
               onChange={(e) => onToChange(e.target.value)}
-              aria-label="ช่วงเวลาสิ้นสุด"
+              aria-label="วันที่สิ้นสุด"
               className="border-0 bg-transparent text-[13px] font-medium outline-none"
               style={{ color: "var(--ink)" }}
             />
