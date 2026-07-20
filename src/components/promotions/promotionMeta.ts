@@ -66,27 +66,35 @@ export type PromoLike = {
   buyQty?: number | null;
   getQty?: number | null;
   getDiscountPercent?: number | null;
+  getAmountOffSatang?: number | null;
   minSubtotalSatang?: number | null;
 };
 
 /**
  * The BUY_X_GET_Y rule as human copy. Shared by the summary formatter AND the
- * form's live-preview line so the two never drift.
+ * form's live-preview line so the two never drift. The reward is EXACTLY ONE of a
+ * percent (`getDiscountPercent`) or a ฿-per-unit amount (`getAmountOffSatang`):
+ *  - amount (getAmountOffSatang set): "ซื้อ {X+Y} ลด {฿amount}/ชิ้น"
  *  - free (getDiscountPercent === 100): "ซื้อ {X} แถม {Y}"
  *  - discounted (< 100):                "ซื้อ {X+Y} ชิ้นที่ {X+1}[–{X+Y}] ลด {pct}%"
  */
 export function buyXGetYSummary(
   buyQty: number,
   getQty: number,
-  getDiscountPercent: number
+  getDiscountPercent: number | null | undefined,
+  getAmountOffSatang?: number | null
 ): string {
-  if (getDiscountPercent >= 100) {
+  if (getAmountOffSatang != null) {
+    return `ซื้อ ${buyQty + getQty} ลด ${formatSatang(getAmountOffSatang)}/ชิ้น`;
+  }
+  if (getDiscountPercent != null && getDiscountPercent >= 100) {
     return `ซื้อ ${buyQty} แถม ${getQty}`;
   }
+  const pct = getDiscountPercent ?? 0;
   const first = buyQty + 1;
   const last = buyQty + getQty;
   const nth = getQty > 1 ? `${first}–${last}` : `${first}`;
-  return `ซื้อ ${buyQty + getQty} ชิ้นที่ ${nth} ลด ${getDiscountPercent}%`;
+  return `ซื้อ ${buyQty + getQty} ชิ้นที่ ${nth} ลด ${pct}%`;
 }
 
 /**
@@ -103,8 +111,17 @@ export function promoSummary(p: PromoLike): string {
     case "FIXED_PRICE":
       return p.fixedPriceSatang != null ? formatSatang(p.fixedPriceSatang) : "—";
     case "BUY_X_GET_Y":
-      if (p.buyQty != null && p.getQty != null && p.getDiscountPercent != null) {
-        return buyXGetYSummary(p.buyQty, p.getQty, p.getDiscountPercent);
+      if (
+        p.buyQty != null &&
+        p.getQty != null &&
+        (p.getDiscountPercent != null || p.getAmountOffSatang != null)
+      ) {
+        return buyXGetYSummary(
+          p.buyQty,
+          p.getQty,
+          p.getDiscountPercent,
+          p.getAmountOffSatang
+        );
       }
       return "—";
     case "BILL_THRESHOLD": {
@@ -133,8 +150,17 @@ export function promoBadgeLabel(p: PromoLike): string {
     case "FIXED_PRICE":
       return "ราคาพิเศษ";
     case "BUY_X_GET_Y":
-      if (p.buyQty != null && p.getQty != null && p.getDiscountPercent != null) {
-        return buyXGetYSummary(p.buyQty, p.getQty, p.getDiscountPercent);
+      if (
+        p.buyQty != null &&
+        p.getQty != null &&
+        (p.getDiscountPercent != null || p.getAmountOffSatang != null)
+      ) {
+        return buyXGetYSummary(
+          p.buyQty,
+          p.getQty,
+          p.getDiscountPercent,
+          p.getAmountOffSatang
+        );
       }
       return "";
     case "BILL_THRESHOLD":

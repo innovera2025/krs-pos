@@ -63,6 +63,23 @@ function buyXGetY(
     productIds,
   };
 }
+function buyXGetYAmount(
+  id: string,
+  buyQty: number,
+  getQty: number,
+  getAmountOffSatang: number,
+  productIds: string[]
+): ActivePromotion {
+  return {
+    id,
+    name: id,
+    type: "BUY_X_GET_Y",
+    buyQty,
+    getQty,
+    getAmountOffSatang,
+    productIds,
+  };
+}
 function thresholdAmount(
   id: string,
   amountOffSatang: number,
@@ -222,6 +239,85 @@ describe("linePromoCandidateSatang — BUY_X_GET_Y", () => {
     expect(
       linePromoCandidateSatang(buyXGetY("x", 1, 1, 50, ["a"]), 3333, 2)
     ).toBe(1667);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §3b BUY_X_GET_Y — ฿-amount reward (ลดเป็นจำนวนเงิน; per rewarded unit)
+// ---------------------------------------------------------------------------
+
+describe("linePromoCandidateSatang — BUY_X_GET_Y amount off", () => {
+  it("฿ off per rewarded unit, below/at/above the X+Y threshold", () => {
+    // buy2 get1 (group size 3), ฿10 off (1000 satang) per rewarded unit, price 5000.
+    // Rewarded units = floor(qty/3) × 1, discount = rewardedUnits × 1000.
+    const promo = buyXGetYAmount("x", 2, 1, 1000, ["a"]);
+    const price = 5000;
+    const cases: Array<[number, number]> = [
+      [1, 0], // below threshold
+      [2, 0], // below threshold
+      [3, 1000], // exactly one group → 1 rewarded unit
+      [5, 1000], // still one group
+      [6, 2000], // two groups → 2 rewarded units
+      [7, 2000],
+    ];
+    for (const [qty, disc] of cases) {
+      expect(linePromoCandidateSatang(promo, price, qty)).toBe(disc);
+    }
+  });
+
+  it("clamps the per-unit amount to the unit price (never a negative line)", () => {
+    // buy1 get1, ฿100 off (10000 satang) but the unit is only 4000 → per unit clamps to 4000.
+    // qty 2 → 1 rewarded unit → 4000; qty 4 → 2 rewarded units → 8000 (gross 16000).
+    const promo = buyXGetYAmount("x", 1, 1, 10000, ["a"]);
+    expect(linePromoCandidateSatang(promo, 4000, 2)).toBe(4000);
+    expect(linePromoCandidateSatang(promo, 4000, 4)).toBe(8000);
+  });
+
+  it("amount mode wins over a co-present percent (getAmountOffSatang drives the reward)", () => {
+    // Both fields set: the engine reads amount mode (1 rewarded unit × 1000), NOT the
+    // 5000 a 100%-free unit would give.
+    const promo: ActivePromotion = {
+      id: "x",
+      name: "x",
+      type: "BUY_X_GET_Y",
+      buyQty: 1,
+      getQty: 1,
+      getDiscountPercent: 100,
+      getAmountOffSatang: 1000,
+      productIds: ["a"],
+    };
+    expect(linePromoCandidateSatang(promo, 5000, 2)).toBe(1000);
+  });
+
+  it("a non-positive amount is malformed → 0 with NO percent fallback", () => {
+    // getAmountOffSatang present but 0 → amount mode selected, malformed → 0 (does not
+    // fall through to the co-present percent).
+    const promo: ActivePromotion = {
+      id: "x",
+      name: "x",
+      type: "BUY_X_GET_Y",
+      buyQty: 1,
+      getQty: 1,
+      getDiscountPercent: 100,
+      getAmountOffSatang: 0,
+      productIds: ["a"],
+    };
+    expect(linePromoCandidateSatang(promo, 5000, 2)).toBe(0);
+  });
+
+  it("applies the amount reward through applyPromotions with the snapshot", () => {
+    // buy1 get1 ฿10 off, price 5000, qty 2 → 1 rewarded unit → 1000.
+    const app = applyPromotions(
+      cart(5000, 2),
+      [buyXGetYAmount("g", 1, 1, 1000, ["a"])],
+      NO_BILL
+    );
+    expect(app.lines[0].promo).toEqual({
+      promotionId: "g",
+      promotionName: "g",
+      discountSatang: 1000,
+    });
+    expect(app.subtotalSatang).toBe(10000 - 1000);
   });
 });
 
@@ -455,12 +551,17 @@ describe("applyPromotions — client/server parity property", () => {
     [productAmount("pb", 500, ["b"])],
     [fixedPrice("fa", 5000, ["a"])],
     [buyXGetY("gb", 2, 1, 100, ["b"])],
+    [buyXGetYAmount("gb-amt", 2, 1, 1000, ["b"])],
     [thresholdAmount("t-amt", 1500, 5000)],
     [thresholdPercent("t-pct", 10, 5000)],
     [productPercent("pa", 12.5, ["a"]), thresholdAmount("t-amt", 1500, 5000)],
     [
       productAmount("pb", 500, ["b"]),
       buyXGetY("gb", 2, 1, 100, ["b"]),
+      thresholdPercent("t-pct", 10, 5000),
+    ],
+    [
+      buyXGetYAmount("gb-amt", 2, 1, 1000, ["b"]),
       thresholdPercent("t-pct", 10, 5000),
     ],
   ];

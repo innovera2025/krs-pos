@@ -773,7 +773,11 @@ model Promotion {
   // boundary). Money fields are Int SATANG (see the model note above):
   //  - PRODUCT_DISCOUNT : percentOff (Decimal %) OR amountOffSatang (฿ off per unit)
   //  - FIXED_PRICE      : fixedPriceSatang (special per-unit price)
-  //  - BUY_X_GET_Y      : buyQty (X) + getQty (Y) + getDiscountPercent (% off the Y)
+  //  - BUY_X_GET_Y      : buyQty (X) + getQty (Y) + the reward on the Y units, which is
+  //                       EXACTLY ONE of getDiscountPercent (% off; 100 = free) OR
+  //                       getAmountOffSatang (฿ off per rewarded unit). This mirrors the
+  //                       percent-vs-amount duality PRODUCT_DISCOUNT has; the engine reads
+  //                       amount mode iff getAmountOffSatang is non-null.
   //  - BILL_THRESHOLD   : minSubtotalSatang (spend gate) + percentOff OR amountOffSatang
   percentOff         Decimal? @db.Decimal(5, 2)
   amountOffSatang    Int?
@@ -781,6 +785,7 @@ model Promotion {
   buyQty             Int?
   getQty             Int?
   getDiscountPercent Int?
+  getAmountOffSatang Int?
   minSubtotalSatang  Int?
   // Product scoping for the line-level types (1-3: PRODUCT_DISCOUNT / FIXED_PRICE /
   // BUY_X_GET_Y); EMPTY for BILL_THRESHOLD (whole-bill). A scalar String[] instead of

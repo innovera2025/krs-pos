@@ -206,12 +206,16 @@ export async function POST(req: Request) {
         };
         break;
       case "BUY_X_GET_Y":
+        // Reward is EXACTLY ONE of getDiscountPercent (%/ฟรี) or getAmountOff (฿ off
+        // per rewarded unit) — the Zod XOR guarantees it; store the counterpart null.
         createData = {
           ...common,
           productIds: Array.from(new Set(data.productIds)),
           buyQty: data.buyQty,
           getQty: data.getQty,
-          getDiscountPercent: data.getDiscountPercent,
+          getDiscountPercent: data.getDiscountPercent ?? null,
+          getAmountOffSatang:
+            data.getAmountOff != null ? toSatang(data.getAmountOff) : null,
         };
         break;
       case "BILL_THRESHOLD":

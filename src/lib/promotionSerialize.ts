@@ -37,6 +37,7 @@ export type AdminPromotionDTO = {
   buyQty: number | null;
   getQty: number | null;
   getDiscountPercent: number | null;
+  getAmountOffSatang: number | null;
   minSubtotalSatang: number | null;
   productIds: string[];
   createdAt: string;
@@ -60,6 +61,7 @@ export function serializeAdminPromotion(row: Promotion): AdminPromotionDTO {
     buyQty: row.buyQty,
     getQty: row.getQty,
     getDiscountPercent: row.getDiscountPercent,
+    getAmountOffSatang: row.getAmountOffSatang,
     minSubtotalSatang: row.minSubtotalSatang,
     productIds: row.productIds,
     createdAt: row.createdAt.toISOString(),
@@ -92,7 +94,10 @@ export function serializePosPromotion(row: Promotion): ActivePromotion {
       const dto: ActivePromotion = { ...base, productIds: row.productIds };
       if (row.buyQty !== null) dto.buyQty = row.buyQty;
       if (row.getQty !== null) dto.getQty = row.getQty;
-      if (row.getDiscountPercent !== null) dto.getDiscountPercent = row.getDiscountPercent;
+      // Reward = EXACTLY ONE of amount / percent; emit amount first (the engine reads
+      // amount mode iff getAmountOffSatang is present), else the percent reward.
+      if (row.getAmountOffSatang !== null) dto.getAmountOffSatang = row.getAmountOffSatang;
+      else if (row.getDiscountPercent !== null) dto.getDiscountPercent = row.getDiscountPercent;
       return dto;
     }
     case "BILL_THRESHOLD": {

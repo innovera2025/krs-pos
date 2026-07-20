@@ -130,27 +130,51 @@ const fixedPriceSchema = z.object({
   fixedPrice: bahtMoney(AMOUNT_MAX),
 });
 
-/** BUY_X_GET_Y: product-scoped, buy `buyQty` get `getQty` at `getDiscountPercent` off. */
-const buyXGetYSchema = z.object({
-  ...baseShape,
-  type: z.literal("BUY_X_GET_Y"),
-  productIds: productIdsSchema,
-  buyQty: z
-    .number()
-    .int("ต้องเป็นจำนวนเต็ม")
-    .min(1, "ต้องมากกว่าหรือเท่ากับ 1")
-    .max(1000, "เกินช่วงที่อนุญาต"),
-  getQty: z
-    .number()
-    .int("ต้องเป็นจำนวนเต็ม")
-    .min(1, "ต้องมากกว่าหรือเท่ากับ 1")
-    .max(1000, "เกินช่วงที่อนุญาต"),
-  getDiscountPercent: z
-    .number()
-    .int("ต้องเป็นจำนวนเต็ม")
-    .min(1, "ต้องมากกว่าหรือเท่ากับ 1")
-    .max(100, "ต้องไม่เกิน 100"),
-});
+/** The reward on the "get" units: an integer percent (1..100; 100 = free). */
+const getDiscountPercentSchema = z
+  .number()
+  .int("ต้องเป็นจำนวนเต็ม")
+  .min(1, "ต้องมากกว่าหรือเท่ากับ 1")
+  .max(100, "ต้องไม่เกิน 100");
+
+/**
+ * XOR refinement for the BUY_X_GET_Y reward: exactly one of `getDiscountPercent`
+ * (%/ฟรี) or `getAmountOff` (฿ off per rewarded unit) must be present — mirrors the
+ * `percentOrAmountXor` PRODUCT_DISCOUNT / BILL_THRESHOLD use.
+ */
+const getPercentOrAmountXor = (d: {
+  getDiscountPercent?: number;
+  getAmountOff?: number;
+}) => (d.getDiscountPercent != null) !== (d.getAmountOff != null);
+const GET_REWARD_XOR_MESSAGE =
+  "ต้องระบุสิทธิ์ที่ได้รับเป็นเปอร์เซ็นต์หรือจำนวนเงินอย่างใดอย่างหนึ่ง";
+
+/**
+ * BUY_X_GET_Y: product-scoped, buy `buyQty` get `getQty` — the reward on the Y units
+ * is EXACTLY ONE of `getDiscountPercent` (%/ฟรี) or `getAmountOff` (฿ off per unit).
+ */
+const buyXGetYSchema = z
+  .object({
+    ...baseShape,
+    type: z.literal("BUY_X_GET_Y"),
+    productIds: productIdsSchema,
+    buyQty: z
+      .number()
+      .int("ต้องเป็นจำนวนเต็ม")
+      .min(1, "ต้องมากกว่าหรือเท่ากับ 1")
+      .max(1000, "เกินช่วงที่อนุญาต"),
+    getQty: z
+      .number()
+      .int("ต้องเป็นจำนวนเต็ม")
+      .min(1, "ต้องมากกว่าหรือเท่ากับ 1")
+      .max(1000, "เกินช่วงที่อนุญาต"),
+    getDiscountPercent: getDiscountPercentSchema.optional(),
+    getAmountOff: bahtMoney(AMOUNT_MAX).optional(),
+  })
+  .refine(getPercentOrAmountXor, {
+    message: GET_REWARD_XOR_MESSAGE,
+    path: ["getDiscountPercent"],
+  });
 
 /** BILL_THRESHOLD: whole-bill spend gate, % off OR ฿ off. No productIds. */
 const billThresholdSchema = z
@@ -221,12 +245,8 @@ export const PromotionPatchSchema = z.object({
     .min(1, "ต้องมากกว่าหรือเท่ากับ 1")
     .max(1000, "เกินช่วงที่อนุญาต")
     .optional(),
-  getDiscountPercent: z
-    .number()
-    .int("ต้องเป็นจำนวนเต็ม")
-    .min(1, "ต้องมากกว่าหรือเท่ากับ 1")
-    .max(100, "ต้องไม่เกิน 100")
-    .optional(),
+  getDiscountPercent: getDiscountPercentSchema.optional(),
+  getAmountOff: bahtMoney(AMOUNT_MAX).optional(),
   minSubtotal: bahtMoney(AMOUNT_MAX).optional(),
 });
 

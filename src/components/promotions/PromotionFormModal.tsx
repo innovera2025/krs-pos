@@ -30,6 +30,7 @@ export type PromotionFormPayload = {
   buyQty?: number;
   getQty?: number;
   getDiscountPercent?: number;
+  getAmountOff?: number;
   minSubtotal?: number;
 };
 
@@ -133,11 +134,12 @@ export function PromotionFormModal({
   // FIXED_PRICE
   const [fixedPrice, setFixedPrice] = useState("");
 
-  // BUY_X_GET_Y
+  // BUY_X_GET_Y — reward is one of ฟรี / ลด % / ลดบาท (ฟรี = getDiscountPercent 100).
   const [buyQty, setBuyQty] = useState("");
   const [getQty, setGetQty] = useState("");
-  const [bogoMode, setBogoMode] = useState<"free" | "discount">("free");
+  const [bogoMode, setBogoMode] = useState<"free" | "percent" | "amount">("free");
   const [bogoDiscountPct, setBogoDiscountPct] = useState("");
+  const [bogoAmount, setBogoAmount] = useState("");
 
   // BILL_THRESHOLD minimum spend
   const [minSubtotal, setMinSubtotal] = useState("");
@@ -174,12 +176,19 @@ export function PromotionFormModal({
       );
       setBuyQty(editing.buyQty != null ? String(editing.buyQty) : "");
       setGetQty(editing.getQty != null ? String(editing.getQty) : "");
-      if (editing.getDiscountPercent != null && editing.getDiscountPercent < 100) {
-        setBogoMode("discount");
+      // Reward hydration mirrors the engine's amount-first precedence.
+      if (editing.getAmountOffSatang != null) {
+        setBogoMode("amount");
+        setBogoAmount(satangToBahtStr(editing.getAmountOffSatang));
+        setBogoDiscountPct("");
+      } else if (editing.getDiscountPercent != null && editing.getDiscountPercent < 100) {
+        setBogoMode("percent");
         setBogoDiscountPct(String(editing.getDiscountPercent));
+        setBogoAmount("");
       } else {
         setBogoMode("free");
         setBogoDiscountPct("");
+        setBogoAmount("");
       }
       setMinSubtotal(
         editing.minSubtotalSatang != null ? satangToBahtStr(editing.minSubtotalSatang) : ""
@@ -198,6 +207,7 @@ export function PromotionFormModal({
       setGetQty("");
       setBogoMode("free");
       setBogoDiscountPct("");
+      setBogoAmount("");
       setMinSubtotal("");
     }
   }, [open, editing]);
@@ -209,6 +219,12 @@ export function PromotionFormModal({
   const bq = Number(buyQty);
   const gq = Number(getQty);
   const bogoPct = Number(bogoDiscountPct);
+  const bogoAmt = Number(bogoAmount);
+  // The BUY_X_GET_Y reward is valid iff the active mode's field is valid.
+  const bogoRewardOk =
+    bogoMode === "free" ||
+    (bogoMode === "percent" && pctOk(bogoPct)) ||
+    (bogoMode === "amount" && bahtPosOk(bogoAmt));
 
   const scoped = type !== "BILL_THRESHOLD";
   const productsOk = !scoped || productIds.length >= 1;
@@ -239,7 +255,7 @@ export function PromotionFormModal({
         bq >= 1 &&
         Number.isInteger(gq) &&
         gq >= 1 &&
-        (bogoMode === "free" || pctOk(bogoPct)) &&
+        bogoRewardOk &&
         productsOk;
       break;
     case "BILL_THRESHOLD":
@@ -263,12 +279,13 @@ export function PromotionFormModal({
 
   // BUY_X_GET_Y live preview line.
   const bogoPreview =
-    Number.isInteger(bq) &&
-    bq >= 1 &&
-    Number.isInteger(gq) &&
-    gq >= 1 &&
-    (bogoMode === "free" || pctOk(bogoPct))
-      ? buyXGetYSummary(bq, gq, bogoMode === "free" ? 100 : bogoPct)
+    Number.isInteger(bq) && bq >= 1 && Number.isInteger(gq) && gq >= 1 && bogoRewardOk
+      ? buyXGetYSummary(
+          bq,
+          gq,
+          bogoMode === "amount" ? null : bogoMode === "free" ? 100 : bogoPct,
+          bogoMode === "amount" ? Math.round(bogoAmt * 100) : null
+        )
       : "";
 
   function handleSubmit(e: React.FormEvent) {
@@ -300,7 +317,9 @@ export function PromotionFormModal({
       case "BUY_X_GET_Y":
         payload.buyQty = bq;
         payload.getQty = gq;
-        payload.getDiscountPercent = bogoMode === "free" ? 100 : bogoPct;
+        // Exactly one reward field — amount for ลดบาท, else percent (ฟรี = 100).
+        if (bogoMode === "amount") payload.getAmountOff = bogoAmt;
+        else payload.getDiscountPercent = bogoMode === "free" ? 100 : bogoPct;
         break;
       case "BILL_THRESHOLD":
         payload.minSubtotal = ms;
@@ -522,7 +541,7 @@ export function PromotionFormModal({
 
               <div className="flex flex-col gap-1.5">
                 <span className="text-[12.5px] font-semibold">สิทธิ์ที่ได้รับ · Reward</span>
-                <div className="flex items-center gap-2.5">
+                <div className="flex flex-wrap items-center gap-2.5">
                   <div
                     className="flex rounded-[10px] border p-0.5"
                     style={{ borderColor: "var(--line)" }}
@@ -530,11 +549,14 @@ export function PromotionFormModal({
                     <SegBtn active={bogoMode === "free"} onClick={() => setBogoMode("free")}>
                       ฟรี
                     </SegBtn>
-                    <SegBtn active={bogoMode === "discount"} onClick={() => setBogoMode("discount")}>
+                    <SegBtn active={bogoMode === "percent"} onClick={() => setBogoMode("percent")}>
                       ลด %
                     </SegBtn>
+                    <SegBtn active={bogoMode === "amount"} onClick={() => setBogoMode("amount")}>
+                      ลดบาท
+                    </SegBtn>
                   </div>
-                  {bogoMode === "discount" && (
+                  {bogoMode === "percent" && (
                     <div className="flex items-center gap-1.5">
                       <input
                         type="number"
@@ -553,7 +575,28 @@ export function PromotionFormModal({
                       </span>
                     </div>
                   )}
+                  {bogoMode === "amount" && (
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        inputMode="decimal"
+                        value={bogoAmount}
+                        onChange={(e) => setBogoAmount(e.target.value)}
+                        placeholder="20"
+                        className="mono h-11 w-[96px] rounded-[12px] border px-3 text-right text-[14px]"
+                        style={{ borderColor: "var(--line)" }}
+                      />
+                      <span className="text-[13px] font-semibold" style={{ color: "var(--muted)" }}>
+                        ฿
+                      </span>
+                    </div>
+                  )}
                 </div>
+                <span className="text-[11px]" style={{ color: "var(--muted)" }}>
+                  ลดต่อชิ้นสำหรับชิ้นที่ได้รับสิทธิ์
+                </span>
               </div>
 
               {bogoPreview && (

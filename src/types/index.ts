@@ -88,6 +88,7 @@ export type PromotionDTO = {
   buyQty: number | null;
   getQty: number | null;
   getDiscountPercent: number | null;
+  getAmountOffSatang: number | null;
   minSubtotalSatang: number | null;
   productIds: string[];
   createdAt: string;

@@ -62,11 +62,17 @@ export type ActivePromotion = {
   amountOffSatang?: number;
   /** FIXED_PRICE: the special per-unit price in satang. */
   fixedPriceSatang?: number;
-  /** BUY_X_GET_Y: buy `buyQty`, then `getQty` units get `getDiscountPercent` off. */
+  /** BUY_X_GET_Y: buy `buyQty`, then `getQty` units get the reward below. */
   buyQty?: number;
   getQty?: number;
-  /** 1..100; 100 = the "get" units are free. */
+  /**
+   * BUY_X_GET_Y reward — % off the rewarded units. 1..100; 100 = the units are free.
+   * EXACTLY ONE of `getDiscountPercent` / `getAmountOffSatang` drives the reward; the
+   * engine reads AMOUNT mode iff `getAmountOffSatang` is non-null (percent otherwise).
+   */
   getDiscountPercent?: number;
+  /** BUY_X_GET_Y reward — satang off **per rewarded unit** (clamped to the unit price). */
+  getAmountOffSatang?: number;
   /** BILL_THRESHOLD: minimum subtotal (satang) required for the bill discount. */
   minSubtotalSatang?: number;
   /** Products this promo is scoped to (types 1-3). Ignored for BILL_THRESHOLD. */
@@ -200,9 +206,13 @@ function clampToSubtotal(candidate: number, subtotal: number): number {
  *  - PRODUCT_DISCOUNT amount:  `min(amountOffSatang * qty, gross)`.
  *  - FIXED_PRICE:              `max(price − fixedPriceSatang, 0) * qty` (fixed ≥ price → 0; never markup).
  *  - BUY_X_GET_Y:              `groups = floor(qty / (buyQty + getQty))`,
- *                              `freeUnits = groups * getQty`,
- *                              `roundSatang(freeUnits * price * getDiscountPercent / 100)`
- *                              (getDiscountPercent 100 → exact, no rounding).
+ *                              `rewardedUnits = groups * getQty`, then the reward on
+ *                              those units — EXACTLY ONE of:
+ *                                • percent: `roundSatang(rewardedUnits * price * getDiscountPercent / 100)`
+ *                                  (getDiscountPercent 100 → exact, no rounding); or
+ *                                • amount:  `min(getAmountOffSatang, price) * rewardedUnits`
+ *                                  (per-unit ฿ off, clamped to the unit price so a line
+ *                                  never goes negative). Amount mode iff getAmountOffSatang != null.
  */
 export function linePromoCandidateSatang(
   promo: ActivePromotion,
@@ -238,20 +248,35 @@ export function linePromoCandidateSatang(
     case "BUY_X_GET_Y": {
       const buy = promo.buyQty;
       const get = promo.getQty;
-      const pct = promo.getDiscountPercent;
-      if (!isPositiveInt(buy) || !isPositiveInt(get) || !isValidPercent(pct)) {
+      if (!isPositiveInt(buy) || !isPositiveInt(get)) {
         return 0;
       }
       const groupSize = buy + get;
       const groups = Math.floor(qty / groupSize);
-      const freeUnits = groups * get;
-      if (freeUnits <= 0) return 0;
-      // At 100% the "get" units are free — compute exactly (no rounding); otherwise
-      // round the discounted portion once at the line level.
+      const rewardedUnits = groups * get;
+      if (rewardedUnits <= 0) return 0;
+
+      // AMOUNT mode (iff getAmountOffSatang is set): a fixed ฿ off per rewarded unit,
+      // clamped to the unit price so a rewarded line can never go negative. A
+      // missing/non-finite/non-positive amount is malformed → 0 (no percent fallback:
+      // the field's presence, not its validity, selects the mode).
+      if (promo.getAmountOffSatang != null) {
+        const perUnitDrop = Math.min(
+          normalizePriceSatang(promo.getAmountOffSatang),
+          price
+        );
+        if (perUnitDrop <= 0) return 0;
+        return clampToGross(perUnitDrop * rewardedUnits, gross);
+      }
+
+      // PERCENT mode: at 100% the rewarded units are free — compute exactly (no
+      // rounding); otherwise round the discounted portion once at the line level.
+      const pct = promo.getDiscountPercent;
+      if (!isValidPercent(pct)) return 0;
       const raw =
         pct === 100
-          ? freeUnits * price
-          : roundSatang((freeUnits * price * pct) / 100);
+          ? rewardedUnits * price
+          : roundSatang((rewardedUnits * price * pct) / 100);
       return clampToGross(raw, gross);
     }
     default:

@@ -38,6 +38,7 @@ const ALL_VALUE_FIELDS = [
   "buyQty",
   "getQty",
   "getDiscountPercent",
+  "getAmountOff",
   "minSubtotal",
 ] as const;
 
@@ -54,6 +55,7 @@ const VALUE_FIELDS_BY_TYPE: Record<PromotionType, ReadonlySet<string>> = {
     "buyQty",
     "getQty",
     "getDiscountPercent",
+    "getAmountOff",
   ]),
   BILL_THRESHOLD: new Set(["minSubtotal", "percentOff", "amountOff"]),
 };
@@ -227,8 +229,17 @@ export async function PATCH(
     }
     if (data.buyQty !== undefined) update.buyQty = data.buyQty;
     if (data.getQty !== undefined) update.getQty = data.getQty;
+    // BUY_X_GET_Y reward is EXACTLY ONE of percent / amount. Editing one mode clears
+    // the counterpart so a stale field can never drive the reward (the engine reads
+    // amount mode iff getAmountOffSatang is non-null). The BAD_FIELD_FOR_TYPE guard
+    // above already rejects these on a non-BUY_X_GET_Y row.
     if (data.getDiscountPercent !== undefined) {
       update.getDiscountPercent = data.getDiscountPercent;
+      update.getAmountOffSatang = null;
+    }
+    if (data.getAmountOff !== undefined) {
+      update.getAmountOffSatang = toSatang(data.getAmountOff);
+      update.getDiscountPercent = null;
     }
     if (data.minSubtotal !== undefined) {
       update.minSubtotalSatang = toSatang(data.minSubtotal);
