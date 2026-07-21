@@ -63,6 +63,13 @@ export const OrderPostBodySchema = z.object({
   // ฿ value server-side. MUST be declared here: z.object() strips unknown keys, so an
   // undeclared redeemPoints would be silently dropped and never applied.
   redeemPoints: z.number().optional(),
+  // Reward redemption (loyalty program, Phase 3B). SHAPE ONLY — an array of reward ids
+  // (0..N) the member is redeeming for a free product unit each. NO .max() / element
+  // refinement here (mirrors items/paymentLines, decision D4): the route owns the MANUAL
+  // coded guards (cap length, non-empty strings, dedupe → 422) so a Zod cap never shadows
+  // them with a generic VALIDATION. MUST be declared — z.object() strips unknown keys, so
+  // an undeclared redeemRewardIds would be silently dropped and never applied.
+  redeemRewardIds: z.array(z.string()).optional(),
   idempotencyKey: z.string().nullish(),
 });
 

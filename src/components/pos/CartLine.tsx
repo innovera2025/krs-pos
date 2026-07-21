@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Minus, Plus, Trash2, Tag, BadgePercent } from "lucide-react";
+import { Minus, Plus, Trash2, Tag, BadgePercent, Gift } from "lucide-react";
 import type { CartItem } from "@/types";
 import { money, formatSatang } from "@/lib/money";
 import { CATEGORY_META, slugForCategoryName } from "./categoryMeta";
@@ -17,6 +17,13 @@ type CartLineProps = {
    * is folded into the shown line net so the line reads gross − manual − promo.
    */
   appliedPromo?: { name: string; discountSatang: number } | null;
+  /**
+   * Number of redeemed reward free units on this line (loyalty program, Phase 3B), 0 when
+   * none. When > 0 the line shows a gold "ของรางวัล" chip AND the manual "ส่วนลดรายการ"
+   * affordance is HIDDEN — a manual discount must not stack onto a reward's free unit (the
+   * server clamps combined line discount ≤ gross, but the UI never offers the stack).
+   */
+  rewardCount?: number;
   onInc: (productId: string) => void;
   onDec: (productId: string) => void;
   onRemove: (productId: string) => void;
@@ -33,6 +40,7 @@ export function CartLine({
   item,
   lineGrossSatang,
   appliedPromo,
+  rewardCount = 0,
   onInc,
   onDec,
   onRemove,
@@ -141,21 +149,45 @@ export function CartLine({
         >
           <Trash2 size={15} strokeWidth={2} />
         </button>
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          aria-label={`ส่วนลดรายการ ${product.name}`}
-          className="ml-auto flex items-center gap-1 rounded-full px-2 py-[5px] text-[11px]"
-          style={{
-            background: lineDiscountSatang > 0 ? "#eef4ff" : "#f2f4f7",
-            color: lineDiscountSatang > 0 ? "#2563eb" : "#667085",
-          }}
-        >
-          <Tag size={12} strokeWidth={2} />
-          ส่วนลดรายการ
-        </button>
+        {/* Manual per-line discount affordance — HIDDEN on a reward line (rewardCount > 0)
+            so a manual discount never stacks onto the free unit (the server clamps combined
+            ≤ gross; the UI simply never offers the stack). */}
+        {rewardCount === 0 && (
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            aria-label={`ส่วนลดรายการ ${product.name}`}
+            className="ml-auto flex items-center gap-1 rounded-full px-2 py-[5px] text-[11px]"
+            style={{
+              background: lineDiscountSatang > 0 ? "#eef4ff" : "#f2f4f7",
+              color: lineDiscountSatang > 0 ? "#2563eb" : "#667085",
+            }}
+          >
+            <Tag size={12} strokeWidth={2} />
+            ส่วนลดรายการ
+          </button>
+        )}
       </div>
+
+      {/* Redeemed-reward chip (loyalty program, Phase 3B) — gold/amber, distinct from the
+          mint promo chip + blue manual-discount affordance. Marks which unit(s) on this line
+          are a free reward. */}
+      {rewardCount > 0 && (
+        <div className="mt-2.5 flex items-center">
+          <span
+            className="inline-flex items-center gap-1 rounded-full px-2 py-[5px] text-[11px] font-semibold"
+            style={{
+              background: "#FFFBEB",
+              color: "#B45309",
+              border: "1px solid #FCD34D",
+            }}
+          >
+            <Gift size={12} strokeWidth={2} />
+            ของรางวัล{rewardCount > 1 ? ` ×${rewardCount}` : ""}
+          </span>
+        </div>
+      )}
 
       {/* Applied line promotion (promotions program, Phase 7) — read-only mint chip,
           distinct from the blue manual-discount affordance. Shows the promo name + the

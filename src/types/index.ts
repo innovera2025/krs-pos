@@ -172,6 +172,35 @@ export type OrderItemDTO = {
   promoDiscount?: string | number;
   promotionId?: string | null;
   promotionName?: string | null;
+  // Reward redemption snapshot (loyalty program, Phase 3B): the free-unit value folded
+  // into `lineTotal` as a 2dp baht string (serializeOrder always emits it, "0.00" when
+  // none) + which reward applied. Optional so legacy/pre-3B reprints still type-check; the
+  // receipt reads them defensively to render "แลกของรางวัล: {rewardName}".
+  rewardDiscount?: string | number;
+  rewardId?: string | null;
+  rewardName?: string | null;
+};
+
+/**
+ * A reward as returned by GET /api/rewards (loyalty program, Phase 3). "Spend `pointsCost`
+ * points, get the `product` free." `product` is the resolved snapshot (current name + 2dp
+ * price) or null when the underlying product was soft-deleted. The POS redeem feed
+ * (?view=pos) returns only active rewards; the client filters to those with a live product.
+ */
+export type RewardDTO = {
+  id: string;
+  name: string;
+  pointsCost: number;
+  productId: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  product: {
+    id: string;
+    name: string;
+    price: string; // 2dp baht string
+    isActive: boolean;
+  } | null;
 };
 
 /**

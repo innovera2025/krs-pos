@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { X, Trash2, Check, AlertTriangle } from "lucide-react";
+import { X, Trash2, Check, AlertTriangle, Gift } from "lucide-react";
 import { Modal } from "@/components/Modal";
 import type { CustomerDTO, PayLine, PayMethod } from "@/types";
 import { formatSatang } from "@/lib/money";
@@ -53,6 +53,31 @@ type PaymentModalProps = {
     onClear: () => void;
   } | null;
 
+  /**
+   * Reward redemption summary (loyalty program, Phase 3B). `rewardCount` free units + the
+   * `rewardPoints` those cost — shown as a gold line so the cashier sees the reward slice of
+   * the points spend even when the baht `redeem` control is hidden. The rewards themselves
+   * are picked on the cart panel (not here); this is display only. 0 → the line is hidden.
+   */
+  rewardCount?: number;
+  rewardPoints?: number;
+  /**
+   * The COMBINED points spend (baht redemption + rewards) exceeds the member's balance
+   * (loyalty program, Phase 3B). The UI clamps both to keep this false, but if it ever goes
+   * true (a stale balance) confirm is BLOCKED with a warning — mirroring the server's
+   * combined-total guard (422 POINTS_INSUFFICIENT) so the cashier fixes it before the POST.
+   */
+  redeemOverBalance?: boolean;
+  /**
+   * A reward is redeemed AND the bill nets to ฿0 (loyalty program, Phase 3B — FIX C). A
+   * reward-only cart (its only payable value is the free unit) can never be tendered: every
+   * payment line must be > 0 and must sum to the ฿0 total, a dead-end that would surface as a
+   * raw BAD_AMOUNT from the server. When true, confirm is BLOCKED with a clear message telling
+   * the cashier to add a payable item (or drop the reward) — mirroring the server's
+   * REWARD_NEEDS_PURCHASE guard, but caught here where it is actually reachable.
+   */
+  rewardZeroTotalBlock?: boolean;
+
   payLines: PayLine[];
   /** Cash received (baht text mirror). */
   cashReceived: string;
@@ -93,6 +118,10 @@ export function PaymentModal({
   customer,
   taxRequested,
   redeem,
+  rewardCount = 0,
+  rewardPoints = 0,
+  redeemOverBalance = false,
+  rewardZeroTotalBlock = false,
   payLines,
   cashReceived,
   reference,
@@ -182,7 +211,13 @@ export function PaymentModal({
   const sumMatches = Math.abs(paidSatang - totalSatang) <= 1; // ≤ 0.01 baht
   const cashOk = !showCash || receivedSatang + 1 >= cashDueSatang;
   const canConfirm =
-    !submitting && sumMatches && cashOk && payLines.length > 0 && !redeemBelowMin;
+    !submitting &&
+    sumMatches &&
+    cashOk &&
+    payLines.length > 0 &&
+    !redeemBelowMin &&
+    !redeemOverBalance &&
+    !rewardZeroTotalBlock;
 
   // Quick-cash presets: exact total, ฿100, ฿500, ฿1,000.
   const quickCash: { label: string; satang: number }[] = [
@@ -401,6 +436,53 @@ export function PaymentModal({
                   <span>ต้องแลกอย่างน้อย {redeem.minRedeemPoints} แต้ม</span>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Reward redemption summary (loyalty program, Phase 3B) — the free units picked on
+              the cart panel + the points they cost, surfaced here so the cashier sees the full
+              points spend at pay time (even when the baht redeem control above is hidden).
+              Gold/amber, matching the redeem control. */}
+          {rewardPoints > 0 && (
+            <div
+              className="mb-4 flex items-center justify-between rounded-[12px] border p-[13px]"
+              style={{ background: "#FFFBEB", borderColor: "#FCD34D" }}
+            >
+              <span
+                className="flex items-center gap-2 text-[13px] font-semibold"
+                style={{ color: "#B45309" }}
+              >
+                <Gift size={16} strokeWidth={2} />
+                แลกของรางวัล {rewardCount} ชิ้น
+              </span>
+              <span className="text-[13px] font-semibold" style={{ color: "#B45309" }}>
+                ใช้ {rewardPoints} แต้ม
+              </span>
+            </div>
+          )}
+          {/* Combined-points overdraw block (loyalty program, Phase 3B) — the UI clamps both
+              redemptions to keep this hidden; if a stale balance ever trips it, confirm is
+              disabled (canConfirm) and this explains why, mirroring the server's 422. */}
+          {redeemOverBalance && (
+            <div
+              className="mb-3 flex items-start gap-2 rounded-[10px] border px-[13px] py-2.5 text-[12.5px] font-medium"
+              style={{ background: "#fef2f2", borderColor: "#fecaca", color: "#dc2626" }}
+            >
+              <AlertTriangle size={15} strokeWidth={1.8} className="mt-px flex-shrink-0" />
+              <span>แต้มที่ใช้รวมเกินยอดคงเหลือ กรุณาลดการแลก</span>
+            </div>
+          )}
+          {/* Reward-only ฿0 bill block (loyalty program, Phase 3B — FIX C): a reward is
+              redeemed but the bill nets to ฿0, so it can never be tendered. Block confirm and
+              tell the cashier to add a payable item — caught here (reachable) before the raw
+              server BAD_AMOUNT / REWARD_NEEDS_PURCHASE dead-end. */}
+          {rewardZeroTotalBlock && (
+            <div
+              className="mb-3 flex items-start gap-2 rounded-[10px] border px-[13px] py-2.5 text-[12.5px] font-medium"
+              style={{ background: "#fef2f2", borderColor: "#fecaca", color: "#dc2626" }}
+            >
+              <AlertTriangle size={15} strokeWidth={1.8} className="mt-px flex-shrink-0" />
+              <span>ต้องมีสินค้าที่ต้องชำระอย่างน้อย 1 รายการเพื่อแลกของรางวัล</span>
             </div>
           )}
 

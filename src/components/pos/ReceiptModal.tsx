@@ -321,6 +321,20 @@ export function ReceiptModal({
                   <span>-{money(Number(it.promoDiscount ?? 0))}</span>
                 </div>
               )}
+              {/* Redeemed reward (loyalty program, Phase 3B) — the free-unit value folded
+                  into lineTotal, shown as its own "แลกของรางวัล" line so the customer sees
+                  what the points bought. Gold-neutral: the 1-bit thermal raster prints
+                  monochrome (color never survives), so this rides the same soft neutral as
+                  the promo line to keep the raster height/legibility controlled. */}
+              {it.rewardName && Number(it.rewardDiscount ?? 0) > 0 && (
+                <div
+                  className="flex justify-between text-[10.5px]"
+                  style={{ color: "var(--soft)", fontFamily: "var(--font-sans)" }}
+                >
+                  <span>แลกของรางวัล: {it.rewardName}</span>
+                  <span>-{money(Number(it.rewardDiscount ?? 0))}</span>
+                </div>
+              )}
             </div>
           ))}
 

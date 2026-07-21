@@ -564,6 +564,21 @@ model OrderItem {
   promotionId   String?
   promotionName String?
   promoDiscount Decimal  @db.Decimal(10, 2) @default(0)
+  // Reward redemption snapshot (loyalty program, Phase 3B — "spend N points, get 1
+  // unit of this product free"). DELIBERATELY NO relation/FK to Reward — the SAME
+  // historical-immutability stance as promotionId (a later reward edit/deactivate must
+  // never touch a past sale). The reward's free-unit value is injected into the pricing
+  // pipeline as an EXTRA per-line discount (folded into `lineTotal` alongside the manual
+  // + promo slices), so `lineTotal = unitPrice×quantity − manualLineDiscount −
+  // promoDiscount − rewardDiscount`. `rewardDiscount` is that free-unit value snapshotted
+  // for the receipt/report (the points-side accounting lives on Order.pointsRedeemed).
+  // `rewardId`/`rewardName` snapshot which reward applied on this line; when two rewards
+  // target the SAME product they share this one line — `rewardName` then carries the joined
+  // names, `rewardId` the first, and `rewardDiscount` the SUMMED free-unit value. Null / 0
+  // = no reward on this line.
+  rewardId       String?
+  rewardName     String?
+  rewardDiscount Decimal  @db.Decimal(10, 2) @default(0)
   createdAt  DateTime @default(now())
 
   // Z-report promo breakdown groups OrderItem rows by promotionId (COMPLETED-only);

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { ScanBarcode, ShoppingCart, UserRound, AlertCircle, ChevronRight } from "lucide-react";
+import { ScanBarcode, ShoppingCart, UserRound, AlertCircle, ChevronRight, Gift } from "lucide-react";
 import type {
   Product,
   CartItem,
@@ -11,6 +11,7 @@ import type {
   PayLine,
   PayMethod,
   OrderDTO,
+  RewardDTO,
   ShopSettingsDTO,
 } from "@/types";
 import { useToast } from "@/components/ToastProvider";
@@ -55,6 +56,7 @@ import {
   type CustomerFormInput,
 } from "@/components/pos/CustomerFormModal";
 import { ReceiptModal } from "@/components/pos/ReceiptModal";
+import { RewardPickerModal } from "@/components/pos/RewardPickerModal";
 import { HeldBillsModal } from "@/components/pos/HeldBillsModal";
 import { BranchBadge } from "@/components/pos/BranchBadge";
 import { SilentPrintOnboardingModal } from "@/components/pos/SilentPrintOnboardingModal";
@@ -166,6 +168,18 @@ export default function POSPage() {
   // the redemption live. Clamped to the member's redeemable max on change; reset on a new
   // sale / customer switch / PAYMENT_MISMATCH. Server stays authoritative (it recomputes).
   const [redeemDraft, setRedeemDraft] = useState("");
+
+  // ---- reward redemption (loyalty program, Phase 3B) ----
+  // `rewards` = the store's active rewards from GET /api/rewards?view=pos (fetched on mount +
+  // refetched after a settled sale / on PAYMENT_MISMATCH). `rewardPickerOpen` toggles the
+  // "แลกของรางวัล" picker. `selectedRewards` is the SOURCE OF TRUTH for which rewards the
+  // member is redeeming this bill — each adds 1 free unit of its product to the cart, drives
+  // the per-line reward discount folded into the totals preview, and supplies the
+  // redeemRewardIds sent at checkout. Reset on a new/abandoned bill, customer switch, and
+  // PAYMENT_MISMATCH. Server stays authoritative (it re-validates every reward + the spend).
+  const [rewards, setRewards] = useState<RewardDTO[]>([]);
+  const [rewardPickerOpen, setRewardPickerOpen] = useState(false);
+  const [selectedRewards, setSelectedRewards] = useState<RewardDTO[]>([]);
 
   // ---- customer + tax-invoice state (Phase 6a) ----
   // Selected customer (null = walk-in / ลูกค้าทั่วไป) and whether a tax invoice
@@ -321,6 +335,29 @@ export default function POSPage() {
     loadPromotions(ctrl.signal);
     return () => ctrl.abort();
   }, [loadPromotions]);
+
+  // Load the active rewards (loyalty program, Phase 3B). Reused by the mount effect (with an
+  // abort signal) AND by the fire-and-forget refetch after a settled sale / on a
+  // PAYMENT_MISMATCH (a reward may have been toggled off, or the balance changed). Best-effort:
+  // a failed/slow load keeps the last-known set (or []). The server re-validates every reward
+  // at checkout, so a stale client list can only ever be corrected downward by a 422.
+  const loadRewards = useCallback((signal?: AbortSignal) => {
+    fetch("/api/rewards?view=pos", signal ? { signal } : undefined)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: RewardDTO[] | null) => {
+        if (signal?.aborted || !Array.isArray(data)) return;
+        setRewards(data);
+      })
+      .catch(() => {
+        /* ignore — keep the last-known rewards (server stays authoritative) */
+      });
+  }, []);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    loadRewards(ctrl.signal);
+    return () => ctrl.abort();
+  }, [loadRewards]);
 
   // ---- live KRS stock/product push (krs-realtime-inbound P2) ----
   // Patch the grid in place from an SSE `stock-update`: rewrite ONLY the changed
@@ -572,6 +609,45 @@ export default function POSPage() {
     return map;
   }, [activePromos, products]);
 
+  // ProductIds that carry an active LINE-level promotion (loyalty program, Phase 3B —
+  // FIX A). A reward's free unit can't be honestly stacked on a product that already
+  // has a line-level promo (PRODUCT_DISCOUNT / FIXED_PRICE / BUY_X_GET_Y — all
+  // product-scoped; a BILL_THRESHOLD promo is bill-level and does NOT conflict), so the
+  // reward picker excludes those rewards and `toggleReward` refuses to add them. Built
+  // from the SAME `activePromos` the server derives its `REWARD_PROMO_CONFLICT` set from,
+  // so the cashier is never offered a reward the server would 422.
+  const linePromoProductIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of activePromos) {
+      if (
+        p.type === "PRODUCT_DISCOUNT" ||
+        p.type === "FIXED_PRICE" ||
+        p.type === "BUY_X_GET_Y"
+      ) {
+        if (Array.isArray(p.productIds)) {
+          for (const id of p.productIds) set.add(id);
+        }
+      }
+    }
+    return set;
+  }, [activePromos]);
+
+  // Selected-reward rollups (loyalty program, Phase 3B). `rewardCountByProduct` = how many
+  // free units per product (drives the per-line reward discount injected into the totals
+  // preview + the gold "ของรางวัล" cart chip); `rewardPointsTotal` = Σ the selected rewards'
+  // pointsCost (the reward slice of the points spend, combined with the baht redemption).
+  const rewardCountByProduct = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of selectedRewards) {
+      m.set(r.productId, (m.get(r.productId) ?? 0) + 1);
+    }
+    return m;
+  }, [selectedRewards]);
+  const rewardPointsTotal = useMemo(
+    () => selectedRewards.reduce((s, r) => s + r.pointsCost, 0),
+    [selectedRewards]
+  );
+
   // Totals via the pure integer-satang engine, now routed through the promotion engine
   // (promotions program, Phase 7). We run `applyPromotions` over the cart + effective
   // promos + the manual bill discount, then feed its `combinedLineDiscountSatang`
@@ -586,12 +662,21 @@ export default function POSPage() {
     effectiveRedeemPoints,
     maxRedeemablePoints,
   } = useMemo(() => {
-    const promoLines: PromoCartLine[] = cart.map((i) => ({
-      productId: i.product.id,
-      priceSatang: bahtToSatang(i.product.price),
-      quantity: i.quantity,
-      manualLineDiscountSatang: i.lineDiscountSatang,
-    }));
+    // Reward injection (loyalty program, Phase 3B) — MIRRORS the server: a redeemed reward's
+    // free-unit value (count × unit price) is ADDED to that product line's manual line
+    // discount BEFORE applyPromotions, so the engine subtotal nets the reward and the
+    // on-screen total equals the authoritative recompute. The cart holds one line per product,
+    // so a per-product injection lands whole.
+    const promoLines: PromoCartLine[] = cart.map((i) => {
+      const priceSatang = bahtToSatang(i.product.price);
+      const rewardUnits = rewardCountByProduct.get(i.product.id) ?? 0;
+      return {
+        productId: i.product.id,
+        priceSatang,
+        quantity: i.quantity,
+        manualLineDiscountSatang: i.lineDiscountSatang + rewardUnits * priceSatang,
+      };
+    });
     const value = Number(discountDraft.trim());
     const manualBill: BillDiscount = {
       type: discountType,
@@ -612,6 +697,11 @@ export default function POSPage() {
     const minRedeemPoints = receiptSettings?.minRedeemPoints ?? 0;
     const isMember = customer?.isMember === true;
     const balance = isMember ? customer?.pointsBalance ?? 0 : 0;
+    // Reward points are committed FIRST, so the baht redemption may only spend what the
+    // balance has LEFT after the selected rewards (loyalty program, Phase 3B). Capping the
+    // baht redeem at `balance − rewardPointsTotal` keeps the COMBINED spend ≤ balance, so the
+    // server's combined-total guard never rejects a bill the cashier built through the UI.
+    const balanceForBaht = Math.max(balance - rewardPointsTotal, 0);
     const remainingBillSatang = Math.max(
       application.subtotalSatang -
         application.promoBillDiscountSatang -
@@ -625,14 +715,15 @@ export default function POSPage() {
     // Shared engine — identical math to the server's authoritative recompute at checkout.
     const redeemPlan = computeRedemption(
       requestedRedeem,
-      balance,
+      balanceForBaht,
       remainingBillSatang,
       perPointSatang,
       minRedeemPoints
     );
-    // maxByBill already carries the `remaining − 1` floor; maxRedeemable also caps by balance.
+    // maxByBill already carries the `remaining − 1` floor; maxRedeemable also caps by the
+    // balance left after reward points.
     const maxRedeemablePoints =
-      loyaltyOn && isMember ? Math.min(balance, redeemPlan.maxByBillPoints) : 0;
+      loyaltyOn && isMember ? Math.min(balanceForBaht, redeemPlan.maxByBillPoints) : 0;
     const effectiveRedeemPoints =
       loyaltyOn && isMember ? redeemPlan.effectiveRedeemPoints : 0;
     const redemptionSatang = loyaltyOn && isMember ? redeemPlan.redemptionSatang : 0;
@@ -660,7 +751,17 @@ export default function POSPage() {
       effectiveRedeemPoints,
       maxRedeemablePoints,
     };
-  }, [cart, discountDraft, discountType, activePromos, redeemDraft, customer, receiptSettings]);
+  }, [
+    cart,
+    discountDraft,
+    discountType,
+    activePromos,
+    redeemDraft,
+    customer,
+    receiptSettings,
+    rewardCountByProduct,
+    rewardPointsTotal,
+  ]);
 
   // Total promotion savings on this bill (Σ line promos + bill promo) — informational,
   // shown in the payment modal under the total due.
@@ -691,6 +792,31 @@ export default function POSPage() {
     }
     return nearest;
   }, [application, activePromos]);
+
+  // Reconcile selected rewards against the cart (loyalty program, Phase 3B). If the cashier
+  // manually removes / reduces a product line below its redeemed-reward count (removeLine,
+  // the qty stepper, etc.), drop the now-uncovered rewards so a redeemed reward always has a
+  // paid-for-or-free unit backing it in the cart — the SAME "cart qty ≥ reward count per
+  // product" rule the server enforces. Prune-only (never adds) and returns the SAME array ref
+  // when nothing changed, so it can depend on `cart` without looping.
+  useEffect(() => {
+    setSelectedRewards((prev) => {
+      if (prev.length === 0) return prev;
+      const cartQty = new Map<string, number>();
+      for (const i of cart) cartQty.set(i.product.id, i.quantity);
+      const usedByProduct = new Map<string, number>();
+      const kept = prev.filter((r) => {
+        const used = usedByProduct.get(r.productId) ?? 0;
+        const qty = cartQty.get(r.productId) ?? 0;
+        if (used < qty) {
+          usedByProduct.set(r.productId, used + 1);
+          return true;
+        }
+        return false;
+      });
+      return kept.length === prev.length ? prev : kept;
+    });
+  }, [cart]);
 
   // ---- cart actions ----
   // useCallback keeps addToCart referentially stable across renders so the
@@ -789,6 +915,9 @@ export default function POSPage() {
     // Reset the points redemption (loyalty program, Phase 2) — a new/abandoned bill
     // starts with no redemption (the customer is cleared above too).
     setRedeemDraft("");
+    // Reset reward redemption (loyalty program, Phase 3B) — a new/abandoned bill starts with
+    // no rewards (the customer + cart are cleared above, so the free units go with them).
+    setSelectedRewards([]);
     // Drop the idempotency key — the bill is gone, so the NEXT checkout is a new
     // sale and must mint a fresh key (a successful checkout calls clearBill, as do
     // cancel/hold). Without this, the next sale would replay the just-completed
@@ -813,6 +942,77 @@ export default function POSPage() {
       maxRedeemablePoints
     );
     setRedeemDraft(clamped > 0 ? String(clamped) : "");
+  }
+
+  // ---- reward redemption handlers (loyalty program, Phase 3B) ----
+  // The ids currently selected (each reward is redeemable at most once per bill).
+  const selectedRewardIds = useMemo(
+    () => new Set(selectedRewards.map((r) => r.id)),
+    [selectedRewards]
+  );
+  // Points already committed on this bill = baht redemption + selected rewards. Drives the
+  // picker's affordability gate + the payment modal's combined-points display.
+  const committedPoints = effectiveRedeemPoints + rewardPointsTotal;
+  // Raw available stock per reward product (for the picker's "สินค้าหมด" note). Small set
+  // (a handful of rewards), so the per-reward product lookup is cheap; the toggle handler
+  // does the authoritative "enough stock to add one more free unit" check.
+  const rewardStockByProductId = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of rewards) {
+      const p = products.find((x) => x.id === r.productId);
+      m.set(r.productId, p ? effectiveStock(p) : 0);
+    }
+    return m;
+  }, [rewards, products]);
+
+  // Toggle a reward on/off. ADD: verify a live, in-stock product + enough points left, then
+  // add 1 free unit to the cart (reuse addToCart), CLEAR any manual discount on that line (a
+  // reward's free unit must not stack a manual discount — the server clamps it, the UI never
+  // offers it), and record the reward. REMOVE: drop one selection + remove its free cart
+  // unit. Server re-validates everything at checkout, so this is preview/convenience only.
+  function toggleReward(reward: RewardDTO) {
+    if (selectedRewardIds.has(reward.id)) {
+      setSelectedRewards((prev) => {
+        const idx = prev.findIndex((r) => r.id === reward.id);
+        if (idx === -1) return prev;
+        return prev.filter((_, i) => i !== idx);
+      });
+      // Remove the free unit this reward added.
+      decLine(reward.productId);
+      return;
+    }
+    const product = products.find((p) => p.id === reward.productId);
+    if (!product || reward.product === null) {
+      showToast("ไม่พบสินค้าของรางวัลนี้");
+      return;
+    }
+    // FIX A — a reward can't stack on a product that already has an active line-level
+    // promotion (the server rejects it with REWARD_PROMO_CONFLICT). Refuse the add here
+    // so the cashier is never left with a selection the checkout would 422.
+    if (linePromoProductIds.has(reward.productId)) {
+      showToast("สินค้านี้มีโปรโมชันอยู่แล้ว แลกของรางวัลไม่ได้");
+      return;
+    }
+    const stock = effectiveStock(product);
+    const inCartQty = cart.find((i) => i.product.id === product.id)?.quantity ?? 0;
+    if (inCartQty >= stock) {
+      showToast(`สินค้าของรางวัลไม่พอ · เหลือ ${stock} ชิ้น`);
+      return;
+    }
+    const balance = customer?.pointsBalance ?? 0;
+    if (reward.pointsCost > Math.max(balance - committedPoints, 0)) {
+      showToast("แต้มสะสมไม่เพียงพอสำหรับของรางวัลนี้");
+      return;
+    }
+    addToCart(product);
+    // A reward line carries no manual discount (see the CartLine + server clamp).
+    setLineDiscount(product.id, 0);
+    setSelectedRewards((prev) => [...prev, reward]);
+  }
+
+  // Open the reward picker (member + loyaltyEnabled only, gated at the call site).
+  function openRewardPicker() {
+    setRewardPickerOpen(true);
   }
 
   // ---- silent-print onboarding handlers (Plan A) ----
@@ -846,8 +1046,9 @@ export default function POSPage() {
       setPayError("");
     }
     // Switching customer invalidates any in-progress redemption (it was scoped to the
-    // previous member's balance) — reset it (loyalty program, Phase 2).
+    // previous member's balance) — reset it (loyalty program, Phase 2 + 3B).
     setRedeemDraft("");
+    setSelectedRewards([]);
     setCustPickerOpen(false);
   }
 
@@ -856,8 +1057,9 @@ export default function POSPage() {
   function pickWalkIn() {
     setCustomer(null);
     setTaxRequested(false);
-    // A walk-in has no points to redeem — reset it (loyalty program, Phase 2).
+    // A walk-in has no points to redeem — reset it (loyalty program, Phase 2 + 3B).
     setRedeemDraft("");
+    setSelectedRewards([]);
     setCustPickerOpen(false);
   }
 
@@ -1096,10 +1298,11 @@ export default function POSPage() {
         : null
     );
     setTaxRequested(bill.taxRequested);
-    // A resumed bill starts with no redemption (park did not snapshot redeem points, and
-    // the member's balance may have changed since) — the cashier re-redeems if they want
-    // (loyalty program, Phase 2).
+    // A resumed bill starts with no redemption (park did not snapshot redeem points/rewards,
+    // and the member's balance may have changed since) — the cashier re-redeems if they want
+    // (loyalty program, Phase 2 + 3B).
     setRedeemDraft("");
+    setSelectedRewards([]);
     // A resumed bill is a fresh checkout attempt — drop any stale idempotency key so the
     // next pay mints a new one (and never replays a previous order).
     idemKeyRef.current = null;
@@ -1410,6 +1613,14 @@ export default function POSPage() {
           ...(effectiveRedeemPoints > 0
             ? { redeemPoints: effectiveRedeemPoints }
             : {}),
+          // Reward redemption (loyalty program, Phase 3B): the ids of the rewards being
+          // redeemed for a free product unit each. NO points/money are sent — the server
+          // re-loads each reward, resolves the free-unit value, validates it is in the cart,
+          // and spends Σ pointsCost COMBINED with the baht redemption atomically. Sent only
+          // when non-empty (omitted for a no-reward bill — byte-identical to before).
+          ...(selectedRewards.length > 0
+            ? { redeemRewardIds: selectedRewards.map((r) => r.id) }
+            : {}),
           // Per-attempt idempotency key (Sub-phase C) — same key across retries
           // of THIS submission; the server replays the existing order on a dupe.
           idempotencyKey,
@@ -1441,7 +1652,24 @@ export default function POSPage() {
           // fresh figures. The member's balance is re-validated ATOMICALLY at checkout
           // (the in-tx guard), so no separate balance refetch is required for safety.
           setRedeemDraft("");
+          // Reward selections too (loyalty program, Phase 3B): a reward may have been turned
+          // off, or the member's balance changed, so clear the redeemed rewards + refetch the
+          // active set. The free cart units remain (now billed) so the cashier re-checks + re-
+          // redeems against the fresh figures; the server re-validates every reward anyway.
+          setSelectedRewards([]);
+          loadRewards();
           msg = "โปรโมชันหรือแต้มมีการเปลี่ยนแปลง ยอดถูกคำนวณใหม่ กรุณาตรวจสอบ";
+        }
+        // Reward-only ฿0 backstop (loyalty program, Phase 3B — FIX C): the client already
+        // blocks confirm when a reward is redeemed on a ฿0 bill, but if the server's guard
+        // (REWARD_NEEDS_PURCHASE) — or a raw payment BAD_AMOUNT on a reward bill — is ever
+        // reached, swap the raw code for the friendly, actionable reward message so the
+        // cashier is told to add a payable item rather than seeing "Invalid payment amount".
+        if (
+          code === "REWARD_NEEDS_PURCHASE" ||
+          (code === "BAD_AMOUNT" && selectedRewards.length > 0)
+        ) {
+          msg = "ต้องมีสินค้าที่ต้องชำระอย่างน้อย 1 รายการเพื่อแลกของรางวัล";
         }
         setPayError(msg);
         return;
@@ -1532,6 +1760,9 @@ export default function POSPage() {
         // Phase 7): a promo may have expired/started between bills, so the next sale
         // previews the current set. Best-effort — the server recompute stays authoritative.
         loadPromotions();
+        // Refetch active rewards too (loyalty program, Phase 3B) — a reward may have been
+        // created/toggled between bills. Best-effort; the server re-validates at checkout.
+        loadRewards();
         // Scanner flow (owner request): put the caret back in the search box
         // the moment the sale settles so the next customer's first barcode
         // fires straight into it — no mouse touch. rAF so it runs AFTER the
@@ -1785,7 +2016,8 @@ export default function POSPage() {
           boxShadow: "-16px 0 36px rgba(21,38,64,.06)",
         }}
       >
-        <div className="flex items-center gap-3 border-b p-[18px]" style={{ borderColor: "var(--line)" }}>
+        <div className="flex flex-col gap-2.5 border-b p-[18px]" style={{ borderColor: "var(--line)" }}>
+          <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={() => setCustPickerOpen(true)}
@@ -1840,6 +2072,29 @@ export default function POSPage() {
             )}
             <ChevronRight size={16} strokeWidth={2} color="#94a3b8" className="flex-shrink-0" />
           </button>
+          </div>
+
+          {/* "แลกของรางวัล" affordance (loyalty program, Phase 3B) — gold/amber, shown only
+              for an enrolled member on a loyalty-ON store. Opens the reward picker; each
+              selected reward adds a free cart unit + a gold chip on its line. */}
+          {receiptSettings?.loyaltyEnabled === true && customer?.isMember === true && (
+            <button
+              type="button"
+              onClick={openRewardPicker}
+              aria-label="แลกของรางวัล"
+              className="flex items-center justify-between gap-2 rounded-[14px] border px-3.5 py-2.5 text-left transition hover:brightness-[.98]"
+              style={{ background: "#FFFBEB", borderColor: "#FCD34D", color: "#B45309" }}
+            >
+              <span className="flex items-center gap-2 text-[12.5px] font-semibold">
+                <Gift size={16} strokeWidth={2} />
+                แลกของรางวัล
+                {selectedRewards.length > 0
+                  ? ` · เลือกไว้ ${selectedRewards.length} ชิ้น`
+                  : ""}
+              </span>
+              <ChevronRight size={16} strokeWidth={2} className="flex-shrink-0" />
+            </button>
+          )}
         </div>
 
         {/* Cart list */}
@@ -1879,6 +2134,7 @@ export default function POSPage() {
                         }
                       : null
                   }
+                  rewardCount={rewardCountByProduct.get(item.product.id) ?? 0}
                   onInc={incLine}
                   onDec={decLine}
                   onRemove={removeLine}
@@ -1933,6 +2189,21 @@ export default function POSPage() {
         onSubmit={submitCustomerForm}
       />
 
+      {/* Reward picker (loyalty program, Phase 3B) — "แลกของรางวัล". Only the rewards whose
+          product is live are offered; the picker gates affordability + stock, and the parent
+          `toggleReward` adds/removes the free cart unit + tracks the redeemed id. */}
+      <RewardPickerModal
+        open={rewardPickerOpen}
+        rewards={rewards.filter((r) => r.product !== null)}
+        pointsBalance={customer?.pointsBalance ?? 0}
+        committedPoints={committedPoints}
+        selectedIds={selectedRewardIds}
+        stockByProductId={rewardStockByProductId}
+        promoProductIds={linePromoProductIds}
+        onToggle={toggleReward}
+        onClose={() => setRewardPickerOpen(false)}
+      />
+
       {/* Payment modal (Phase 3 + Phase 6a tax toggle) */}
       <PaymentModal
         open={payOpen}
@@ -1964,6 +2235,14 @@ export default function POSPage() {
                 onClear: () => setRedeemDraft(""),
               }
             : null
+        }
+        rewardCount={selectedRewards.length}
+        rewardPoints={rewardPointsTotal}
+        redeemOverBalance={
+          committedPoints > (customer?.pointsBalance ?? 0)
+        }
+        rewardZeroTotalBlock={
+          selectedRewards.length > 0 && totals.totalSatang <= 0
         }
         payLines={payLines}
         cashReceived={cashReceived}

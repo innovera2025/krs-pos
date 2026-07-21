@@ -71,12 +71,16 @@ type SerializableOrder = {
   pointsRedemptionDiscount: Money;
   items: Array<
     // `promoDiscount` is the per-line promo slice of `lineTotal` (2dp Decimal) — it
-    // joins the item money map for the same trailing-zero reason. `promotionId`/
-    // `promotionName` pass through the `...it` spread untouched.
-    { unitPrice: Money; lineTotal: Money; promoDiscount: Money } & Record<
-      string,
-      unknown
-    >
+    // joins the item money map for the same trailing-zero reason. `rewardDiscount` is the
+    // reward free-unit slice (loyalty program, Phase 3B), likewise a 2dp Decimal that MUST
+    // NOT leak as a raw Decimal ("0" instead of "0.00"), so it joins the money map too.
+    // `promotionId`/`promotionName`/`rewardId`/`rewardName` pass through the `...it` spread.
+    {
+      unitPrice: Money;
+      lineTotal: Money;
+      promoDiscount: Money;
+      rewardDiscount: Money;
+    } & Record<string, unknown>
   >;
   payments: Array<{ amount: Money } & Record<string, unknown>>;
 } & Record<string, unknown>;
@@ -104,10 +108,14 @@ export type SerializedOrder<T extends SerializableOrder> = Omit<
   promoBillDiscount: string;
   pointsRedemptionDiscount: string;
   items: Array<
-    Omit<T["items"][number], "unitPrice" | "lineTotal" | "promoDiscount"> & {
+    Omit<
+      T["items"][number],
+      "unitPrice" | "lineTotal" | "promoDiscount" | "rewardDiscount"
+    > & {
       unitPrice: string;
       lineTotal: string;
       promoDiscount: string;
+      rewardDiscount: string;
     }
   >;
   payments: Array<Omit<T["payments"][number], "amount"> & { amount: string }>;
@@ -145,6 +153,9 @@ export function serializeOrder<T extends SerializableOrder>(
       lineTotal: money(it.lineTotal),
       // Per-line promo slice as a 2dp string; `promotionId`/`promotionName` flow through `...it`.
       promoDiscount: money(it.promoDiscount),
+      // Reward free-unit slice as a 2dp string (loyalty program, Phase 3B); "0.00" when no
+      // reward on the line. `rewardId`/`rewardName` flow through `...it` untouched.
+      rewardDiscount: money(it.rewardDiscount),
     })),
     payments: order.payments.map((p) => ({
       ...p,

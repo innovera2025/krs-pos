@@ -57,6 +57,20 @@ import { serializePosPromotion } from "@/lib/promotionSerialize";
 // Prisma/mssql (driver-free), the same discipline as the promo engine, so the
 // checkout route's module graph stays clean.
 import { pointsEarned, computeRedemption } from "@/lib/loyalty";
+// Reward redemption (loyalty program, Phase 3B) — the pure resolver that validates every
+// redeemed reward's product is in the cart with enough quantity and yields the per-product
+// free-unit discount + attribution + the reward slice of the points spend. Dependency-free
+// (no Prisma/mssql), the same discipline as the promo/loyalty engines. The free-unit value
+// enters the SAME per-line discount input as the manual "ส่วนลดรายการ" BEFORE
+// applyPromotions, so the engine subtotal nets the reward and the drift guard holds
+// UNCHANGED; the points are spent atomically COMBINED with the baht redemption below.
+import {
+  computeRewardRedemption,
+  findRewardLinePromoConflict,
+  type RedeemedReward,
+  type CartLineInfo,
+  type RewardAttribution,
+} from "@/lib/rewardRedeem";
 // Shared wire serializer + satang helpers (FIX 1): every order response
 // (GET/POST here, and every PATCH return in [id]/route.ts) emits identical 2dp
 // string money fields. The serializer lives in its own module so both route
@@ -290,6 +304,14 @@ type OrderRequestBody = {
   // in as the third bill-discount slice. Applies ONLY when loyalty is on AND the
   // linked customer is an enrolled member; otherwise it is ignored (no redemption).
   redeemPoints?: number;
+  // Reward redemption (loyalty program, Phase 3B). Optional array of reward ids (0..N)
+  // the member is redeeming — each gives 1 unit of that reward's product FREE (a per-line
+  // discount = the unit price). NO money/points are trusted from the client: the server
+  // loads each reward, resolves the free-unit value from the DB price, and spends
+  // `Σ reward.pointsCost` COMBINED with the baht redemption above (one atomic decrement).
+  // Applies ONLY when loyalty is on AND the linked customer is an enrolled member; a
+  // non-empty array without a member is rejected (422 REWARD_REQUIRES_MEMBER).
+  redeemRewardIds?: string[];
   // Checkout idempotency (Sub-phase C). A client-generated UUID per checkout
   // ATTEMPT — the SAME key is reused across retries of one submission, and a NEW
   // key is generated for a new sale. The server collapses a double-submit to a
@@ -456,6 +478,7 @@ export async function POST(req: Request) {
     taxRequested = false,
     idempotencyKey,
     redeemPoints,
+    redeemRewardIds,
   } = body;
 
   // --- idempotency key boundary (Sub-phase C) ---
@@ -553,6 +576,29 @@ export async function POST(req: Request) {
     );
   }
 
+  // --- duplicate product-line guard (FIX B — adversarial review) ---
+  // `items[]` must carry AT MOST ONE line per productId. The legit POS client always
+  // merges a repeated scan into a single line (qty n), so a duplicate productId only
+  // arrives via a crafted request — and the reward pipeline can't tolerate it: the
+  // per-product reward free-unit value is injected into only the FIRST matching line,
+  // while `cartByProduct` aggregates qty across ALL duplicate lines, so a split-line
+  // request would land the reward on the wrong-sized line (wrong total + an
+  // OrderItem.rewardDiscount that can exceed that line's own gross). Reject the whole
+  // request at the boundary — BEFORE any reward/pricing logic — so one-line-per-product
+  // holds and the reward discount always lands on the right, correctly-sized line.
+  {
+    const seenProductIds = new Set<string>();
+    for (const i of items) {
+      if (seenProductIds.has(i.productId)) {
+        return NextResponse.json(
+          { error: "รายการสินค้าซ้ำ", code: "DUPLICATE_PRODUCT_LINE" },
+          { status: 400 }
+        );
+      }
+      seenProductIds.add(i.productId);
+    }
+  }
+
   // --- bill-level discount input boundary (server is authoritative) ---
   if (discountType !== "amount" && discountType !== "percent") {
     return NextResponse.json(
@@ -608,6 +654,50 @@ export async function POST(req: Request) {
       );
     }
     requestedRedeemPoints = redeemPoints;
+  }
+
+  // --- reward-redemption input boundary (loyalty program, Phase 3B) ---
+  // Optional; when present it MUST be an array of non-empty strings, capped at
+  // MAX_REWARD_REDEMPTIONS (a real redeem is a handful), with NO duplicate ids (each reward
+  // is redeemed at most once per sale). A malformed value / duplicate is rejected at the
+  // boundary here rather than silently ignored, so a buggy client fails loudly. Absent /
+  // empty = no reward redemption (byte-identical to a pre-3B bill). The server NEVER trusts
+  // the reward's value — it loads the reward + resolves the free-unit price from the DB below.
+  const MAX_REWARD_REDEMPTIONS = 20;
+  let normalizedRewardIds: string[] = [];
+  if (redeemRewardIds !== undefined && redeemRewardIds !== null) {
+    if (!Array.isArray(redeemRewardIds)) {
+      return NextResponse.json(
+        { error: "Invalid reward selection", code: "BAD_REWARD" },
+        { status: 400 }
+      );
+    }
+    if (redeemRewardIds.length > MAX_REWARD_REDEMPTIONS) {
+      return NextResponse.json(
+        { error: "แลกของรางวัลได้ไม่เกิน 20 รายการต่อบิล", code: "TOO_MANY_REWARDS" },
+        { status: 422 }
+      );
+    }
+    const seen = new Set<string>();
+    for (const rid of redeemRewardIds) {
+      if (typeof rid !== "string" || rid.trim().length === 0 || rid.trim().length > 40) {
+        return NextResponse.json(
+          { error: "Invalid reward selection", code: "BAD_REWARD" },
+          { status: 400 }
+        );
+      }
+      const trimmed = rid.trim();
+      if (seen.has(trimmed)) {
+        // Each reward is redeemable at most once per bill — a duplicate is a client bug
+        // (redeeming the same reward twice would double-spend points for one config).
+        return NextResponse.json(
+          { error: "เลือกของรางวัลซ้ำกัน", code: "REWARD_DUPLICATE" },
+          { status: 422 }
+        );
+      }
+      seen.add(trimmed);
+      normalizedRewardIds.push(trimmed);
+    }
   }
 
   if (!Array.isArray(paymentLines) || paymentLines.length === 0) {
@@ -813,15 +903,161 @@ export async function POST(req: Request) {
     // unknown/inactive-product behavior.
     const priceById = new Map(products.map((p) => [p.id, toSatang(p.price)]));
 
+    // --- Reward redemption resolution (loyalty program, Phase 3B) ---
+    // A reward = "spend N points, get 1 unit of product P free". Resolve the redeemed
+    // rewards BEFORE building the engine's cart lines so each reward's free-unit value can
+    // be injected as an EXTRA per-line discount (the CLEAN pipeline injection: it enters the
+    // same input as the manual line discount, so applyPromotions computes the subtotal WITH
+    // the reward and the drift guard below holds unchanged). All server-authoritative — the
+    // client-sent ids are re-loaded, the free-unit price comes from the DB, and the points
+    // are spent atomically COMBINED with the baht redemption. `rewardDiscountByProduct` /
+    // `rewardAttributionByProduct` / `rewardPointsTotal` stay empty for a bill with no
+    // reward redemption (byte-identical to a pre-3B bill).
+    let rewardDiscountByProduct = new Map<string, number>();
+    let rewardAttributionByProduct = new Map<string, RewardAttribution>();
+    let rewardPointsTotal = 0;
+    if (normalizedRewardIds.length > 0) {
+      // A reward redemption REQUIRES loyalty ON + an enrolled member on the bill. Reject the
+      // whole redeem with a clear code (rather than silently ignoring it) so the cashier
+      // knows why — the client also gates this, but the server is authoritative.
+      if (
+        loyaltySettings?.loyaltyEnabled !== true ||
+        resolvedCustomer?.isMember !== true
+      ) {
+        return NextResponse.json(
+          { error: "ต้องเลือกสมาชิกก่อนแลกของรางวัล", code: "REWARD_REQUIRES_MEMBER" },
+          { status: 422 }
+        );
+      }
+      // Load every redeemed reward (pre-tx Prisma read, inside the sanitized try). A missing
+      // id (unknown / deleted) OR an inactive reward → 422 REWARD_UNAVAILABLE: you cannot
+      // redeem a reward that no longer exists or was turned off.
+      const rewardRows = await prisma.reward.findMany({
+        where: { id: { in: normalizedRewardIds } },
+        select: { id: true, name: true, pointsCost: true, productId: true, isActive: true },
+      });
+      const rewardById = new Map(rewardRows.map((r) => [r.id, r]));
+      for (const rid of normalizedRewardIds) {
+        const row = rewardById.get(rid);
+        if (!row || row.isActive !== true) {
+          return NextResponse.json(
+            { error: "ของรางวัลนี้ไม่พร้อมให้แลกแล้ว", code: "REWARD_UNAVAILABLE" },
+            { status: 422 }
+          );
+        }
+      }
+      // The cart's per-product rollup (summed quantity + DB unit price in satang). ONLY
+      // active cart products are in priceById, so a reward whose product is absent/inactive
+      // is not in this map → the resolver names it as REWARD_PRODUCT_NOT_IN_CART below.
+      const cartByProduct = new Map<string, CartLineInfo>();
+      for (const i of items) {
+        const priceSatang = priceById.get(i.productId);
+        if (priceSatang === undefined) continue; // inactive/unknown — computeOrderTotals rejects it
+        const existing = cartByProduct.get(i.productId);
+        if (existing) existing.quantity += i.quantity;
+        else cartByProduct.set(i.productId, { quantity: i.quantity, priceSatang });
+      }
+      // Build the resolver input IN THE CLIENT-SENT ORDER (so a "not in cart" failure names
+      // the first offending reward the cashier selected).
+      const redeemedRewards: RedeemedReward[] = normalizedRewardIds.map((rid) => {
+        const row = rewardById.get(rid)!; // present (checked above)
+        return {
+          id: row.id,
+          name: row.name,
+          productId: row.productId,
+          pointsCost: row.pointsCost,
+        };
+      });
+      const rewardResult = computeRewardRedemption(redeemedRewards, cartByProduct);
+      if (!rewardResult.ok) {
+        // The reward's product is not in the cart (or the cart qty can't cover one free unit
+        // per reward on it) → name the reward so the cashier adds the product or drops it.
+        return NextResponse.json(
+          {
+            error: `ต้องมีสินค้าของรางวัล "${rewardResult.rewardName}" อยู่ในตะกร้าเพื่อแลก`,
+            code: "REWARD_PRODUCT_NOT_IN_CART",
+          },
+          { status: 422 }
+        );
+      }
+      // --- reward vs. line-promo conflict guard (FIX A — adversarial review) ---
+      // A reward's free unit rides the per-line discount input and competes with any
+      // active LINE-level promo on the same product for the same gross ceiling (the
+      // engine clamps promo + reward ≤ gross), so the member would spend full points yet
+      // get less than a whole free unit. For v1 DISALLOW stacking: if any redeemed
+      // reward's product carries an active line-level promotion this sale (PRODUCT_DISCOUNT
+      // / FIXED_PRICE / BUY_X_GET_Y — all product-scoped; a BILL_THRESHOLD promo is
+      // bill-level and does NOT conflict), reject the whole redeem naming the reward. Built
+      // from the already-fetched `activePromos`, so no extra DB read. Runs BEFORE the
+      // free-unit value is injected below.
+      const productIdsWithLinePromo = new Set<string>();
+      for (const p of activePromos) {
+        if (
+          p.type === "PRODUCT_DISCOUNT" ||
+          p.type === "FIXED_PRICE" ||
+          p.type === "BUY_X_GET_Y"
+        ) {
+          if (Array.isArray(p.productIds)) {
+            for (const pid of p.productIds) productIdsWithLinePromo.add(pid);
+          }
+        }
+      }
+      const conflict = findRewardLinePromoConflict(
+        redeemedRewards,
+        productIdsWithLinePromo
+      );
+      if (conflict) {
+        return NextResponse.json(
+          {
+            error: `ของรางวัล "${conflict.name}" ใช้กับสินค้าที่มีโปรโมชันอยู่แล้วไม่ได้`,
+            code: "REWARD_PROMO_CONFLICT",
+          },
+          { status: 422 }
+        );
+      }
+      rewardDiscountByProduct = rewardResult.plan.discountByProduct;
+      rewardAttributionByProduct = rewardResult.plan.attributionByProduct;
+      rewardPointsTotal = rewardResult.plan.totalRewardPoints;
+    }
+
     // Build the engine's cart lines in the SAME order as items[] — priceSatang from
     // the DB (never the client), manualLineDiscountSatang from the request's per-line
     // discount input (the engine re-clamps it defensively).
-    const promoLines: PromoCartLine[] = items.map((i) => ({
-      productId: i.productId,
-      priceSatang: priceById.get(i.productId) ?? 0,
-      quantity: i.quantity,
-      manualLineDiscountSatang: i.lineDiscountSatang,
-    }));
+    //
+    // REWARD INJECTION (loyalty program, Phase 3B): a redeemed reward's free-unit value is
+    // ADDED to that product line's manual line discount, so the reward enters the pricing
+    // pipeline the CLEAN way — the SAME per-line input the cashier's "ส่วนลดรายการ" uses.
+    // Injected into the FIRST line of each product (the `Set` guard) so a pathological
+    // duplicate-line request can't double-apply it; the POS client always emits one line per
+    // product, so the reward lands whole. The engine clamps combined line discount ≤ line
+    // gross, so a line NEVER goes negative even when a manual discount is also present.
+    //
+    // FIX A (defense-in-depth, adversarial review): for a product that IS a reward target the
+    // server IGNORES any client-sent per-line manual discount — `manualLineDiscountSatang` is
+    // forced to 0 before the free-unit value is added — so a crafted request can't stack a
+    // manual discount ON TOP of the reward on the same line (the engine would otherwise clamp
+    // the SUM to gross, letting a manual discount silently eat into the reward's value). The
+    // POS UI already hides the manual control on a reward line; this makes the server
+    // authoritative. A non-reward line keeps its manual discount unchanged.
+    const rewardInjectedProducts = new Set<string>();
+    const promoLines: PromoCartLine[] = items.map((i) => {
+      const rewardForProduct = rewardDiscountByProduct.get(i.productId) ?? 0;
+      const isRewardTarget = rewardForProduct > 0;
+      let rewardInject = 0;
+      if (isRewardTarget && !rewardInjectedProducts.has(i.productId)) {
+        rewardInject = rewardForProduct;
+        rewardInjectedProducts.add(i.productId);
+      }
+      // Reward-targeted line → drop the client manual discount (authoritative); otherwise
+      // keep it. The reward free-unit value is then the only injected discount on that line.
+      const manualLineDiscountSatang = isRewardTarget ? 0 : i.lineDiscountSatang ?? 0;
+      return {
+        productId: i.productId,
+        priceSatang: priceById.get(i.productId) ?? 0,
+        quantity: i.quantity,
+        manualLineDiscountSatang: manualLineDiscountSatang + rewardInject,
+      };
+    });
 
     // Apply promotions (server-authoritative). Yields per-line combined (manual +
     // promo) discounts and one combined bill discount, both fed UNCHANGED into
@@ -851,7 +1087,6 @@ export async function POST(req: Request) {
     // no-redeem bill. Server is authoritative — the client-sent points are recomputed.
     let redemptionSatang = 0;
     let effectiveRedeemPoints = 0;
-    let redeemCustomerId: string | null = null;
     if (
       loyaltySettings?.loyaltyEnabled === true &&
       resolvedCustomer?.isMember === true &&
@@ -909,10 +1144,30 @@ export async function POST(req: Request) {
       }
       redemptionSatang = plan.redemptionSatang;
       effectiveRedeemPoints = plan.effectiveRedeemPoints;
-      // Only spend (and write a REDEEM ledger row) when points actually resolve to > 0.
-      if (effectiveRedeemPoints > 0) {
-        redeemCustomerId = resolvedCustomer.id;
+    }
+
+    // --- Combined points spend (loyalty program, Phase 3B) ---
+    // The TOTAL points this sale spends = the baht-redemption points (Phase 2) + the reward
+    // points (Phase 3B). Both were resolved server-side (effectiveRedeemPoints against the
+    // bill; rewardPointsTotal from the loaded rewards). They are spent as ONE atomic
+    // decrement in the tx below so the member's balance can NEVER be over-committed across
+    // baht + reward (a second separate decrement could each individually pass its own guard
+    // yet jointly overdraw). `pointsSpendCustomerId` is the member to charge — set only when
+    // there is something to spend; rewardPointsTotal is > 0 only for a member (guarded in the
+    // reward block) and effectiveRedeemPoints only for a member (guarded above), so
+    // `resolvedCustomer` is always present when `totalPointsSpend > 0`. The FRIENDLY pre-tx
+    // check on the COMBINED total returns a clean 422 before doing work; the in-tx atomic
+    // `updateMany WHERE pointsBalance >= totalPointsSpend` is the real, race-proof gate.
+    const totalPointsSpend = effectiveRedeemPoints + rewardPointsTotal;
+    let pointsSpendCustomerId: string | null = null;
+    if (totalPointsSpend > 0 && resolvedCustomer) {
+      if (totalPointsSpend > resolvedCustomer.pointsBalance) {
+        return NextResponse.json(
+          { error: "แต้มสะสมไม่เพียงพอ", code: "POINTS_INSUFFICIENT" },
+          { status: 422 }
+        );
       }
+      pointsSpendCustomerId = resolvedCustomer.id;
     }
 
     // The single combined bill discount handed to pricing = the THREE bill-discount
@@ -967,6 +1222,24 @@ export async function POST(req: Request) {
       return NextResponse.json(
         { error: "Could not create order", code: "INTERNAL" },
         { status: 500 }
+      );
+    }
+
+    // --- Reward-only zero-total guard (loyalty program, Phase 3B) ---
+    // A reward makes 1 unit free (a per-line discount = its price). A cart whose ONLY line
+    // is the free reward item nets to total 0, which would dead-end at the payment guard
+    // (every tender must be > 0 satang AND amountPaid must === total, so a 0-total sale can
+    // never be paid — a confusing "amount" error). When a reward is redeemed, fail EARLY with
+    // a clear, actionable code so the cashier adds a payable item. Only fires for a reward
+    // redemption (rewardPointsTotal > 0); a genuine 100%-promo total-0 bill keeps its existing
+    // generic guards untouched. The existing payment guards remain as belt-and-braces.
+    if (rewardPointsTotal > 0 && totals.totalSatang <= 0) {
+      return NextResponse.json(
+        {
+          error: "ต้องมีสินค้าที่ต้องชำระอย่างน้อย 1 รายการเพื่อแลกของรางวัล",
+          code: "REWARD_NEEDS_PURCHASE",
+        },
+        { status: 422 }
       );
     }
 
@@ -1038,8 +1311,28 @@ export async function POST(req: Request) {
     // `application.lines`, and `items` are all built in the SAME order (each from items[]),
     // so `application.lines[i]` is this line's promo result. `promoDiscount` is the promo-only
     // slice already folded into `lineTotal` (lineTotal = gross − manualLine − promoLine).
+    //
+    // Reward attribution (loyalty program, Phase 3B): a redeemed reward's free-unit value is
+    // already folded into `lineTotal` (it rode the manual-line-discount input into the
+    // engine), so the money is complete. These snapshot columns (rewardId/rewardName/
+    // rewardDiscount) record WHICH reward + HOW MUCH free-unit value applied on this product
+    // line — for the receipt line + reporting. `rewardDiscount` is the nominal free-unit
+    // value (satang) resolved from the DB price; null/0 when no reward on this line. A line
+    // is keyed by productId, so if two rewards target one product they share this row (the
+    // attribution carries the joined name + summed value — see rewardRedeem.ts). The
+    // attribution is written to the FIRST line of each product ONLY (the `Set` guard) —
+    // MIRRORING the free-unit injection above — so a pathological duplicate-line request
+    // records the value once (never double-counted in a report); the POS client emits one
+    // line per product, so it lands on that single line.
+    const rewardAttributedProducts = new Set<string>();
     const lineItems = totals.lines.map((l, i) => {
       const appLine = application.lines[i];
+      let rewardAttr: RewardAttribution | null = null;
+      const attr = rewardAttributionByProduct.get(l.productId);
+      if (attr && !rewardAttributedProducts.has(l.productId)) {
+        rewardAttr = attr;
+        rewardAttributedProducts.add(l.productId);
+      }
       return {
         productId: l.productId,
         quantity: l.quantity,
@@ -1048,6 +1341,9 @@ export async function POST(req: Request) {
         promotionId: appLine.promo?.promotionId ?? null,
         promotionName: appLine.promo?.promotionName ?? null,
         promoDiscount: satangToString(appLine.promoDiscountSatang),
+        rewardId: rewardAttr?.rewardId ?? null,
+        rewardName: rewardAttr?.rewardName ?? null,
+        rewardDiscount: satangToString(rewardAttr?.rewardDiscountSatang ?? 0),
       };
     });
 
@@ -1134,13 +1430,15 @@ export async function POST(req: Request) {
           // off bill (the column default) — the customer increment + EARN ledger row
           // below run ONLY when > 0, so a non-earning bill writes exactly this default.
           pointsEarned: pointsToEarn,
-          // Loyalty REDEEM (loyalty program, Phase 2): the points SPENT + the baht slice
-          // of `discount` they bought. `pointsRedemptionDiscount` is already inside the
-          // combined `discount` above (so it is NOT double-counted), stored separately so
-          // the receipt/reports can split it out from the manual bill discount. Both are
-          // 0 for a no-redeem bill (the column defaults); the atomic spend + REDEEM ledger
-          // row below run ONLY when effectiveRedeemPoints > 0.
-          pointsRedeemed: effectiveRedeemPoints,
+          // Loyalty REDEEM (loyalty program, Phase 2 + 3B): the TOTAL points SPENT this sale
+          // = the baht-redemption points + the reward points (`totalPointsSpend`), so the
+          // void reversal (which reads Order.pointsRedeemed) re-credits BOTH correctly with
+          // no extra bookkeeping. `pointsRedemptionDiscount` is the BAHT-redemption slice of
+          // `discount` ONLY (`redemptionSatang`) — the reward's value is a LINE discount
+          // already inside `lineTotal`/`discount`, so folding it into this bill slice too
+          // would double-count it. Both are 0 for a no-redeem bill (the column defaults); the
+          // atomic spend + REDEEM ledger row below run ONLY when totalPointsSpend > 0.
+          pointsRedeemed: totalPointsSpend,
           pointsRedemptionDiscount: satangToString(redemptionSatang),
           shiftId,
           items: { create: lineItems },
@@ -1180,32 +1478,36 @@ export async function POST(req: Request) {
         });
       }
 
-      // === Loyalty points REDEEM (loyalty program, Phase 2) ===
+      // === Loyalty points REDEEM (loyalty program, Phase 2 + 3B) ===
       // Runs BEFORE the EARN block (Money Contract ordering): SPEND first, then EARN on
-      // the net total the member paid. `totals.totalSatang` already nets out the
-      // redemption (it is folded into the combined bill discount), so EARN below credits
-      // exactly what they paid — no change to the earn computation.
+      // the net total the member paid. `totals.totalSatang` already nets out BOTH the baht
+      // redemption AND the reward free-unit(s) (each folded into the combined line/bill
+      // discounts), so EARN below credits exactly what they paid — no change to the earn
+      // computation.
       //
-      // ATOMIC overdraw guard — the SAME `updateMany WHERE balance >= n` + `count === 1`
-      // pattern as the stock decrement above: two concurrent redeems of the last points
-      // cannot both succeed, and `pointsBalance` can NEVER go negative. A 0-count means
-      // the balance dropped below the redeemed amount between the pre-tx read and here (a
-      // concurrent redeem / manual adjust), so we throw → the WHOLE sale rolls back (order
-      // + stock + this redeem), never recording a redeem without its discount or a discount
-      // without the spend. `orderId` is a plain String snapshot (no FK, matching EARN).
-      // Skipped entirely when nothing was redeemed (redeemCustomerId null) — byte-identical
-      // to a no-redeem bill (no customer touch, no ledger row).
-      if (effectiveRedeemPoints > 0 && redeemCustomerId) {
+      // ONE COMBINED atomic decrement of `totalPointsSpend` (= baht-redemption points +
+      // reward points). Doing it as a SINGLE `updateMany WHERE pointsBalance >= totalPointsSpend`
+      // (not two separate decrements) is the invariant that stops the balance being
+      // over-committed across baht + reward: two independent decrements could each pass their
+      // own guard yet jointly overdraw. Same `count === 1` pattern as the stock decrement — two
+      // concurrent redeems of the last points cannot both succeed, and `pointsBalance` can
+      // NEVER go negative. A 0-count means the balance dropped below the spend between the
+      // pre-tx read and here (a concurrent redeem / manual adjust), so we throw → the WHOLE
+      // sale rolls back (order + stock + this redeem), never recording a spend without its
+      // discount/free-unit or vice-versa. `orderId` is a plain String snapshot (no FK, matching
+      // EARN). Skipped entirely when nothing was redeemed (pointsSpendCustomerId null) —
+      // byte-identical to a no-redeem bill (no customer touch, no ledger row).
+      if (totalPointsSpend > 0 && pointsSpendCustomerId) {
         const spent = await tx.customer.updateMany({
           where: {
-            id: redeemCustomerId,
+            id: pointsSpendCustomerId,
             isMember: true,
-            pointsBalance: { gte: effectiveRedeemPoints },
+            pointsBalance: { gte: totalPointsSpend },
           },
-          data: { pointsBalance: { decrement: effectiveRedeemPoints } },
+          data: { pointsBalance: { decrement: totalPointsSpend } },
         });
         if (spent.count !== 1) {
-          throw new InsufficientPointsError(redeemCustomerId);
+          throw new InsufficientPointsError(pointsSpendCustomerId);
         }
         // `updateMany` returns no row, so read the post-decrement balance for the
         // ledger's self-verifying `balanceAfter`. Inside the tx this reads the value THIS
@@ -1213,17 +1515,19 @@ export async function POST(req: Request) {
         // the two ledger rows carry the correct SEQUENTIAL running balance (spend first,
         // then earn on top).
         const afterRedeem = await tx.customer.findUnique({
-          where: { id: redeemCustomerId },
+          where: { id: pointsSpendCustomerId },
           select: { pointsBalance: true },
         });
         await tx.pointsTransaction.create({
           data: {
-            customerId: redeemCustomerId,
+            customerId: pointsSpendCustomerId,
             orderId: created.id,
             type: PointsTxType.REDEEM,
-            // Signed: NEGATIVE = points spent (the mirror of EARN's positive delta).
-            points: -effectiveRedeemPoints,
+            // Signed: NEGATIVE = points spent (the mirror of EARN's positive delta). ONE row
+            // for the COMBINED spend; the note splits the baht vs reward portions for the trail.
+            points: -totalPointsSpend,
             balanceAfter: afterRedeem?.pointsBalance ?? 0,
+            note: `redeem: ${effectiveRedeemPoints} baht-pts + ${rewardPointsTotal} reward-pts`,
             actorId: cashierId,
           },
         });
