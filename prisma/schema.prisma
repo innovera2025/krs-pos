@@ -328,6 +328,15 @@ enum AuditAction {
   MEMBER_ENROLLED
   POINTS_ADJUSTED
   LOYALTY_SETTINGS_CHANGED
+  // Reward catalog lifecycle (loyalty program, Phase 3A). Written best-effort AFTER a
+  // Reward create/update/toggle commits — the audit-trail counterpart for the
+  // ADMIN-only (requireAdmin: ADMIN+MANAGER) reward-catalog management surface (mirrors
+  // the PROMOTION_* set). REWARD_ACTIVATED / REWARD_DEACTIVATED capture the `isActive`
+  // soft-delete toggle (no hard DELETE); `detail` holds the reward id/name JSON.
+  REWARD_CREATED
+  REWARD_UPDATED
+  REWARD_ACTIVATED
+  REWARD_DEACTIVATED
 }
 
 model Category {
@@ -890,4 +899,34 @@ enum PromotionType {
   FIXED_PRICE
   BUY_X_GET_Y
   BILL_THRESHOLD
+}
+
+// Reward catalog entry (loyalty program, Phase 3A — CONFIG side only). An ADMIN-authored
+// "spend N points, get this product free" item the POS surfaces at redeem time (the POS
+// redeem flow + receipt line are Phase 3B and DO NOT read this model yet).
+//
+// `productId` is a PLAIN String snapshot reference — DELIBERATELY NO relation/FK to
+// Product — mirroring how Order/OrderItem snapshot promo/product refs (OrderItem.promotionId,
+// HeldBill.customerId): a soft-deleted product must never block or cascade into a reward
+// row. The referenced product's EXISTENCE + active state is validated at the API boundary
+// on every write (POST/PATCH → 422 UNKNOWN_PRODUCT), never trusting the client, and the
+// admin/POS read paths resolve the product's current name/price via a lookup at read time.
+//
+// `name` is the Thai display name shown at POS + on the receipt (Phase 3B). `pointsCost`
+// is the whole-integer points a member spends to claim the reward (≥ 1, enforced at the
+// API). Soft-delete only (least-privilege: the app DB role `krs_app` has no DELETE — the
+// HeldBill/Promotion precedent): deactivating flips `isActive` false; a reward is never
+// hard-removed.
+model Reward {
+  id         String   @id @default(cuid())
+  name       String   // Thai display name — shown at POS + on the receipt (Phase 3B)
+  pointsCost Int      // whole points spent to claim (≥ 1, enforced at the API)
+  productId  String   // the free product's Product id — PLAIN String snapshot (NO FK)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // The POS redeem feed (Phase 3B) + the admin list's default filter select active
+  // rewards; index the predicate so that scan uses one index.
+  @@index([isActive])
 }

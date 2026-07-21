@@ -16,6 +16,7 @@ import {
   type AdjustPayload,
 } from "@/components/members/AdjustPointsModal";
 import { LoyaltyReportTab } from "@/components/members/LoyaltyReportTab";
+import { RewardsTab } from "@/components/members/RewardsTab";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -42,7 +43,10 @@ function MembersScreen() {
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [search, setSearch] = useState("");
-  const [tab, setTab] = useState<"manage" | "report">("manage");
+  // Three tabs: member list · ของรางวัล (rewards, ADMIN-only) · points report. The
+  // rewards tab pill renders only for an admin (the reward CONFIG surface is ADMIN-gated,
+  // matching the requireAdmin write routes).
+  const [tab, setTab] = useState<"manage" | "rewards" | "report">("manage");
 
   // Ledger drawer.
   const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
@@ -138,11 +142,16 @@ function MembersScreen() {
         </div>
       </header>
 
-      {/* จัดการ / รายงาน tab switcher */}
+      {/* รายชื่อ / ของรางวัล (admin) / รายงาน tab switcher */}
       <div className="flex items-center gap-1.5">
         <FilterPill active={tab === "manage"} onClick={() => setTab("manage")}>
           รายชื่อสมาชิก · Members
         </FilterPill>
+        {isAdmin && (
+          <FilterPill active={tab === "rewards"} onClick={() => setTab("rewards")}>
+            ของรางวัล · Rewards
+          </FilterPill>
+        )}
         <FilterPill active={tab === "report"} onClick={() => setTab("report")}>
           รายงานแต้ม · Points
         </FilterPill>
@@ -150,6 +159,8 @@ function MembersScreen() {
 
       {tab === "report" ? (
         <LoyaltyReportTab />
+      ) : tab === "rewards" && isAdmin ? (
+        <RewardsTab />
       ) : (
         <>
           {/* Search */}
