@@ -30,9 +30,59 @@ model Customer {
   // Multi-branch-ready data model (domain-multi-branch-ready) — single-branch
   // deployments use the BR-01 default.
   branchId  String   @default("BR-01")
+  // Membership + loyalty points (loyalty program, Phase 1A). Additive: a Customer
+  // is a walk-in tax record by default; enrolling flips `isMember` true. Phone is
+  // the member key — enforced UNIQUE only among members via a raw partial index in
+  // the migration (`Customer_phone_member_key`), NOT a column @unique (legacy rows
+  // carry null/duplicate non-member phones that must stay valid). `pointsBalance`
+  // is a fast-read cache of the PointsTransaction ledger sum, always mutated in the
+  // SAME transaction as the ledger row (never negative — the redeem path guards it
+  // atomically in Phase 2). `memberSince` is stamped when `isMember` flips false→true.
+  isMember          Boolean  @default(false)
+  pointsBalance     Int      @default(0)
+  memberSince       DateTime?
+  pointsTransactions PointsTransaction[]
   orders    Order[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Points ledger (loyalty program, Phase 1A). Append-only, auditable record of every
+// points movement (earn on a sale, redeem for a discount/reward, a manual admin
+// adjustment, or a reversal on refund/void). `points` is SIGNED (+earn / −redeem);
+// `balanceAfter` snapshots `Customer.pointsBalance` immediately after this row so the
+// ledger is self-verifying. `orderId` is a plain String snapshot (NOT a relation FK)
+// so a later order edit/delete never mutates or breaks a historical ledger entry —
+// the same no-FK snapshot stance as OrderItem.promotionId / HeldBill.customerId; it
+// also avoids any Order-side schema change in this pass. `actorId` records who caused
+// the movement (the cashier at checkout, or the admin for a manual adjust); no FK for
+// the same historical-immutability reason. `Customer.pointsBalance` is always updated
+// in the SAME transaction that inserts the ledger row.
+model PointsTransaction {
+  id          String        @id @default(cuid())
+  customerId  String
+  customer    Customer      @relation(fields: [customerId], references: [id])
+  orderId     String?       // snapshot of the bill that earned/spent the points (no FK)
+  type        PointsTxType
+  points      Int           // signed: +earn / −redeem
+  balanceAfter Int          // Customer.pointsBalance immediately after this row
+  note        String?
+  actorId     String?       // who caused the movement (cashier / admin); no FK
+  createdAt   DateTime      @default(now())
+
+  // Member ledger drawer lists a customer's transactions newest-first; the composite
+  // index serves the per-customer filter + createdAt sort in one scan.
+  @@index([customerId, createdAt])
+}
+
+// Points movement kinds (loyalty program, Phase 1A). EARN = accrued on a sale;
+// REDEEM = spent for a baht discount / reward; ADJUST = manual admin correction (±);
+// REVERSAL = points backed out when a sale is refunded/voided.
+enum PointsTxType {
+  EARN
+  REDEEM
+  ADJUST
+  REVERSAL
 }
 
 // KRS accounting sync job (Phase 6a). A SIMULATED state machine — there is NO
@@ -154,6 +204,17 @@ model ShopSettings {
   // Branch designation (defaults to HQ in getSellerConfig when unset):
   sellerBranchCode  String?  // 5-digit RD branch code ("00000" = head office)
   sellerBranchLabel String?  // human branch label (≤100 chars)
+  // Loyalty program config (loyalty program, Phase 1A) — one global rate for the
+  // whole store (D2: no member tiers). `loyaltyEnabled` is the master on/off switch.
+  // `earnBahtPerPoint` = baht spent to accrue 1 point (e.g. 25 → ฿25 = 1 point);
+  // the engine floors, so a rate ≥1 is required (bounded at the API). `redeemPointValueSatang`
+  // = the baht-value (in satang) of 1 point when redeemed for a discount (e.g. 10 →
+  // ฿0.10/point). `minRedeemPoints` = the minimum points a redeem must spend (0 = no
+  // floor). Redemption math (Phase 2) reads these; Phase 1A only stores + edits them.
+  loyaltyEnabled         Boolean @default(false)
+  earnBahtPerPoint       Int     @default(25)
+  redeemPointValueSatang Int     @default(10)
+  minRedeemPoints        Int     @default(0)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 }
@@ -258,6 +319,15 @@ enum AuditAction {
   PROMOTION_UPDATED
   PROMOTION_ACTIVATED
   PROMOTION_DEACTIVATED
+  // Loyalty program (loyalty program, Phase 1A). MEMBER_ENROLLED = a Customer was
+  // enrolled as a member; POINTS_ADJUSTED = a manual admin points ± (Phase 1B members
+  // screen); LOYALTY_SETTINGS_CHANGED = the loyalty rate/config was edited. Values are
+  // added now so the ledger surfaces (Phase 1B) can reference them without a second
+  // enum migration; the settings route audits none of its changes today, so
+  // LOYALTY_SETTINGS_CHANGED is defined-but-unused until that surface adopts auditing.
+  MEMBER_ENROLLED
+  POINTS_ADJUSTED
+  LOYALTY_SETTINGS_CHANGED
 }
 
 model Category {
@@ -326,6 +396,16 @@ model Order {
   promoBillDiscount Decimal @db.Decimal(10, 2) @default(0)
   billPromotionId   String?
   billPromotionName String?
+  // Loyalty points snapshot (loyalty program, Phase 1A — COLUMNS ONLY, zero-backfill
+  // safe via defaults). `pointsEarned` = points accrued on this sale; `pointsRedeemed`
+  // = points spent; `pointsRedemptionDiscount` = the baht slice of `discount` that came
+  // from a points redemption (part of the total bill-level `discount`, so the
+  // `subtotal − discount === total` invariant is unchanged). No logic writes these in
+  // Phase 1A — earn is wired at checkout in Phase 1B and redeem in Phase 2. The defaults
+  // make every existing row read as 0.
+  pointsEarned             Int     @default(0)
+  pointsRedeemed           Int     @default(0)
+  pointsRedemptionDiscount Decimal @db.Decimal(10, 2) @default(0)
   paymentType  PaymentType @default(CASH)
   amountPaid   Decimal     @db.Decimal(10, 2) @default(0)
   change       Decimal     @db.Decimal(10, 2) @default(0)

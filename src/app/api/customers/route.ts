@@ -5,6 +5,7 @@ import { requireUser } from "@/lib/auth";
 import {
   CustomerPostBodySchema,
   CUSTOMER_PUBLIC_SELECT,
+  classifyCustomerUniqueError,
 } from "@/lib/schemas/customer";
 import { parseBody } from "@/lib/schemas/_shared";
 // Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
@@ -49,6 +50,8 @@ export async function GET(req: Request) {
             OR: [
               { name: { contains: q, mode: "insensitive" } },
               { taxId: { contains: q, mode: "insensitive" } },
+              // Members are found by phone (the member key), loyalty program Phase 1A.
+              { phone: { contains: q, mode: "insensitive" } },
             ],
           }
         : {};
@@ -98,22 +101,38 @@ export async function POST(req: Request) {
 
     const parsed = parseBody(CustomerPostBodySchema, raw);
     if ("response" in parsed) return parsed.response;
-    const { name, taxId, address, phone, buyerBranchCode } = parsed.data;
+    const { name, taxId, address, phone, buyerBranchCode, isMember } =
+      parsed.data;
 
     try {
       // Explicit Prisma data (no body spread) — only the validated/narrowed fields
-      // reach the DB; `branchId` keeps its schema default (BR-01).
+      // reach the DB; `branchId` keeps its schema default (BR-01). Enrolling a member
+      // stamps `memberSince` (loyalty program, Phase 1A); the schema superRefine has
+      // already guaranteed a member carries a phone (the member key).
       const customer = await prisma.customer.create({
-        data: { name, taxId, address, phone, buyerBranchCode },
+        data: {
+          name,
+          taxId,
+          address,
+          phone,
+          buyerBranchCode,
+          isMember,
+          memberSince: isMember ? new Date() : null,
+        },
         select: CUSTOMER_PUBLIC_SELECT,
       });
       return NextResponse.json(customer, { status: 201 });
     } catch (err) {
-      // Unique-constraint on the only unique column (taxId) → typed 409.
-      if (
-        err instanceof Prisma.PrismaClientKnownRequestError &&
-        err.code === "P2002"
-      ) {
+      // Two possible unique conflicts: the member-phone partial index (loyalty) or
+      // the taxId unique — classify so the client gets a specific, actionable 409.
+      const conflict = classifyCustomerUniqueError(err);
+      if (conflict === "MEMBER_PHONE") {
+        return NextResponse.json(
+          { error: "เบอร์นี้มีสมาชิกใช้แล้ว", code: "MEMBER_PHONE_TAKEN" },
+          { status: 409 }
+        );
+      }
+      if (conflict === "TAXID") {
         return NextResponse.json(
           { error: "เลขผู้เสียภาษีนี้ถูกใช้งานแล้ว", code: "TAXID_TAKEN" },
           { status: 409 }

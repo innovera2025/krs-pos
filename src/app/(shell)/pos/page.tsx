@@ -797,7 +797,11 @@ export default function POSPage() {
     //    would silently keep the stale value. buyerBranchCode can't be "" (fails
     //    the 5-digit rule) so an empty branch sends the HQ default "00000".
     //  - CREATE: omit empty optionals (defaulting to null/"00000" server-side).
-    const payload: Record<string, string> = { name: input.name };
+    const payload: Record<string, string | boolean> = { name: input.name };
+    // Membership flag (loyalty program, Phase 1A) — always sent; the server enrolls /
+    // requires a phone accordingly. On create, a member's phone is added below (it is
+    // non-empty by the form's member-phone rule).
+    payload.isMember = input.isMember;
     if (editingId) {
       payload.taxId = input.taxId;
       payload.address = input.address;
@@ -833,11 +837,15 @@ export default function POSPage() {
         const message =
           code === "TAXID_TAKEN"
             ? "เลขผู้เสียภาษีนี้ถูกใช้งานแล้ว"
-            : code === "VALIDATION"
-              ? "ข้อมูลไม่ถูกต้อง ตรวจสอบเลขภาษี/รหัสสาขาอีกครั้ง"
-              : code === "NOT_FOUND"
-                ? "ไม่พบลูกค้ารายนี้ (อาจถูกลบไปแล้ว)"
-                : "บันทึกลูกค้าไม่สำเร็จ ลองใหม่อีกครั้ง";
+            : code === "MEMBER_PHONE_TAKEN"
+              ? "เบอร์นี้มีสมาชิกใช้แล้ว"
+              : code === "MEMBER_PHONE_REQUIRED"
+                ? "สมาชิกต้องระบุเบอร์โทร"
+                : code === "VALIDATION"
+                  ? "ข้อมูลไม่ถูกต้อง ตรวจสอบเลขภาษี/รหัสสาขาอีกครั้ง"
+                  : code === "NOT_FOUND"
+                    ? "ไม่พบลูกค้ารายนี้ (อาจถูกลบไปแล้ว)"
+                    : "บันทึกลูกค้าไม่สำเร็จ ลองใหม่อีกครั้ง";
         setCustFormError(message);
         return;
       }
@@ -973,7 +981,19 @@ export default function POSPage() {
     setCart(restored);
     setDiscountType(bill.discountType);
     setDiscountDraft(bill.discountValue > 0 ? String(bill.discountValue) : "");
-    setCustomer(bill.cartJson.customer ?? null);
+    // Loyalty (loyalty program, Phase 1A): the snapshot customer may predate the
+    // isMember/pointsBalance fields, so default them to a valid CustomerDTO on resume
+    // (chip/checkout use of membership on a resumed bill is Phase 1B).
+    const snapCustomer = bill.cartJson.customer;
+    setCustomer(
+      snapCustomer
+        ? {
+            ...snapCustomer,
+            isMember: snapCustomer.isMember ?? false,
+            pointsBalance: snapCustomer.pointsBalance ?? 0,
+          }
+        : null
+    );
     setTaxRequested(bill.taxRequested);
     // A resumed bill is a fresh checkout attempt — drop any stale idempotency key so the
     // next pay mints a new one (and never replays a previous order).

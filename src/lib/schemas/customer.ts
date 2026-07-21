@@ -40,6 +40,11 @@ export const CUSTOMER_PUBLIC_SELECT = {
   // picked/created customer carries it for the full §86/4 tax invoice.
   buyerBranchCode: true,
   branchId: true,
+  // Membership + loyalty (loyalty program, Phase 1A) — carried in the CustomerDTO so
+  // the picker / POS surfaces know a customer is a member and can show their balance
+  // (the POS chip wiring itself is Phase 1B).
+  isMember: true,
+  pointsBalance: true,
 } satisfies Prisma.CustomerSelect;
 
 /** Thai buyer TIN: exactly 13 digits (§86/4(2)). */
@@ -110,16 +115,41 @@ const buyerBranchCodeSchema = z
   .transform((v) => (v.length > 0 ? v : "00000"));
 
 /**
- * POST /api/customers body — create. `name` required; `taxId`/`address`/`phone`
- * optional (null when absent); `buyerBranchCode` defaults to "00000".
+ * Membership flag (loyalty program, Phase 1A). Optional; defaults to false so a
+ * plain tax-customer create/edit is unchanged. When true, the customer is enrolled
+ * as a loyalty member — which REQUIRES a phone (the member key). The phone
+ * requirement is enforced by a `.superRefine` on the POST schema (full create
+ * context) and, for PATCH (where the existing phone may not be re-sent), by the
+ * route against the effective phone.
  */
-export const CustomerPostBodySchema = z.object({
-  name: nameSchema,
-  taxId: taxIdSchema,
-  address: addressSchema,
-  phone: phoneSchema,
-  buyerBranchCode: buyerBranchCodeSchema,
-});
+const isMemberSchema = z.boolean().optional().default(false);
+
+/**
+ * POST /api/customers body — create. `name` required; `taxId`/`address`/`phone`
+ * optional (null when absent); `buyerBranchCode` defaults to "00000". `isMember`
+ * enrolls the customer as a loyalty member — and when true, `phone` is REQUIRED
+ * (members need a phone key), enforced by the `.superRefine` below.
+ */
+export const CustomerPostBodySchema = z
+  .object({
+    name: nameSchema,
+    taxId: taxIdSchema,
+    address: addressSchema,
+    phone: phoneSchema,
+    buyerBranchCode: buyerBranchCodeSchema,
+    isMember: isMemberSchema,
+  })
+  .superRefine((data, ctx) => {
+    // A member must have a phone (the loyalty member key). `phoneSchema` has already
+    // transformed an empty/whitespace phone to null, so a null here = no phone.
+    if (data.isMember === true && data.phone == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["phone"],
+        message: "สมาชิกต้องระบุเบอร์โทร",
+      });
+    }
+  });
 
 export type CustomerPostBody = z.infer<typeof CustomerPostBodySchema>;
 
@@ -139,6 +169,51 @@ export const CustomerPatchBodySchema = z.object({
   address: addressSchema.optional(),
   phone: phoneSchema.optional(),
   buyerBranchCode: buyerBranchCodeSchema.optional(),
+  // Enroll/unenroll flag (loyalty program, Phase 1A). Optional (omitted = leave the
+  // flag unchanged). The "member requires a phone" rule can't be checked in the
+  // schema here (the existing phone may not be re-sent), so the PATCH route enforces
+  // it against the EFFECTIVE phone (patch value or the stored value).
+  isMember: z.boolean().optional(),
 });
 
 export type CustomerPatchBody = z.infer<typeof CustomerPatchBodySchema>;
+
+/**
+ * Classify a Prisma error from a Customer write into WHICH unique constraint it
+ * violated, so the routes can return a specific 409:
+ *  - "MEMBER_PHONE": the PARTIAL unique index `Customer_phone_member_key` (another
+ *    member already uses this phone). That index is created via RAW SQL in the
+ *    add_loyalty migration, so Prisma does not know it as a schema `@unique` — a
+ *    violation may surface either as a `P2002` carrying the index name in
+ *    `meta.target`, or as a raw DB error (SQLSTATE 23505) whose message contains the
+ *    constraint name. Both shapes are matched here by the constraint name.
+ *  - "TAXID": the schema `@unique` on `Customer.taxId` (`Customer_taxId_key`) — the
+ *    only other unique on the table, so any remaining `P2002` is the taxId.
+ *  - null: not a Customer unique-constraint violation.
+ */
+export function classifyCustomerUniqueError(
+  err: unknown
+): "MEMBER_PHONE" | "TAXID" | null {
+  const MEMBER_PHONE_INDEX = "Customer_phone_member_key";
+  // Raw DB error (or any error) whose message carries the partial-index name.
+  const message = err instanceof Error ? err.message : "";
+  if (message.includes(MEMBER_PHONE_INDEX)) return "MEMBER_PHONE";
+
+  if (
+    err instanceof Prisma.PrismaClientKnownRequestError &&
+    err.code === "P2002"
+  ) {
+    const target = err.meta?.target;
+    const targetStr = Array.isArray(target)
+      ? target.join(",")
+      : typeof target === "string"
+        ? target
+        : "";
+    if (targetStr.includes(MEMBER_PHONE_INDEX) || targetStr.includes("phone")) {
+      return "MEMBER_PHONE";
+    }
+    // The only other unique on Customer is taxId.
+    return "TAXID";
+  }
+  return null;
+}

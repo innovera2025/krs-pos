@@ -206,6 +206,11 @@ export type CustomerDTO = {
   // RD branch code — "00000" = สำนักงานใหญ่. Defaulted to HQ in the schema.
   buyerBranchCode: string;
   branchId: string;
+  // Membership + loyalty (loyalty program, Phase 1A). `isMember` = enrolled loyalty
+  // member; `pointsBalance` = current points (cache of the ledger sum). Present on
+  // every CustomerDTO now that CUSTOMER_PUBLIC_SELECT returns them.
+  isMember: boolean;
+  pointsBalance: number;
 };
 
 /**
@@ -239,6 +244,11 @@ export type HeldBillCartSnapshot = {
     address?: string | null;
     buyerBranchCode: string;
     branchId: string;
+    // Loyalty (loyalty program, Phase 1A). Optional so snapshots parked BEFORE this
+    // field existed still parse; a bill parked now captures the member's status, and
+    // resume defaults a missing value (see the POS restore path).
+    isMember?: boolean;
+    pointsBalance?: number;
   } | null;
 };
 
@@ -445,6 +455,15 @@ export type ShopSettingsDTO = {
   sellerPosId: string | null;
   sellerBranchCode: string | null;
   sellerBranchLabel: string | null;
+  // Loyalty program config (loyalty program, Phase 1A) — the global earn/redeem
+  // rate the Settings loyalty card edits and the checkout/redeem paths (Phase 1B/2)
+  // read. `loyaltyEnabled` is the master switch; `earnBahtPerPoint` = baht per point;
+  // `redeemPointValueSatang` = satang per point at redeem; `minRedeemPoints` = redeem
+  // floor. Always present (schema-defaulted columns, never null).
+  loyaltyEnabled: boolean;
+  earnBahtPerPoint: number;
+  redeemPointValueSatang: number;
+  minRedeemPoints: number;
 };
 
 /**

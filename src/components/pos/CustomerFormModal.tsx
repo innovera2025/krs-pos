@@ -1,14 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { UserRoundPlus, UserRoundPen, X } from "lucide-react";
+import { UserRoundPlus, UserRoundPen, X, Sparkles } from "lucide-react";
 import { Modal } from "@/components/Modal";
 import type { CustomerDTO } from "@/types";
+
+/** Loyalty accent (loyalty program, Phase 1A) — gold, distinct from the mint/blue
+ *  used elsewhere in the form. */
+const GOLD = "#B45309";
+const GOLD_BG = "#FFFBEB";
 
 /**
  * The validated, normalized field set the parent POSTs/PATCHes. `taxId`/`address`/
  * `phone` are sent as a string (possibly empty); the server schema trims and
  * nulls empties. `buyerBranchCode` defaults to "00000" server-side when blank.
+ * `isMember` enrolls the customer as a loyalty member (loyalty program, Phase 1A) —
+ * when true, `phone` is required (the member key), enforced both here and server-side.
  */
 export type CustomerFormInput = {
   name: string;
@@ -16,6 +23,7 @@ export type CustomerFormInput = {
   address: string;
   phone: string;
   buyerBranchCode: string;
+  isMember: boolean;
 };
 
 type CustomerFormModalProps = {
@@ -59,6 +67,7 @@ export function CustomerFormModal({
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
   const [buyerBranchCode, setBuyerBranchCode] = useState("");
+  const [isMember, setIsMember] = useState(false);
   const [touched, setTouched] = useState(false);
 
   // Re-seed the fields whenever the modal opens (fresh for add, pre-filled for
@@ -71,18 +80,22 @@ export function CustomerFormModal({
     setAddress(editing?.address ?? "");
     setPhone(editing?.phone ?? "");
     setBuyerBranchCode(editing?.buyerBranchCode ?? "");
+    setIsMember(editing?.isMember ?? false);
     setTouched(false);
   }, [open, editing]);
 
   const trimmedName = name.trim();
   const trimmedTax = taxId.trim();
   const trimmedBranch = buyerBranchCode.trim();
+  const trimmedPhone = phone.trim();
 
   const nameOk = trimmedName.length > 0 && trimmedName.length <= 200;
   // Optional fields are valid when empty; invalid only on a present-but-malformed value.
   const taxOk = trimmedTax.length === 0 || TAXID_RE.test(trimmedTax);
   const branchOk = trimmedBranch.length === 0 || BRANCH_CODE_RE.test(trimmedBranch);
-  const canSubmit = nameOk && taxOk && branchOk && !submitting;
+  // A member REQUIRES a phone (the member key), mirroring the server rule.
+  const phoneOk = !isMember || trimmedPhone.length > 0;
+  const canSubmit = nameOk && taxOk && branchOk && phoneOk && !submitting;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -92,8 +105,9 @@ export function CustomerFormModal({
       name: trimmedName,
       taxId: trimmedTax,
       address: address.trim(),
-      phone: phone.trim(),
+      phone: trimmedPhone,
       buyerBranchCode: trimmedBranch,
+      isMember,
     });
   }
 
@@ -206,20 +220,76 @@ export function CustomerFormModal({
             />
           </label>
 
+          {/* Membership toggle (loyalty program, Phase 1A). When on, the phone below
+              becomes required (the member key). Gold accent = loyalty. */}
+          <div
+            className="flex items-center gap-2.5 rounded-[14px] border px-3.5 py-3"
+            style={{
+              borderColor: isMember ? GOLD : "var(--line)",
+              background: isMember ? GOLD_BG : "transparent",
+            }}
+          >
+            <span
+              aria-hidden="true"
+              className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-[10px]"
+              style={{ background: "#fff", color: GOLD }}
+            >
+              <Sparkles size={16} strokeWidth={2} />
+            </span>
+            <div className="flex-1">
+              <strong className="block text-[12.5px]">
+                สมัครเป็นสมาชิก · Member
+              </strong>
+              <span className="block text-[11px]" style={{ color: "var(--muted)" }}>
+                สะสมแต้มทุกบิล — ต้องมีเบอร์โทร
+              </span>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={isMember}
+              aria-label="สมัครเป็นสมาชิก"
+              onClick={() => setIsMember((v) => !v)}
+              className="relative h-6 w-11 flex-shrink-0 rounded-full transition"
+              style={{ background: isMember ? GOLD : "#cbd5e1" }}
+            >
+              <span
+                aria-hidden="true"
+                className="absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all"
+                style={{ left: isMember ? 22 : 2 }}
+              />
+            </button>
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <label className="flex flex-col gap-1.5">
-              <span className="text-[12.5px] font-semibold">เบอร์โทร · Phone</span>
+              <span className="text-[12.5px] font-semibold">
+                เบอร์โทร · Phone
+                {isMember && (
+                  <span className="ml-1" style={{ color: GOLD }}>
+                    *
+                  </span>
+                )}
+              </span>
               <input
                 type="text"
                 inputMode="tel"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                placeholder="เว้นว่างได้"
+                placeholder={isMember ? "จำเป็นสำหรับสมาชิก" : "เว้นว่างได้"}
                 autoComplete="off"
                 maxLength={30}
+                aria-invalid={touched && !phoneOk}
                 className="h-11 rounded-[12px] border px-3 text-[14px]"
-                style={{ borderColor: "var(--line)" }}
+                style={{
+                  borderColor: touched && !phoneOk ? "#fca5a5" : "var(--line)",
+                }}
               />
+              {touched && !phoneOk && (
+                <span className="text-[11.5px]" style={{ color: "#b42318" }}>
+                  สมาชิกต้องระบุเบอร์โทร
+                </span>
+              )}
             </label>
 
             <label className="flex flex-col gap-1.5">

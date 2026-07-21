@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   Check,
   Building2,
+  Sparkles,
 } from "lucide-react";
 import { useToast } from "@/components/ToastProvider";
 import { AdminOnly } from "@/components/AdminOnly";
@@ -40,6 +41,16 @@ const HEIGHT_MAX = 400;
 const WIDTH_PRESETS = [58, 80] as const;
 /** Default mm shown in the height input when switching from Auto → Fixed. */
 const DEFAULT_FIXED_HEIGHT = 150;
+
+/**
+ * Loyalty accent (loyalty program, Phase 1A) — a distinct gold/amber tone so the
+ * "โปรแกรมสมาชิก / แต้มสะสม" card never reads as mint (promotions) or blue (tax).
+ * Inline hex (not a CSS var) because these are loyalty-only, per the plan's palette.
+ */
+const GOLD = "#B45309";
+const GOLD_BG = "#FFFBEB";
+/** Earn-rate lower bound (mirrors the server Zod min). */
+const EARN_MIN = 1;
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -75,6 +86,15 @@ function SettingsScreen() {
   const [sellerBranchCode, setSellerBranchCode] = useState("");
   const [sellerBranchLabel, setSellerBranchLabel] = useState("");
 
+  // Loyalty program config (loyalty program, Phase 1A). `loyaltyEnabled` is the
+  // master switch; the three numeric fields are STRING drafts (clearable while
+  // typing, parsed at save). `pointValueBahtDraft` shows the point value in BAHT
+  // (1 แต้ม = ฿X.XX) while the API stores + sends satang — converted at the boundary.
+  const [loyaltyEnabled, setLoyaltyEnabled] = useState(false);
+  const [earnDraft, setEarnDraft] = useState("25");
+  const [pointValueBahtDraft, setPointValueBahtDraft] = useState("0.10");
+  const [minRedeemDraft, setMinRedeemDraft] = useState("0");
+
   async function loadSettings() {
     setLoadState("loading");
     try {
@@ -97,6 +117,11 @@ function SettingsScreen() {
       setSellerPosId(s.sellerPosId ?? "");
       setSellerBranchCode(s.sellerBranchCode ?? "");
       setSellerBranchLabel(s.sellerBranchLabel ?? "");
+      // Loyalty drafts — satang → baht for the point-value display.
+      setLoyaltyEnabled(s.loyaltyEnabled);
+      setEarnDraft(String(s.earnBahtPerPoint));
+      setPointValueBahtDraft((s.redeemPointValueSatang / 100).toFixed(2));
+      setMinRedeemDraft(String(s.minRedeemPoints));
       setLoadState("ready");
     } catch {
       setLoadState("error");
@@ -127,7 +152,24 @@ function SettingsScreen() {
     (Number.isInteger(heightNum) &&
       heightNum >= HEIGHT_MIN &&
       heightNum <= HEIGHT_MAX);
-  const canSave = widthValid && heightValid && !saving;
+
+  // Loyalty parsed values (loyalty program, Phase 1A). Earn = integer baht/point
+  // ≥ 1; point value is entered in BAHT → converted to satang int ≥ 0 (what the API
+  // stores/sends); min redeem = integer ≥ 0. These mirror the server Zod bounds.
+  const earnNum = parseInt(earnDraft, 10);
+  const pointValueBahtNum = parseFloat(pointValueBahtDraft);
+  const pointValueSatang = Number.isFinite(pointValueBahtNum)
+    ? Math.round(pointValueBahtNum * 100)
+    : NaN;
+  const minRedeemNum = parseInt(minRedeemDraft, 10);
+  const earnValid = Number.isInteger(earnNum) && earnNum >= EARN_MIN;
+  const pointValueValid =
+    Number.isInteger(pointValueSatang) && pointValueSatang >= 0;
+  const minRedeemValid = Number.isInteger(minRedeemNum) && minRedeemNum >= 0;
+  const loyaltyValid = earnValid && pointValueValid && minRedeemValid;
+
+  const canSave =
+    widthValid && heightValid && loyaltyValid && !saving;
 
   // Live preview: "กว้าง 80mm × สูงอัตโนมัติ" / "× สูง 150mm".
   const preview = useMemo(() => {
@@ -182,6 +224,11 @@ function SettingsScreen() {
           sellerPosId,
           sellerBranchCode,
           sellerBranchLabel,
+          // Loyalty config — point value entered in baht, sent as satang int.
+          loyaltyEnabled,
+          earnBahtPerPoint: earnNum,
+          redeemPointValueSatang: pointValueSatang,
+          minRedeemPoints: minRedeemNum,
         }),
       });
       if (!res.ok) {
@@ -209,6 +256,11 @@ function SettingsScreen() {
       setSellerPosId(s.sellerPosId ?? "");
       setSellerBranchCode(s.sellerBranchCode ?? "");
       setSellerBranchLabel(s.sellerBranchLabel ?? "");
+      // Loyalty drafts reflect the normalized row (satang → baht for display).
+      setLoyaltyEnabled(s.loyaltyEnabled);
+      setEarnDraft(String(s.earnBahtPerPoint));
+      setPointValueBahtDraft((s.redeemPointValueSatang / 100).toFixed(2));
+      setMinRedeemDraft(String(s.minRedeemPoints));
       showToast("บันทึกการตั้งค่าแล้ว");
     } catch {
       showToast("บันทึกการตั้งค่าไม่สำเร็จ");
@@ -626,6 +678,172 @@ function SettingsScreen() {
                 {sellerComplete
                   ? "ข้อมูลครบถ้วน — พร้อมออกใบกำกับภาษี"
                   : "ยังไม่ครบ — จะไม่สามารถออกใบกำกับภาษีได้ (เว้นแต่ตั้งค่าผ่าน ENV)"}
+              </strong>
+            </div>
+          </section>
+
+          {/* Loyalty card (loyalty program, Phase 1A) — the store's global member
+              earn/redeem rate. Gold/amber accent keeps it distinct from mint
+              (promotions) + blue (tax). Thai-first; string drafts + PATCH save. */}
+          <section
+            className="flex flex-col gap-5 rounded-[18px] border bg-white p-5"
+            style={{ borderColor: "var(--line)", boxShadow: "var(--shadow-sm)" }}
+          >
+            <div className="flex items-center gap-2.5">
+              <span
+                aria-hidden="true"
+                className="grid h-9 w-9 place-items-center rounded-[12px]"
+                style={{ background: GOLD_BG, color: GOLD }}
+              >
+                <Sparkles size={18} strokeWidth={2} />
+              </span>
+              <div>
+                <strong className="block text-[14.5px]">
+                  โปรแกรมสมาชิก · Loyalty
+                </strong>
+                <span
+                  className="block text-[11.5px]"
+                  style={{ color: "var(--muted)" }}
+                >
+                  แต้มสะสม · อัตราได้แต้มและการแลกแต้ม
+                </span>
+              </div>
+            </div>
+
+            {/* Enable toggle */}
+            <label className="flex cursor-pointer items-center gap-2.5">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={loyaltyEnabled}
+                onClick={() => setLoyaltyEnabled((v) => !v)}
+                className="relative h-6 w-11 flex-shrink-0 rounded-full transition"
+                style={{ background: loyaltyEnabled ? GOLD : "#cbd5e1" }}
+              >
+                <span
+                  aria-hidden="true"
+                  className="absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all"
+                  style={{ left: loyaltyEnabled ? 22 : 2 }}
+                />
+              </button>
+              <span className="text-[13px] font-semibold">
+                เปิดใช้งานโปรแกรมสมาชิก · Enable
+              </span>
+              <span className="text-[11.5px]" style={{ color: "var(--muted)" }}>
+                (สมาชิกสะสมแต้มทุกบิล)
+              </span>
+            </label>
+
+            {/* Earn rate + point value (two columns) */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[12.5px] font-semibold">
+                  จ่ายกี่บาทได้ 1 แต้ม · Earn rate
+                </span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={EARN_MIN}
+                    value={earnDraft}
+                    onChange={(e) => setEarnDraft(e.target.value)}
+                    aria-label="จ่ายกี่บาทได้ 1 แต้ม"
+                    aria-invalid={!earnValid}
+                    className="h-10 w-[110px] rounded-[10px] border px-3 text-[13px]"
+                    style={{ borderColor: earnValid ? "var(--line)" : "#fca5a5" }}
+                  />
+                  <span className="text-[12px]" style={{ color: "var(--muted)" }}>
+                    บาท = 1 แต้ม
+                  </span>
+                </div>
+                {!earnValid && (
+                  <span className="text-[11.5px]" style={{ color: "#b42318" }}>
+                    อัตราได้แต้มต้องเป็นจำนวนเต็มไม่น้อยกว่า {EARN_MIN} บาท
+                  </span>
+                )}
+              </label>
+
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[12.5px] font-semibold">
+                  1 แต้ม = กี่บาท · Point value
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[12px]" style={{ color: "var(--muted)" }}>
+                    1 แต้ม = ฿
+                  </span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step={0.01}
+                    value={pointValueBahtDraft}
+                    onChange={(e) => setPointValueBahtDraft(e.target.value)}
+                    aria-label="1 แต้ม = กี่บาท"
+                    aria-invalid={!pointValueValid}
+                    className="h-10 w-[110px] rounded-[10px] border px-3 text-[13px]"
+                    style={{
+                      borderColor: pointValueValid ? "var(--line)" : "#fca5a5",
+                    }}
+                  />
+                </div>
+                {!pointValueValid && (
+                  <span className="text-[11.5px]" style={{ color: "#b42318" }}>
+                    ค่าแต้มต้องไม่ติดลบ
+                  </span>
+                )}
+              </label>
+            </div>
+
+            {/* Min redeem */}
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[12.5px] font-semibold">
+                แลกขั้นต่ำ · Min redeem (แต้ม)
+              </span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  value={minRedeemDraft}
+                  onChange={(e) => setMinRedeemDraft(e.target.value)}
+                  aria-label="แลกขั้นต่ำกี่แต้ม"
+                  aria-invalid={!minRedeemValid}
+                  className="h-10 w-[110px] rounded-[10px] border px-3 text-[13px]"
+                  style={{ borderColor: minRedeemValid ? "var(--line)" : "#fca5a5" }}
+                />
+                <span className="text-[12px]" style={{ color: "var(--muted)" }}>
+                  แต้ม (0 = ไม่มีขั้นต่ำ)
+                </span>
+              </div>
+              {!minRedeemValid && (
+                <span className="text-[11.5px]" style={{ color: "#b42318" }}>
+                  ขั้นต่ำการแลกต้องเป็นจำนวนเต็มไม่ติดลบ
+                </span>
+              )}
+            </label>
+
+            {/* Status line — gold when enabled, neutral when off */}
+            <div
+              className="flex items-center gap-2.5 rounded-[12px] px-3.5 py-3"
+              style={{ background: loyaltyEnabled ? GOLD_BG : "var(--surface-2)" }}
+            >
+              <span
+                aria-hidden="true"
+                className="grid h-8 w-8 flex-shrink-0 place-items-center rounded-[10px]"
+                style={{
+                  background: "#fff",
+                  color: loyaltyEnabled ? GOLD : "var(--muted)",
+                }}
+              >
+                <Sparkles size={15} strokeWidth={2} />
+              </span>
+              <strong
+                className="text-[12.5px]"
+                style={{ color: loyaltyEnabled ? "#92400e" : "var(--muted)" }}
+              >
+                {loyaltyEnabled
+                  ? `เปิดใช้งาน — จ่าย ฿${earnValid ? earnNum : "—"} ได้ 1 แต้ม · 1 แต้ม = ฿${pointValueValid ? (pointValueSatang / 100).toFixed(2) : "—"}`
+                  : "ปิดใช้งาน — สมาชิกยังไม่สะสมแต้ม"}
               </strong>
             </div>
           </section>

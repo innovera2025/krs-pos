@@ -42,6 +42,13 @@ const SETTINGS_SELECT = {
   sellerPosId: true,
   sellerBranchCode: true,
   sellerBranchLabel: true,
+  // Loyalty program config (loyalty program, Phase 1A) — surfaced so the Settings
+  // loyalty card can hydrate and the checkout/redeem paths (Phase 1B/2) can read the
+  // active earn/redeem rate.
+  loyaltyEnabled: true,
+  earnBahtPerPoint: true,
+  redeemPointValueSatang: true,
+  minRedeemPoints: true,
 } as const;
 
 /** Wrap the projected row in the `{ settings }` response envelope. */
@@ -125,6 +132,18 @@ export async function PATCH(req: Request) {
     const sellerBranchCode = toNullOrTrimmed(parsed.data.sellerBranchCode);
     const sellerBranchLabel = toNullOrTrimmed(parsed.data.sellerBranchLabel);
 
+    // Loyalty config (loyalty program, Phase 1A). Each field is `undefined` when not
+    // sent → Prisma leaves it unchanged (patch semantics); the Zod schema already
+    // enforced the int/bool bounds, so no further normalization is needed. The
+    // settings route audits none of its changes today, so no LOYALTY_SETTINGS_CHANGED
+    // audit is written here (the AuditAction value exists for a future audited surface).
+    const {
+      loyaltyEnabled,
+      earnBahtPerPoint,
+      redeemPointValueSatang,
+      minRedeemPoints,
+    } = parsed.data;
+
     try {
       const settings = await prisma.shopSettings.upsert({
         where: { id: SINGLETON_ID },
@@ -141,6 +160,11 @@ export async function PATCH(req: Request) {
           sellerPosId,
           sellerBranchCode,
           sellerBranchLabel,
+          // Loyalty config — `undefined` leaves the field unchanged.
+          loyaltyEnabled,
+          earnBahtPerPoint,
+          redeemPointValueSatang,
+          minRedeemPoints,
         },
         create: {
           id: SINGLETON_ID,
@@ -154,6 +178,11 @@ export async function PATCH(req: Request) {
           sellerPosId,
           sellerBranchCode,
           sellerBranchLabel,
+          // Loyalty config — `undefined` falls back to the schema column defaults.
+          loyaltyEnabled,
+          earnBahtPerPoint,
+          redeemPointValueSatang,
+          minRedeemPoints,
         },
         select: SETTINGS_SELECT,
       });

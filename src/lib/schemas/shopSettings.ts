@@ -69,6 +69,35 @@ const sellerBranchCodeSchema = z
   .optional();
 
 /**
+ * Loyalty program config field schemas (loyalty program, Phase 1A). All OPTIONAL in
+ * the PATCH body — `undefined` = "not sent, leave unchanged" (patch semantics; the
+ * route passes each straight through so Prisma skips an unsent field). Bounds mirror
+ * the ShopSettings columns + the loyalty engine's guards:
+ *   - loyaltyEnabled          boolean master switch.
+ *   - earnBahtPerPoint        int ≥ 1 (baht per point; the engine floors, so a rate
+ *                             < 1 would either disable earning or over-credit — 1 is
+ *                             the meaningful floor).
+ *   - redeemPointValueSatang  int ≥ 0 (satang per point at redeem).
+ *   - minRedeemPoints         int ≥ 0 (0 = no minimum).
+ */
+const loyaltyEnabledSchema = z.boolean().optional();
+const earnBahtPerPointSchema = z
+  .number()
+  .int("อัตราได้แต้มต้องเป็นจำนวนเต็ม")
+  .min(1, "อัตราได้แต้มต้องไม่น้อยกว่า 1 บาท")
+  .optional();
+const redeemPointValueSatangSchema = z
+  .number()
+  .int("ค่าแต้มต้องเป็นจำนวนเต็ม (สตางค์)")
+  .min(0, "ค่าแต้มต้องไม่ติดลบ")
+  .optional();
+const minRedeemPointsSchema = z
+  .number()
+  .int("ขั้นต่ำการแลกต้องเป็นจำนวนเต็ม")
+  .min(0, "ขั้นต่ำการแลกต้องไม่ติดลบ")
+  .optional();
+
+/**
  * PATCH /api/settings body. The three receipt-size fields are REQUIRED so the
  * admin Save sends a complete, self-consistent receipt-size definition; the route
  * then normalizes `receiptHeightMm` to null when `receiptHeightAuto` is true before
@@ -91,6 +120,11 @@ export const ShopSettingsPatchBodySchema = z
       .string()
       .max(100, "ชื่อสาขาต้องไม่เกิน 100 ตัวอักษร")
       .optional(),
+    // Loyalty program config (all optional; unsent fields stay unchanged).
+    loyaltyEnabled: loyaltyEnabledSchema,
+    earnBahtPerPoint: earnBahtPerPointSchema,
+    redeemPointValueSatang: redeemPointValueSatangSchema,
+    minRedeemPoints: minRedeemPointsSchema,
   })
   // Fixed height (auto=false) must carry a concrete in-bounds mm value. Without
   // this, `{ receiptHeightAuto:false, receiptHeightMm:null }` passes (heightMm is

@@ -5,6 +5,7 @@ import { requireUser } from "@/lib/auth";
 import {
   CustomerPatchBodySchema,
   CUSTOMER_PUBLIC_SELECT,
+  classifyCustomerUniqueError,
 } from "@/lib/schemas/customer";
 import { parseBody } from "@/lib/schemas/_shared";
 // Phase 3 observability — request-id ALS context + structured logger (NODE-ONLY).
@@ -66,11 +67,54 @@ export async function PATCH(
     if (fields.buyerBranchCode !== undefined)
       data.buyerBranchCode = fields.buyerBranchCode;
 
-    if (Object.keys(data).length === 0) {
+    const touchesMembership = fields.isMember !== undefined;
+
+    if (Object.keys(data).length === 0 && !touchesMembership) {
       return NextResponse.json(
         { error: "No fields to update", code: "NO_FIELDS" },
         { status: 400 }
       );
+    }
+
+    // Membership + member-key enforcement (loyalty program, Phase 1A). When the patch
+    // touches membership OR the phone, read the current row so we can (a) stamp
+    // `memberSince` only on the false→true enroll transition and (b) validate the
+    // EFFECTIVE phone (the patch value if sent, else the stored value) — a member must
+    // always keep a phone (the member key), so enrolling without a phone or clearing a
+    // member's phone is rejected. Plain tax-only edits skip this read entirely.
+    if (touchesMembership || fields.phone !== undefined) {
+      const existing = await prisma.customer.findUnique({
+        where: { id },
+        select: { isMember: true, phone: true },
+      });
+      if (!existing) {
+        return NextResponse.json(
+          { error: "Customer not found", code: "NOT_FOUND" },
+          { status: 404 }
+        );
+      }
+
+      const nextIsMember = touchesMembership
+        ? (fields.isMember as boolean)
+        : existing.isMember;
+      const nextPhone =
+        fields.phone !== undefined ? fields.phone : existing.phone;
+
+      if (nextIsMember && (nextPhone == null || nextPhone.length === 0)) {
+        return NextResponse.json(
+          { error: "สมาชิกต้องระบุเบอร์โทร", code: "MEMBER_PHONE_REQUIRED" },
+          { status: 400 }
+        );
+      }
+
+      if (touchesMembership) {
+        data.isMember = fields.isMember as boolean;
+        // Stamp memberSince on the false→true enroll transition only; an un-enroll
+        // keeps the historical memberSince rather than clearing it.
+        if (fields.isMember === true && existing.isMember === false) {
+          data.memberSince = new Date();
+        }
+      }
     }
 
     try {
@@ -81,21 +125,30 @@ export async function PATCH(
       });
       return NextResponse.json(customer);
     } catch (err) {
-      if (err instanceof Prisma.PrismaClientKnownRequestError) {
-        // Record-not-found → typed 404.
-        if (err.code === "P2025") {
-          return NextResponse.json(
-            { error: "Customer not found", code: "NOT_FOUND" },
-            { status: 404 }
-          );
-        }
-        // Unique-constraint on the only unique column (taxId) → typed 409.
-        if (err.code === "P2002") {
-          return NextResponse.json(
-            { error: "เลขผู้เสียภาษีนี้ถูกใช้งานแล้ว", code: "TAXID_TAKEN" },
-            { status: 409 }
-          );
-        }
+      // Record-not-found (raced delete) → typed 404.
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === "P2025"
+      ) {
+        return NextResponse.json(
+          { error: "Customer not found", code: "NOT_FOUND" },
+          { status: 404 }
+        );
+      }
+      // Two possible unique conflicts: the member-phone partial index (loyalty) or the
+      // taxId unique — classify so the client gets a specific, actionable 409.
+      const conflict = classifyCustomerUniqueError(err);
+      if (conflict === "MEMBER_PHONE") {
+        return NextResponse.json(
+          { error: "เบอร์นี้มีสมาชิกใช้แล้ว", code: "MEMBER_PHONE_TAKEN" },
+          { status: 409 }
+        );
+      }
+      if (conflict === "TAXID") {
+        return NextResponse.json(
+          { error: "เลขผู้เสียภาษีนี้ถูกใช้งานแล้ว", code: "TAXID_TAKEN" },
+          { status: 409 }
+        );
       }
       logger.error({ err }, "PATCH /api/customers/[id] failed");
       return NextResponse.json(
