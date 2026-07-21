@@ -1327,6 +1327,14 @@ export default function POSPage() {
         return;
       }
       const order = (await res.json()) as OrderDTO;
+      // Loyalty EARN feedback (loyalty program, Phase 1B): capture the member + the
+      // points just earned NOW — BEFORE clearBill() below nulls the selected customer
+      // — so the success toast can confirm the accrual + the new (optimistic) balance.
+      // The server already incremented the balance atomically inside the checkout tx,
+      // so `pointsEarned` on the response is authoritative; adding it to the member's
+      // pre-sale balance reproduces the server value with NO extra fetch.
+      const earnedPoints = order.pointsEarned ?? 0;
+      const earnMember = customer?.isMember ? customer : null;
       // Optimistic display-only stock decrement (pos-instant-stock): subtract each
       // just-sold line's quantity from that product's `stock` in local state so the
       // grid's คงเหลือ/หมด badge updates instantly. Sold quantities are captured
@@ -1367,8 +1375,19 @@ export default function POSPage() {
       setPayError("");
       clearBill();
       // The only on-screen confirmation now that the receipt page is gone. Honest
-      // for BOTH paths (agent silent-print or browser dialog / kiosk print).
-      showToast("ชำระเงินสำเร็จ · กำลังพิมพ์ใบเสร็จ");
+      // for BOTH paths (agent silent-print or browser dialog / kiosk print). For a
+      // member sale that earned points, fold the loyalty accrual + new balance into
+      // this SAME single toast (loyalty program, Phase 1B) — showToast replaces the
+      // prior message, so one combined pill preserves both the payment/print
+      // confirmation and the points feedback.
+      if (earnMember && earnedPoints > 0) {
+        const newBalance = earnMember.pointsBalance + earnedPoints;
+        showToast(
+          `ชำระเงินสำเร็จ · ได้รับ ${earnedPoints} แต้ม · คงเหลือ ${newBalance} แต้ม`
+        );
+      } else {
+        showToast("ชำระเงินสำเร็จ · กำลังพิมพ์ใบเสร็จ");
+      }
       // Return to a fresh sale once the print settles. Fire-and-forget-safe: the
       // sale is already recorded, so a cancelled/failed/suppressed print still
       // settles → reset. The reset runs on BOTH resolve AND reject (same handler,
@@ -1662,6 +1681,21 @@ export default function POSPage() {
                   : "แตะเพื่อเลือกลูกค้า"}
               </span>
             </span>
+            {/* Loyalty member badge (loyalty program, Phase 1B) — gold/amber accent,
+                distinct from the blue tax badge + mint promo, showing the live points
+                balance while the member is attached to the bill. */}
+            {customer?.isMember && (
+              <span
+                className="flex-shrink-0 rounded-md px-2 py-[3px] text-[10px] font-semibold"
+                style={{
+                  background: "#FFFBEB",
+                  color: "#B45309",
+                  border: "1px solid #FCD34D",
+                }}
+              >
+                สมาชิก · {customer.pointsBalance} แต้ม
+              </span>
+            )}
             {customerHasTax && (
               <span
                 className="flex-shrink-0 rounded-md px-2 py-[3px] text-[10px] font-semibold"

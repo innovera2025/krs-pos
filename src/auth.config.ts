@@ -34,6 +34,7 @@ export const PROTECTED_PREFIXES = [
   "/data",
   "/products",
   "/promotions",
+  "/members",
   "/users",
   "/settings",
 ];

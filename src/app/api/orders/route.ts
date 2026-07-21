@@ -9,6 +9,7 @@ import {
   SyncDirection,
   SyncJobStatus,
   AuditAction,
+  PointsTxType,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 // Seller branch identity for the KRS outbox snapshot (krs-sync P2). Loaded BEFORE the
@@ -49,6 +50,11 @@ import {
 // recompute and GET /api/promotions?view=pos can never drift on which fields each
 // promotion type exposes to the engine.
 import { serializePosPromotion } from "@/lib/promotionSerialize";
+// Loyalty program (Phase 1B) — the pure, isomorphic points engine. `pointsEarned`
+// turns the bill's NET total (integer satang) + the store earn rate into whole
+// points. Imports no Prisma/mssql (driver-free), the same discipline as the promo
+// engine, so the checkout route's module graph stays clean.
+import { pointsEarned } from "@/lib/loyalty";
 // Shared wire serializer + satang helpers (FIX 1): every order response
 // (GET/POST here, and every PATCH return in [id]/route.ts) emits identical 2dp
 // string money fields. The serializer lives in its own module so both route
@@ -681,12 +687,14 @@ export async function POST(req: Request) {
     // BAD_CUSTOMER / TAX_REQUIRES_TAX_CUSTOMER short-circuit returns behave
     // identically here as outside the try.
     let resolvedCustomer:
-      | { id: string; taxId: string | null }
+      | { id: string; taxId: string | null; isMember: boolean }
       | null = null;
     if (normalizedCustomerId) {
       resolvedCustomer = await prisma.customer.findUnique({
         where: { id: normalizedCustomerId },
-        select: { id: true, taxId: true },
+        // `isMember` (loyalty program, Phase 1B) is selected here so the earn
+        // decision below reuses this SAME anti-tamper customer read — no extra query.
+        select: { id: true, taxId: true, isMember: true },
       });
       if (!resolvedCustomer) {
         return NextResponse.json(
@@ -742,6 +750,19 @@ export async function POST(req: Request) {
       },
     });
     const activePromos: ActivePromotion[] = activePromoRows.map(serializePosPromotion);
+
+    // --- Loyalty EARN config (loyalty program, Phase 1B) ---
+    // A single pre-tx read of the store loyalty singleton (this route has no prior
+    // ShopSettings read of its own — getSellerConfig reads a DIFFERENT column set).
+    // Selects ONLY the earn-side config; the redemption fields are Phase 2. Runs
+    // inside the sanitized try, so a DB failure maps to the route's INTERNAL 500 like
+    // every other pre-tx read. A missing row (null) or loyaltyEnabled=false disables
+    // earning entirely, keeping a non-member / loyalty-off bill byte-identical to
+    // before this feature.
+    const loyaltySettings = await prisma.shopSettings.findUnique({
+      where: { id: "singleton" },
+      select: { loyaltyEnabled: true, earnBahtPerPoint: true },
+    });
 
     // Per-item catalog price in integer satang, keyed by productId. Uses the SAME
     // Decimal→satang conversion (`toSatang`) that computeOrderTotals applies to these
@@ -816,6 +837,34 @@ export async function POST(req: Request) {
         { error: "Could not create order", code: "INTERNAL" },
         { status: 500 }
       );
+    }
+
+    // --- Loyalty EARN amount (loyalty program, Phase 1B) ---
+    // Post-total, side-write ONLY: this NEVER changes subtotal/discount/tax/total —
+    // it credits membership points on the NET total the customer actually paid
+    // (totals.totalSatang) at the store earn rate. Computed HERE (before the tx) so
+    // `pointsEarned` can be written directly into tx.order.create; the customer
+    // balance increment + the EARN ledger row (which need the order id) happen INSIDE
+    // the tx after the order row exists. Earning applies ONLY when loyalty is ENABLED
+    // AND the linked customer is an enrolled member AND the floored points are > 0 —
+    // otherwise pointsToEarn stays 0 (the Order.pointsEarned column default), with NO
+    // ledger row and NO customer touch, so a walk-in / non-member / loyalty-off bill
+    // is byte-identical to before. This sits AFTER the idempotent replay pre-check
+    // (which returns early, before any tx), so a replayed checkout never re-earns.
+    let pointsToEarn = 0;
+    let earnCustomerId: string | null = null;
+    if (
+      loyaltySettings?.loyaltyEnabled === true &&
+      resolvedCustomer?.isMember === true
+    ) {
+      const earned = pointsEarned(
+        totals.totalSatang,
+        loyaltySettings.earnBahtPerPoint
+      );
+      if (earned > 0) {
+        pointsToEarn = earned;
+        earnCustomerId = resolvedCustomer.id;
+      }
     }
 
     // Server-computed bill money (integer satang → Decimal-safe baht strings).
@@ -949,6 +998,11 @@ export async function POST(req: Request) {
           cashierId,
           customerId: normalizedCustomerId,
           taxRequested: wantsTax,
+          // Loyalty EARN (loyalty program, Phase 1B): points accrued on this sale,
+          // computed above from the NET total. 0 for a walk-in / non-member / loyalty-
+          // off bill (the column default) — the customer increment + EARN ledger row
+          // below run ONLY when > 0, so a non-earning bill writes exactly this default.
+          pointsEarned: pointsToEarn,
           shiftId,
           items: { create: lineItems },
           payments: {
@@ -983,6 +1037,35 @@ export async function POST(req: Request) {
             type: StockMovementType.SALE,
             qty: -item.quantity,
             reference: orderNumber,
+          },
+        });
+      }
+
+      // === Loyalty points EARN (loyalty program, Phase 1B) ===
+      // Runs ONLY for an enrolled member on a bill that earned > 0 points (decided
+      // pre-tx above; earnCustomerId is null otherwise). Atomic with the sale: the
+      // pointsBalance increment + the EARN ledger row commit in the SAME $transaction
+      // as the Order/stock, so a member's cached balance and their ledger can never
+      // disagree, and a rolled-back sale (e.g. the INSufficient-stock throw above)
+      // also rolls back the points — no phantom accrual. `increment` is atomic under
+      // concurrency; `balanceAfter` snapshots the post-increment balance for the
+      // self-verifying ledger. `orderId` is a plain String snapshot (no FK, matching
+      // the schema). A walk-in / non-member / loyalty-off bill skips this block
+      // entirely — no customer touch, no ledger row (byte-identical to today).
+      if (pointsToEarn > 0 && earnCustomerId) {
+        const updatedCust = await tx.customer.update({
+          where: { id: earnCustomerId },
+          data: { pointsBalance: { increment: pointsToEarn } },
+          select: { pointsBalance: true },
+        });
+        await tx.pointsTransaction.create({
+          data: {
+            customerId: earnCustomerId,
+            orderId: created.id,
+            type: PointsTxType.EARN,
+            points: pointsToEarn,
+            balanceAfter: updatedCust.pointsBalance,
+            actorId: cashierId,
           },
         });
       }

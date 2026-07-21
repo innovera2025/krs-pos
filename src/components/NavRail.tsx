@@ -11,6 +11,7 @@ import {
   DatabaseZap,
   Package,
   BadgePercent,
+  BadgeCheck,
   UsersRound,
   SlidersHorizontal,
   LogOut,
@@ -38,6 +39,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: "data", label: "การเชื่อมข้อมูล", labelEn: "KRS Data Link", route: "/data", icon: DatabaseZap, badge: true },
   { key: "products", label: "สินค้า/สต็อก", labelEn: "Products", route: "/products", icon: Package },
   { key: "promotions", label: "โปรโมชัน", labelEn: "Promotions", route: "/promotions", icon: BadgePercent },
+  { key: "members", label: "สมาชิก", labelEn: "Members", route: "/members", icon: BadgeCheck },
   { key: "users", label: "จัดการผู้ใช้", labelEn: "Users & Roles", route: "/users", icon: UsersRound },
   { key: "settings", label: "ตั้งค่าร้านค้า", labelEn: "Shop Settings", route: "/settings", icon: SlidersHorizontal },
 ];

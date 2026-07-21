@@ -321,6 +321,11 @@ export type OrderDTO = {
   promoBillDiscount?: string | number;
   billPromotionId?: string | null;
   billPromotionName?: string | null;
+  // Loyalty EARN (loyalty program, Phase 1B): whole points accrued on this sale (a
+  // plain Int; serializeOrder passes it through untouched). Optional/absent for
+  // legacy pre-loyalty reprints; 0 for a walk-in / non-member / loyalty-off bill.
+  // The receipt shows "แต้มที่ได้รับ +N" when > 0; the POS reads it for the earn toast.
+  pointsEarned?: number;
   // Phase 6a — customer linkage (null/undefined = walk-in / ลูกค้าทั่วไป).
   customerId?: string | null;
   customer?: CustomerDTO | null;

@@ -54,6 +54,11 @@ type SerializableOrder = {
   // joins the money map. `billPromotionId`/`billPromotionName` are plain fields that
   // pass through the `...order` spread untouched.
   promoBillDiscount: Money;
+  // Loyalty points earned on this sale (loyalty program, Phase 1B). A plain Int (NOT
+  // money) — it needs no Decimal→string transform, so it rides the `...order` spread
+  // through to the wire untouched. Declared here to make it an explicit part of the
+  // serialized order contract (the receipt + POS read it as `order.pointsEarned`).
+  pointsEarned: number;
   items: Array<
     // `promoDiscount` is the per-line promo slice of `lineTotal` (2dp Decimal) — it
     // joins the item money map for the same trailing-zero reason. `promotionId`/

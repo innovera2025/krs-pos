@@ -141,6 +141,12 @@ export function ReceiptModal({
     0
   );
   const savingsNum = grossNum - totalNum;
+  // Loyalty EARN (loyalty program, Phase 1B): whole points accrued on this sale. A
+  // plain Int on the order contract (0 / absent for a walk-in / non-member / loyalty-
+  // off bill, and for legacy pre-loyalty reprints). The member's balance-AFTER is not
+  // carried on the order DTO, so the receipt shows only the earned line (on both the
+  // fresh print and a reprint), keeping the raster bill height controlled.
+  const pointsEarnedNum = Number(order.pointsEarned ?? 0);
   // Any discount at all (line-level and/or bill-level) → show the ยอดรวม (subtotal)
   // line so the totals block foots subtotal − promoBill − manual = total.
   const anyDiscount = savingsNum > 0.005;
@@ -405,6 +411,20 @@ export function ReceiptModal({
               style={{ color: "#0f172a", fontFamily: "var(--font-sans)" }}
             >
               คุณประหยัดไป {money(savingsNum)}
+            </div>
+          )}
+
+          {/* Loyalty points earned (loyalty program, Phase 1B) — one concise Thai line
+              so the raster bill height stays controlled. Monochrome (the thermal raster
+              is 1-bit, so color never prints); the member's balance-after is omitted (it
+              is not carried on the order DTO, and would be stale on a reprint). Shown on
+              ALL three render paths, since they all rasterize/print this same DOM. */}
+          {pointsEarnedNum > 0 && (
+            <div
+              className="mt-2.5 text-center text-[11.5px] font-semibold"
+              style={{ color: "#0f172a", fontFamily: "var(--font-sans)" }}
+            >
+              แต้มที่ได้รับ +{pointsEarnedNum}
             </div>
           )}
 

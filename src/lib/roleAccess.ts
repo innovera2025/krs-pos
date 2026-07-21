@@ -32,6 +32,13 @@ export const NAV_ACCESS: Record<string, AppRole[]> = {
   data: ["admin"],
   products: ["admin", "seller"],
   promotions: ["admin", "seller"],
+  // Loyalty members (loyalty program, Phase 1B) — VIEW is all-roles (enrollment
+  // already happens at POS for any role; the ledger/list is read-only for a seller).
+  // The one ADMIN-gated action, manual points adjust, is enforced by the
+  // `requireAdmin` POST /api/members/[id]/adjust route + a client role check — NOT by
+  // this nav map, which only governs page VISIBILITY. Deliberately NOT in
+  // STRICT_ADMIN_NAV (all signed-in roles reach the page).
+  members: ["admin", "seller"],
   users: ["admin"],
   settings: ["admin"],
 };
