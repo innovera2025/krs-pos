@@ -10,6 +10,11 @@ export type Product = {
   barcode?: string | null;
   imageUrl?: string | null;
   isActive: boolean;
+  // Per-item VAT (per-item-vat program): the product's VAT applicability (KRS itemvat).
+  // The POS grid feeds it into computeTotals (consulted only when perItemVatEnabled is on)
+  // so the on-screen VAT/total matches the server. Optional so any pre-vatable cached
+  // shape still type-checks; a missing value is treated as VAT-applicable (true).
+  vatable?: boolean;
   categoryId?: string | null;
   category?: { id: string; name: string } | null;
 };
@@ -164,6 +169,12 @@ export type OrderItemDTO = {
   unitPrice: string | number;
   lineTotal: string | number;
   product: { id: string; name: string; sku: string };
+  // Per-item VAT snapshot (per-item-vat program): the EFFECTIVE VAT treatment this line
+  // received at sale time — false = VAT was NOT charged on it (an exempt line under
+  // per-item VAT). The receipt shows a VAT breakdown only when a bill has any
+  // `vatable === false` line. Optional so legacy pre-vatable reprints still type-check;
+  // a missing value is read as VAT-charged (true), matching the DB default.
+  vatable?: boolean;
   // Promotions program (Phase 6/7): per-line promo snapshot. `promoDiscount` is the
   // promo-only slice of `lineTotal` as a 2dp baht string (serializeOrder always emits
   // it, "0.00" when none); `promotionId`/`promotionName` are the applied line-promo
@@ -505,6 +516,11 @@ export type ShopSettingsDTO = {
   earnBahtPerPoint: number;
   redeemPointValueSatang: number;
   minRedeemPoints: number;
+  // Per-item VAT kill switch (per-item-vat program). A SERVER-READ of the env
+  // (PER_ITEM_VAT_ENABLED), NOT a DB column — injected into GET/PATCH /api/settings so
+  // the POS client's on-screen pricing (computeTotals perItemVat arg) and the receipt VAT
+  // breakdown match the server recompute. false = current uniform 7%-inclusive behavior.
+  perItemVatEnabled: boolean;
 };
 
 /**

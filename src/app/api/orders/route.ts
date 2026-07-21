@@ -12,6 +12,10 @@ import {
   PointsTxType,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+// Per-item VAT kill switch (per-item-vat program). Read from the validated env below;
+// gates whether the server recompute charges VAT per item or uniformly (see the flag
+// read in POST). OFF in prod until the KRS mixed-VAT writeback is adapted.
+import { env } from "@/lib/env";
 // Seller branch identity for the KRS outbox snapshot (krs-sync P2). Loaded BEFORE the
 // checkout $transaction (it hits Prisma — never inside a tx) so the SALE SyncJob can
 // carry branchCode/branchName. A null result defaults to HQ in the snapshot below.
@@ -851,7 +855,10 @@ export async function POST(req: Request) {
     const productIds = items.map((i) => i.productId);
     const products = await prisma.product.findMany({
       where: { id: { in: productIds }, isActive: true },
-      select: { id: true, price: true },
+      // `vatable` (per-item-vat program) rides along so computeOrderTotals can charge VAT
+      // per item when the flag is on. It is IGNORED by pricing when perItemVat is false, so
+      // selecting it changes no money on the flag-off path.
+      select: { id: true, price: true, vatable: true },
     });
 
     // --- Promotions program (Phase 6): fetch the EFFECTIVE promotions ---
@@ -1182,16 +1189,33 @@ export async function POST(req: Request) {
       application.manualBillDiscountSatang +
       redemptionSatang;
 
+    // --- Per-item VAT flag (per-item-vat program) ---
+    // Kill switch, read from the validated env (mirrors the KRS_DISCOUNT_WRITE_ENABLED
+    // discipline: the OWNER flips it; an agent never does). When NOT exactly "true",
+    // pricing treats EVERY line as VAT-applicable, so `totals.vatSatang` (→ Order.tax) and
+    // the bill total are BYTE-IDENTICAL to the pre-per-item behavior. When "true", a line
+    // whose product is `vatable === false` extracts 0 VAT — Order.tax drops, but the bill
+    // TOTAL is UNCHANGED (inclusive VAT only shifts the tax/ex-VAT split; the customer pays
+    // the same). ⚠️ VENDOR-GATED: the KRS outbound writeback (salePayload.tax below) still
+    // maps a single uniform tax, so this MUST stay OFF in prod until that writeback is
+    // adapted in a later pass — otherwise a mixed-VAT bill's reduced Order.tax would reach
+    // KRS through an unadapted mapping. Nothing else here (drift guard, PAYMENT_MISMATCH,
+    // atomic stock/points) is affected.
+    const perItemVat = env.PER_ITEM_VAT_ENABLED === "true";
+
     // computeOrderTotals throws OrderProductMissingError for an unknown/inactive
     // product (→ 404 below) and RangeError for an out-of-range discount (already
     // validated at the boundary above, so this is a belt-and-braces guard). The bill
     // discount is the COMBINED 3-slice bill discount (promo threshold + manual +
     // redemption), so Order.discount keeps its combined meaning and
-    // `subtotal − discount === total` still holds automatically.
-    const totals = computeOrderTotals(products, requestedLines, {
-      type: "amount",
-      value: combinedBillSatang / 100,
-    });
+    // `subtotal − discount === total` still holds automatically. `perItemVat` only
+    // changes per-line VAT extraction (the tax split) — never subtotal/discount/total.
+    const totals = computeOrderTotals(
+      products,
+      requestedLines,
+      { type: "amount", value: combinedBillSatang / 100 },
+      perItemVat
+    );
 
     // --- Engine/pricing drift guard (belt-and-braces) ---
     // The engine and pricing compute the subtotal with the identical formula
@@ -1338,6 +1362,12 @@ export async function POST(req: Request) {
         quantity: l.quantity,
         unitPrice: satangToString(l.priceSatang),
         lineTotal: satangToString(l.lineTotalSatang),
+        // Per-item VAT (per-item-vat program): snapshot the EFFECTIVE VAT treatment this
+        // line received (l.vatable) — false ONLY when perItemVat was on AND the product was
+        // exempt (0 VAT extracted). With the flag off this is always true, so every
+        // OrderItem reads vatable=true — byte-identical record of "VAT charged on every
+        // line", and the receipt shows no VAT breakdown (no visible change).
+        vatable: l.vatable,
         promotionId: appLine.promo?.promotionId ?? null,
         promotionName: appLine.promo?.promotionName ?? null,
         promoDiscount: satangToString(appLine.promoDiscountSatang),

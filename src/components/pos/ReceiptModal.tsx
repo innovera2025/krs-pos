@@ -158,6 +158,25 @@ export function ReceiptModal({
   // carried on the order DTO, so the receipt shows only the earned line (on both the
   // fresh print and a reprint), keeping the raster bill height controlled.
   const pointsEarnedNum = Number(order.pointsEarned ?? 0);
+  // Per-item VAT breakdown (per-item-vat program). Show a VAT split ONLY when this bill has
+  // at least one EXEMPT line (OrderItem.vatable === false) — i.e. it was rung up under
+  // per-item VAT with a non-VAT product. A bill where every line is VAT-applicable (the
+  // default, and EVERY flag-off sale) keeps the plain inclusive note below with NO visible
+  // change. Reprint-safe: it reads the per-line snapshot, never the current flag.
+  const hasExemptLine = order.items.some((it) => it.vatable === false);
+  // X = the VAT-inclusive value of the taxable goods; Y = the value of the exempt goods —
+  // both from the per-line amounts (lineTotal). Z = the authoritative VAT already extracted
+  // server-side (order.tax). These use lineTotal (per-line, post line-discount), so X + Y =
+  // subtotal; the net after any bill discount is shown separately in the totals block above.
+  const vatTaxableNum = order.items.reduce(
+    (sum, it) => (it.vatable === false ? sum : sum + Number(it.lineTotal)),
+    0
+  );
+  const vatExemptNum = order.items.reduce(
+    (sum, it) => (it.vatable === false ? sum + Number(it.lineTotal) : sum),
+    0
+  );
+  const vatAmountNum = Number(order.tax);
   // Any discount at all (line-level and/or bill-level) → show the ยอดรวม (subtotal)
   // line so the totals block foots subtotal − promoBill − manual = total.
   const anyDiscount = savingsNum > 0.005;
@@ -478,6 +497,18 @@ export function ReceiptModal({
           >
             ราคานี้รวมภาษีมูลค่าเพิ่ม 7% แล้ว
           </div>
+          {/* Per-item VAT breakdown (per-item-vat program) — one concise line, shown ONLY
+              when the bill has an exempt line, so a normal all-VAT bill (and every flag-off
+              sale) prints exactly as before. Keeps the single .print-receipt DOM. */}
+          {hasExemptLine && (
+            <div
+              className="mt-1 text-center text-[10.5px] leading-[1.5]"
+              style={{ color: "var(--soft)", fontFamily: "var(--font-sans)" }}
+            >
+              มูลค่าสินค้ามีภาษี {money(vatTaxableNum)} · ยกเว้นภาษี{" "}
+              {money(vatExemptNum)} · VAT 7% {money(vatAmountNum)}
+            </div>
+          )}
           <div
             className="mt-2 text-center text-[11px]"
             style={{ color: "var(--soft)", fontFamily: "var(--font-sans)" }}

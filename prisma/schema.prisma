@@ -356,6 +356,15 @@ model Product {
   barcode     String?     @unique
   imageUrl    String?
   isActive    Boolean     @default(true)
+  // Per-item VAT (per-item-vat program). true = this product is VAT-applicable (KRS
+  // InventoryItem.itemvat "คิดภาษี"); false = VAT-exempt ("ไม่คิดภาษี"). DEFAULT true so
+  // every existing row keeps the current uniform-7%-inclusive behavior, and the KRS
+  // import populates the real per-item flag. This flag ONLY changes the tax/ex-VAT
+  // SPLIT, never the bill total: VAT is INCLUSIVE, so marking a line non-VAT leaves the
+  // price the customer pays unchanged — it only lowers Order.tax. Dormant until the
+  // env flag PER_ITEM_VAT_ENABLED flips (default OFF; owner-operated, vendor-gated on
+  // the KRS mixed-VAT writeback).
+  vatable     Boolean     @default(true)
   // Ghost-product reconciliation (17-07-26 incident). true = this row is owned/
   // synced by the KRS product import (importKrsProducts) and is therefore ELIGIBLE
   // for automatic deactivation when its sku disappears from the KRS product master
@@ -553,6 +562,16 @@ model OrderItem {
   quantity   Int
   unitPrice  Decimal  @db.Decimal(10, 2)
   lineTotal  Decimal  @db.Decimal(10, 2)
+  // Per-item VAT snapshot (per-item-vat program). Records the EFFECTIVE VAT treatment
+  // applied to THIS line at sale time — false = VAT was NOT charged on this line (an
+  // exempt product sold while PER_ITEM_VAT_ENABLED was on); true = VAT was charged
+  // (a taxable product, OR any line when the flag was off). This is intentionally the
+  // EFFECTIVE outcome, not the raw Product.vatable: it makes a reprint self-contained
+  // and reprint-safe (the receipt VAT breakdown reads it directly, without needing to
+  // know whether the flag was on at sale time). DEFAULT true so every existing row and
+  // every flag-off sale reads as VAT-charged — byte-identical to the pre-per-item
+  // behavior (Order.tax already extracted 7% inclusive from every line).
+  vatable    Boolean  @default(true)
   // Line-level promotion snapshot (promotions program, Phase 2). DELIBERATELY NO
   // relation/FK to Promotion — a later promo edit/deactivate must never touch a
   // historical sale (same snapshot stance as HeldBill.customerId). `promotionId` /

@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+// Per-item VAT kill switch (per-item-vat program) — surfaced READ-ONLY to the POS client
+// so its on-screen pricing math + the receipt VAT breakdown match the server. This is a
+// server-read of the validated env, NOT a DB column.
+import { env } from "@/lib/env";
 import { requireUser, requireAdmin } from "@/lib/auth";
 import { ShopSettingsPatchBodySchema } from "@/lib/schemas/shopSettings";
 import { parseBody } from "@/lib/schemas/_shared";
@@ -51,9 +55,18 @@ const SETTINGS_SELECT = {
   minRedeemPoints: true,
 } as const;
 
-/** Wrap the projected row in the `{ settings }` response envelope. */
-function toResponse(row: ShopSettingsDTO) {
-  return { settings: row };
+/** Wrap the projected DB row in the `{ settings }` response envelope, injecting the
+ *  per-item-VAT flag (per-item-vat program). `perItemVatEnabled` is a RUNTIME read of the
+ *  env (owner-operated kill switch), NOT a `ShopSettings` column — so it is added here for
+ *  BOTH GET and PATCH from a single place. The POS client reads it to keep its on-screen
+ *  VAT/total math + the receipt VAT breakdown in lock-step with the server recompute. */
+function toResponse(row: Omit<ShopSettingsDTO, "perItemVatEnabled">) {
+  return {
+    settings: {
+      ...row,
+      perItemVatEnabled: env.PER_ITEM_VAT_ENABLED === "true",
+    } satisfies ShopSettingsDTO,
+  };
 }
 
 // GET /api/settings — read the receipt-size singleton (upsert-on-read).

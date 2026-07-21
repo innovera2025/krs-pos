@@ -739,11 +739,20 @@ export default function POSPage() {
       priceSatang: bahtToSatang(i.product.price),
       qty: i.quantity,
       lineDiscountSatang: application.lines[idx]?.combinedLineDiscountSatang ?? 0,
+      // Per-item VAT (per-item-vat program): carry each product's VAT applicability so the
+      // on-screen VAT/total matches the server recompute EXACTLY. Consulted by computeTotals
+      // only when perItemVat is on; a missing value is treated as VAT-applicable.
+      vatable: i.product.vatable,
     }));
-    const totals = computeTotals(items, {
-      type: "amount",
-      value: combinedBillSatang / 100,
-    });
+    // Per-item VAT flag (per-item-vat program) — a server-read of PER_ITEM_VAT_ENABLED
+    // surfaced on the settings the POS fetches at mount. When off (the default), computeTotals
+    // charges VAT on every line, so the displayed VAT/total is byte-identical to today.
+    const perItemVat = receiptSettings?.perItemVatEnabled === true;
+    const totals = computeTotals(
+      items,
+      { type: "amount", value: combinedBillSatang / 100 },
+      perItemVat
+    );
     return {
       totals,
       application,

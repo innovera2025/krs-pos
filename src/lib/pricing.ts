@@ -32,6 +32,16 @@ export type PricingItem = {
   qty: number;
   /** Optional per-line discount in satang (integer >= 0). */
   lineDiscountSatang?: number;
+  /**
+   * Per-item VAT applicability (per-item-vat program). Only consulted when the
+   * `perItemVat` flag passed to `computeTotals` is true: a line with `vatable === false`
+   * then contributes 0 inclusive VAT. Omitted / true = VAT-applicable (the default).
+   *
+   * ⚠️ MONEY INVARIANT: because VAT is INCLUSIVE, this flag NEVER changes `subtotalSatang`,
+   * `billDiscountSatang`, or `totalSatang` — it ONLY lowers `vatSatang` (the tax/ex-VAT
+   * SPLIT). `subtotal − billDiscount === total` holds regardless of any line's `vatable`.
+   */
+  vatable?: boolean;
 };
 
 export type BillDiscount = {
@@ -104,8 +114,21 @@ export function bahtToSatang(baht: number | string): number {
  * Invariant: subtotalSatang - billDiscountSatang === totalSatang.
  * Invariant: Σ alloc === billDiscountSatang (no over/under-allocation, either
  *            rounding direction) and 0 <= alloc[i] <= lineNets[i] for every line.
+ *
+ * PER-ITEM VAT (per-item-vat program): when `perItemVat` is true, a line whose
+ * `vatable === false` extracts 0 inclusive VAT (an exempt product); every other line is
+ * unchanged. When `perItemVat` is false (the DEFAULT — preserves callers not yet updated),
+ * EVERY line extracts VAT exactly as before, so the result is BYTE-IDENTICAL to the
+ * pre-per-item behavior. ⚠️ This ONLY affects `vatSatang` (the tax/ex-VAT split):
+ * `subtotalSatang`, `billDiscountSatang`, and `totalSatang` are computed BEFORE and
+ * INDEPENDENTLY of VAT, so the bill total is unchanged whether or not any line is exempt
+ * (INCLUSIVE VAT — the customer pays the same; only the tax portion of that price moves).
  */
-export function computeTotals(items: PricingItem[], bill: BillDiscount): Totals {
+export function computeTotals(
+  items: PricingItem[],
+  bill: BillDiscount,
+  perItemVat: boolean = false
+): Totals {
   // 1. per-line net (gross minus per-line discount, floored at 0).
   const lineNets = items.map((it) => {
     const qty = Number.isFinite(it.qty) ? Math.max(Math.trunc(it.qty), 0) : 0;
@@ -184,9 +207,19 @@ export function computeTotals(items: PricingItem[], bill: BillDiscount): Totals 
   }
 
   // 6. per-line final + inclusive VAT.
+  //    PER-ITEM VAT (per-item-vat program): the ONLY change to this step. A line is
+  //    exempt (0 VAT) ONLY when `perItemVat` is on AND the line is explicitly
+  //    `vatable === false`; otherwise VAT is extracted exactly as before. With
+  //    `perItemVat` false, the ternary's first branch is unreachable, so `vatSatang` is
+  //    byte-identical to the pre-per-item extraction. `netSatang` (the line total that
+  //    feeds subtotal/total) is UNCHANGED either way — VAT is inclusive, so exemption
+  //    never alters what the customer pays, only the extracted tax.
   const lines: LineTotal[] = lineNets.map((net, i) => {
     const lineFinal = Math.max(net - alloc[i], 0);
-    const vatSatang = roundSatang((lineFinal * VAT_NUM) / VAT_DEN);
+    const vatSatang =
+      perItemVat && items[i].vatable === false
+        ? 0
+        : roundSatang((lineFinal * VAT_NUM) / VAT_DEN);
     return { netSatang: lineFinal, vatSatang };
   });
 
@@ -215,6 +248,12 @@ export type OrderProductRow = {
   id: string;
   /** Catalog unit price in baht. Prisma Decimal | numeric string | number. */
   price: { toString(): string } | string | number;
+  /**
+   * Per-item VAT applicability (per-item-vat program) — the product's `Product.vatable`.
+   * Only consulted when `computeOrderTotals` is called with `perItemVat` true. Omitted /
+   * true = VAT-applicable (the default). See PricingItem.vatable for the money invariant.
+   */
+  vatable?: boolean;
 };
 
 /**
@@ -260,6 +299,16 @@ export type OrderLineResult = {
    * value). Always in `[0, gross]`.
    */
   lineDiscountSatang: number;
+  /**
+   * The EFFECTIVE VAT treatment applied to this line (per-item-vat program) — the exact
+   * value to snapshot onto `OrderItem.vatable`. It is `false` ONLY when `perItemVat` was
+   * on AND the product was `vatable === false` (so 0 VAT was extracted from this line);
+   * otherwise `true` (VAT was extracted — including EVERY line when `perItemVat` is off).
+   * By construction it agrees with the line's `vatSatang`: `vatable === false ⇔ this
+   * line contributed 0 to `OrderTotals.vatSatang``. Reprint-safe: the receipt reads this
+   * without needing to know whether the flag was on at sale time.
+   */
+  vatable: boolean;
 };
 
 /** Full server-recomputed order money result (all integer satang). */
@@ -294,13 +343,21 @@ export class OrderProductMissingError extends Error {
  * `computeTotals()` engine the client uses, so server and client totals match
  * exactly (same proportional-allocation + inclusive-VAT rounding).
  *
+ * PER-ITEM VAT (per-item-vat program): `perItemVat` (default false) is threaded straight
+ * into `computeTotals`, and each requested line carries its product's `vatable` flag. With
+ * `perItemVat` false, VAT is extracted from every line exactly as before — BYTE-IDENTICAL
+ * to the pre-per-item behavior — and every `OrderLineResult.vatable` is `true`. With it
+ * true, a `vatable === false` product contributes 0 VAT; the bill `totalSatang` is
+ * UNCHANGED either way (inclusive VAT only moves the tax/ex-VAT split).
+ *
  * @throws {OrderProductMissingError} if any requested productId is absent.
  * @throws {RangeError} if `discountValue` is negative, or (for percent) > 100.
  */
 export function computeOrderTotals(
   products: OrderProductRow[],
   requested: OrderRequestLine[],
-  bill: BillDiscount
+  bill: BillDiscount,
+  perItemVat: boolean = false
 ): OrderTotals {
   // Validate the bill discount (server boundary — the client also gates this, but
   // the server is authoritative). value must be >= 0; percent additionally <= 100.
@@ -316,16 +373,23 @@ export function computeOrderTotals(
   // price to its string form before the satang conversion (numbers/strings pass
   // through unchanged).
   const priceById = new Map<string, number>();
+  // Per-item VAT (per-item-vat program): index the product's `vatable` flag by id, same
+  // as the price. A product absent here maps to `undefined` → treated VAT-applicable
+  // (the default) — but that line also fails the price lookup below (missing product), so
+  // it never reaches pricing. Only consulted when `perItemVat` is true.
+  const vatableById = new Map<string, boolean>();
   for (const p of products) {
     const priceInput: number | string =
       typeof p.price === "object" && p.price !== null
         ? p.price.toString()
         : (p.price as number | string);
     priceById.set(p.id, bahtToSatang(priceInput));
+    vatableById.set(p.id, p.vatable !== false);
   }
 
   // Build the PricingItem[] in the SAME order as the requested lines, carrying the
-  // DB price (never the client price) and the clamped per-line discount.
+  // DB price (never the client price), the clamped per-line discount, and the product's
+  // VAT applicability (per-item-vat program — consulted only when `perItemVat` is true).
   const pricingItems: PricingItem[] = requested.map((line) => {
     const priceSatang = priceById.get(line.productId);
     if (priceSatang === undefined) {
@@ -338,10 +402,12 @@ export function computeOrderTotals(
       : 0;
     // Per-line discount can never exceed the line gross (mirrors the client clamp).
     const lineDiscountSatang = Math.min(requestedLineDiscount, gross);
-    return { priceSatang, qty, lineDiscountSatang };
+    // Default missing → true (VAT-applicable). Ignored entirely when perItemVat is false.
+    const vatable = vatableById.get(line.productId) ?? true;
+    return { priceSatang, qty, lineDiscountSatang, vatable };
   });
 
-  const totals = computeTotals(pricingItems, bill);
+  const totals = computeTotals(pricingItems, bill, perItemVat);
 
   const lines: OrderLineResult[] = requested.map((line, i) => {
     const priceSatang = priceById.get(line.productId) as number;
@@ -351,6 +417,12 @@ export function computeOrderTotals(
     // === subtotalSatang (the bill discount is a separate header field, allocated
     // proportionally only for VAT extraction — it is NOT folded into lineTotal).
     const lineTotalSatang = Math.max(Math.max(priceSatang, 0) * qty - lineDiscount, 0);
+    // Per-item VAT (per-item-vat program): the EFFECTIVE treatment to snapshot onto
+    // OrderItem.vatable. `false` ONLY when perItemVat is on AND this product is exempt
+    // (so 0 VAT was extracted); otherwise `true` (VAT extracted — including every line
+    // when perItemVat is off). This mirrors EXACTLY the ternary in computeTotals step 6,
+    // so vatable === false ⇔ this line contributed 0 to totals.vatSatang.
+    const effectiveVatable = !(perItemVat && pricingItems[i].vatable === false);
     // lineNet = this line's fully-net amount AFTER the bill-discount allocation
     // (largest-remainder). Taken straight from the shared engine so Σ lineNetSatang
     // === totalSatang and each is in [0, lineTotalSatang]. lineDiscountSatang is the
@@ -362,6 +434,7 @@ export function computeOrderTotals(
       lineTotalSatang,
       lineNetSatang: totals.lines[i].netSatang,
       lineDiscountSatang: lineDiscount,
+      vatable: effectiveVatable,
     };
   });
 

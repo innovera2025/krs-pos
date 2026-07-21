@@ -242,6 +242,19 @@ const EnvSchema = z.object({
     .string()
     .max(512, "KRS_IMAGE_CACHE_DIR must be at most 512 characters")
     .default("/tmp/krs-images"),
+
+  // --- Per-item VAT (per-item-vat program). Kill switch for charging VAT PER ITEM
+  // (KRS InventoryItem.itemvat "คิดภาษี"/"ไม่คิดภาษี") instead of the current uniform
+  // 7%-inclusive-on-every-line behavior. Opt-in by design (mirrors
+  // KRS_DISCOUNT_WRITE_ENABLED). ALL money math is byte-identical to today when this is
+  // not exactly "true": every line is treated VAT-applicable, so Order.tax and the bill
+  // total are unchanged. When "true", a line whose product is marked non-VAT
+  // (Product.vatable=false) contributes 0 to Order.tax — but the bill TOTAL is STILL
+  // unchanged, because VAT is INCLUSIVE (marking a line exempt only shifts the tax/ex-VAT
+  // SPLIT, never what the customer pays). VENDOR-GATED: the KRS outbound writeback still
+  // maps a single uniform tax, so this MUST stay OFF in prod until the mixed-VAT KRS
+  // writeback is adapted in a later pass. The OWNER flips it (an agent must never flip it).
+  PER_ITEM_VAT_ENABLED: z.enum(["true", "false"]).default("false"),
 });
 
 function loadEnv(): z.infer<typeof EnvSchema> {
@@ -316,6 +329,11 @@ function loadEnv(): z.infer<typeof EnvSchema> {
       KRS_IMAGE_BASE_URL: process.env.KRS_IMAGE_BASE_URL,
       KRS_IMAGE_COMPANY: process.env.KRS_IMAGE_COMPANY ?? "SNP",
       KRS_IMAGE_CACHE_DIR: process.env.KRS_IMAGE_CACHE_DIR ?? "/tmp/krs-images",
+      // Per-item VAT kill switch (per-item-vat program) — passed through unvalidated
+      // during the build phase (no checkout/pricing runs at build time). Normalized to
+      // the "true"/"false" string so the build object matches the parsed enum type.
+      PER_ITEM_VAT_ENABLED:
+        process.env.PER_ITEM_VAT_ENABLED === "true" ? "true" : "false",
     };
   }
 

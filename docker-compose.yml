@@ -132,6 +132,14 @@ services:
       KRS_IMAGE_BASE_URL: ${KRS_IMAGE_BASE_URL:-http://43.229.134.162/update}
       KRS_IMAGE_COMPANY: ${KRS_IMAGE_COMPANY:-SNP}
       KRS_IMAGE_CACHE_DIR: ${KRS_IMAGE_CACHE_DIR:-/tmp/krs-images}
+      # Per-item VAT (per-item-vat program). Kill switch for charging VAT PER ITEM
+      # (KRS itemvat) instead of the uniform 7%-inclusive-on-every-line default. Must be
+      # "true" to enable; default false (opt-in). Money is byte-identical to today when
+      # off (all lines VAT-applicable → Order.tax + total unchanged); when on, an exempt
+      # line drops out of Order.tax but the bill TOTAL is still unchanged (inclusive VAT
+      # only shifts the tax/ex-VAT split). VENDOR-GATED: keep OFF in prod until the KRS
+      # mixed-VAT writeback is adapted — the owner flips it.
+      PER_ITEM_VAT_ENABLED: ${PER_ITEM_VAT_ENABLED:-false}
     ports:
       # Bind to localhost only — the public entrypoint is the Caddy reverse proxy
       # (docker-compose.prod.yml, ports 80/443). Caddy reaches the app over the

@@ -265,9 +265,11 @@ describe("computeOrderTotals — DB price authority", () => {
     const t = computeOrderTotals(PRODUCTS, req, { type: "amount", value: 0 });
     expect(t.subtotalSatang).toBe(14300);
     expect(t.totalSatang).toBe(14300);
-    // Additive OrderLineResult fields (Phase 1): with no bill discount lineNet == lineTotal
-    // and lineDiscount == 0 — the pre-existing values are unchanged; the two new keys are
-    // included so this strict deep-equality assertion stays exhaustive.
+    // Additive OrderLineResult fields (Phase 1 + per-item-vat program): with no bill
+    // discount lineNet == lineTotal and lineDiscount == 0 — the pre-existing values are
+    // unchanged. `vatable` is true here: these products carry no vatable flag (→ default
+    // VAT-applicable) and perItemVat defaults false (→ VAT charged on every line, so the
+    // effective snapshot is true). Included so this strict deep-equality stays exhaustive.
     expect(t.lines).toEqual([
       {
         productId: "p1",
@@ -276,6 +278,7 @@ describe("computeOrderTotals — DB price authority", () => {
         lineTotalSatang: 11800,
         lineNetSatang: 11800,
         lineDiscountSatang: 0,
+        vatable: true,
       },
       {
         productId: "p2",
@@ -284,6 +287,7 @@ describe("computeOrderTotals — DB price authority", () => {
         lineTotalSatang: 2500,
         lineNetSatang: 2500,
         lineDiscountSatang: 0,
+        vatable: true,
       },
     ]);
   });
@@ -515,5 +519,128 @@ describe("sumPaySatang / remainingPaySatang", () => {
   it("floors remaining at 0", () => {
     expect(remainingPaySatang(10000, [50, 60])).toBe(0);
     expect(remainingPaySatang(10000, [50])).toBe(5000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-item VAT (per-item-vat program). Golden tests locking the MONEY INVARIANT:
+// marking a line non-VAT changes ONLY the tax split (vatSatang), never the bill
+// total — because VAT is INCLUSIVE. `subtotal − billDiscount === total` holds in
+// every case, and the flag-OFF path is byte-identical to the pre-per-item behavior
+// (VAT charged on every line, regardless of any line's `vatable`).
+// ---------------------------------------------------------------------------
+
+describe("computeTotals — per-item VAT (flag OFF is byte-identical)", () => {
+  it("flag OFF: a vatable:false line STILL extracts VAT (unchanged behavior)", () => {
+    const items: PricingItem[] = [{ priceSatang: 5000, qty: 1, vatable: false }];
+    // Default perItemVat = false → the vatable flag is ignored; VAT is extracted.
+    const off = computeTotals(items, { type: "amount", value: 0 });
+    expect(off.vatSatang).toBe(Math.round((5000 * 7) / 107)); // 327
+    expect(off.totalSatang).toBe(5000);
+    // Explicit false matches the default.
+    const offExplicit = computeTotals(items, { type: "amount", value: 0 }, false);
+    expect(offExplicit.vatSatang).toBe(off.vatSatang);
+  });
+
+  it("flag ON: a vatable:false line extracts 0 VAT; total unchanged vs flag OFF", () => {
+    const items: PricingItem[] = [{ priceSatang: 5000, qty: 1, vatable: false }];
+    const on = computeTotals(items, { type: "amount", value: 0 }, true);
+    expect(on.vatSatang).toBe(0);
+    // The bill total is IDENTICAL whether the line is exempt or not (inclusive VAT).
+    expect(on.totalSatang).toBe(5000);
+    const off = computeTotals(items, { type: "amount", value: 0 }, false);
+    expect(on.totalSatang).toBe(off.totalSatang);
+  });
+
+  it("flag ON: an all-vatable bill is byte-identical to flag OFF (both tax + total)", () => {
+    const items: PricingItem[] = [
+      { priceSatang: 10700, qty: 1, vatable: true },
+      { priceSatang: 2500, qty: 2 }, // vatable omitted → VAT-applicable
+    ];
+    const on = computeTotals(items, { type: "amount", value: 0 }, true);
+    const off = computeTotals(items, { type: "amount", value: 0 }, false);
+    expect(on.vatSatang).toBe(off.vatSatang);
+    expect(on.totalSatang).toBe(off.totalSatang);
+    expect(on.subtotalSatang).toBe(off.subtotalSatang);
+  });
+});
+
+describe("computeTotals — per-item VAT (mixed + all-exempt)", () => {
+  it("mixed bill: VAT only on taxable lines; total identical to all-vatable", () => {
+    const mixed: PricingItem[] = [
+      { priceSatang: 10700, qty: 1, vatable: true }, // VAT 700
+      { priceSatang: 5000, qty: 1, vatable: false }, // exempt → VAT 0
+    ];
+    const on = computeTotals(mixed, { type: "amount", value: 0 }, true);
+    expect(on.vatSatang).toBe(700); // only the taxable line contributes
+    expect(on.totalSatang).toBe(15700);
+    expect(on.subtotalSatang - on.billDiscountSatang).toBe(on.totalSatang);
+
+    // Same lines treated all-VAT (flag off) → SAME total, HIGHER tax.
+    const off = computeTotals(mixed, { type: "amount", value: 0 }, false);
+    expect(off.totalSatang).toBe(on.totalSatang); // total unchanged
+    expect(off.vatSatang).toBe(700 + Math.round((5000 * 7) / 107)); // 1027 > 700
+  });
+
+  it("all-exempt bill: tax 0, total = Σ prices", () => {
+    const items: PricingItem[] = [
+      { priceSatang: 5000, qty: 1, vatable: false },
+      { priceSatang: 3000, qty: 2, vatable: false },
+    ];
+    const on = computeTotals(items, { type: "amount", value: 0 }, true);
+    expect(on.vatSatang).toBe(0);
+    expect(on.totalSatang).toBe(11000);
+    expect(on.subtotalSatang - on.billDiscountSatang).toBe(on.totalSatang);
+  });
+
+  it("bill discount across mixed lines: VAT on post-alloc taxable line only; invariant holds", () => {
+    const items: PricingItem[] = [
+      { priceSatang: 10000, qty: 1, vatable: true },
+      { priceSatang: 10000, qty: 1, vatable: false },
+    ];
+    // 20 baht bill discount, split 1000/1000 → each lineFinal 9000.
+    const on = computeTotals(items, { type: "amount", value: 20 }, true);
+    expect(on.subtotalSatang).toBe(20000);
+    expect(on.billDiscountSatang).toBe(2000);
+    expect(on.totalSatang).toBe(18000);
+    expect(on.subtotalSatang - on.billDiscountSatang).toBe(on.totalSatang);
+    // VAT from the taxable line's post-allocation final (9000) only; exempt line → 0.
+    expect(on.vatSatang).toBe(Math.round((9000 * 7) / 107)); // 589
+    // Flag off over the SAME inputs: same total, VAT on BOTH post-alloc finals.
+    const off = computeTotals(items, { type: "amount", value: 20 }, false);
+    expect(off.totalSatang).toBe(on.totalSatang);
+    expect(off.vatSatang).toBe(2 * Math.round((9000 * 7) / 107)); // 1178
+  });
+});
+
+describe("computeOrderTotals — per-item VAT threading + effective snapshot", () => {
+  const PRODUCTS_VAT: OrderProductRow[] = [
+    { id: "a", price: "100.00", vatable: true },
+    { id: "b", price: "50.00", vatable: false },
+  ];
+  const LINES: OrderRequestLine[] = [
+    { productId: "a", quantity: 1 },
+    { productId: "b", quantity: 1 },
+  ];
+
+  it("flag ON: exempt product → 0 VAT + OrderLineResult.vatable false; total unchanged", () => {
+    const on = computeOrderTotals(PRODUCTS_VAT, LINES, { type: "amount", value: 0 }, true);
+    expect(on.vatSatang).toBe(Math.round((10000 * 7) / 107)); // 654 (line a only)
+    expect(on.totalSatang).toBe(15000);
+    expect(on.subtotalSatang - on.billDiscountSatang).toBe(on.totalSatang);
+    expect(on.lines[0].vatable).toBe(true);
+    expect(on.lines[1].vatable).toBe(false);
+  });
+
+  it("flag OFF (default): VAT on every line + EVERY OrderLineResult.vatable true; same total", () => {
+    const off = computeOrderTotals(PRODUCTS_VAT, LINES, { type: "amount", value: 0 });
+    expect(off.vatSatang).toBe(
+      Math.round((10000 * 7) / 107) + Math.round((5000 * 7) / 107) // 654 + 327 = 981
+    );
+    expect(off.totalSatang).toBe(15000); // total identical to the flag-on case
+    // Effective snapshot: with the flag off, VAT was charged on both, so both read true —
+    // even though product "b" is vatable:false. (Byte-identical record of "VAT charged".)
+    expect(off.lines[0].vatable).toBe(true);
+    expect(off.lines[1].vatable).toBe(true);
   });
 });

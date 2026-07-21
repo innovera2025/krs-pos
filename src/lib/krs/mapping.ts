@@ -44,7 +44,8 @@ export type ProductTargetField =
   | "barcode"
   | "category"
   | "isActive"
-  | "imageUrl";
+  | "imageUrl"
+  | "vatable";
 
 /** One target-field spec entry (drives both the UI and server-side validation). */
 export type TargetFieldSpec = {
@@ -66,6 +67,10 @@ export const PRODUCT_TARGET_FIELDS: TargetFieldSpec[] = [
   { field: "category", required: false, label: "หมวดหมู่ · Category" },
   { field: "isActive", required: false, label: "สถานะใช้งาน · Active" },
   { field: "imageUrl", required: false, label: "ชื่อไฟล์รูป · Image filename" },
+  // Per-item VAT (per-item-vat program): KRS InventoryItem.itemvat ("คิดภาษี"/"ไม่คิดภาษี")
+  // → POS Product.vatable. Optional — an unmapped value defaults the record to true
+  // (VAT-applicable), keeping the current uniform behavior.
+  { field: "vatable", required: false, label: "คิดภาษี · VAT-applicable" },
 ];
 
 /** The set of known PRODUCT_IMPORT target fields (for fast membership checks). */
@@ -110,6 +115,10 @@ export const DEFAULT_PRODUCT_IMPORT_MAPPING: ProductImportMapping = {
     // Raw KRS image filename (e.g. "F01-0001.JPG"); served from the FTP image
     // store by /api/products/image. Optional — null when KRS PictureName is blank.
     imageUrl: "PictureName",
+    // Per-item VAT flag (per-item-vat program): KRS InventoryItem.itemvat text
+    // ("คิดภาษี"/"ไม่คิดภาษี") → Product.vatable. Parsed by parseItemVat (unmapped/blank/
+    // unknown → true, the current uniform behavior).
+    vatable: "itemvat",
   },
 };
 

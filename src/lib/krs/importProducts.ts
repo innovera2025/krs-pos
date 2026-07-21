@@ -226,6 +226,10 @@ export async function importKrsProducts(
         barcode: true,
         imageUrl: true,
         categoryId: true,
+        // Per-item VAT (per-item-vat program): pulled so a vatable-only change also
+        // triggers a `product-update` refetch (below) — otherwise the POS grid's cached
+        // Product.vatable would go stale after KRS flips an item's itemvat flag.
+        vatable: true,
       },
     });
 
@@ -240,6 +244,11 @@ export async function importKrsProducts(
         // Raw KRS image filename (null when unmapped/blank); served by
         // /api/products/image. stock is POS-owned going forward — NOT touched.
         imageUrl: rec.imageUrl,
+        // Per-item VAT (per-item-vat program): KRS is the source of truth for the
+        // itemvat flag, so it is written on every import (create AND update). Dormant
+        // until PER_ITEM_VAT_ENABLED flips — with the flag OFF, pricing treats every
+        // line as VAT-applicable regardless of this value, so writing it changes no money.
+        vatable: rec.vatable,
         // Ghost-reconciliation stamp (17-07-26 incident): every row FED by the KRS
         // import is owned by KRS and thus eligible for auto-deactivation when it
         // later vanishes. Stamping on UPDATE too means every existing KRS-fed row
@@ -254,6 +263,10 @@ export async function importKrsProducts(
         isActive: rec.isActive,
         categoryId,
         imageUrl: rec.imageUrl,
+        // Per-item VAT (per-item-vat program): stamped from the KRS itemvat flag on
+        // birth. New rows also default to true at the DB level, so an unmapped value
+        // (parseItemVat → true) keeps the current uniform behavior.
+        vatable: rec.vatable,
         stock: 0,
         // New KRS-fed rows are KRS-owned from birth (see the UPDATE branch note).
         krsManaged: true,
@@ -273,7 +286,10 @@ export async function importKrsProducts(
         existing.isActive !== rec.isActive ||
         existing.barcode !== barcode ||
         existing.imageUrl !== rec.imageUrl ||
-        existing.categoryId !== categoryId;
+        existing.categoryId !== categoryId ||
+        // Per-item VAT (per-item-vat program): a vatable-only flip must republish so the
+        // POS grid refetches the new flag (dormant for money until PER_ITEM_VAT_ENABLED on).
+        existing.vatable !== rec.vatable;
       if (changed) changedSkus.push(rec.sku);
     } else {
       created += 1;

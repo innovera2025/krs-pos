@@ -40,6 +40,7 @@ import {
   type ProductImportMapping,
   type ProductTargetField,
 } from "./mapping";
+import { parseItemVat } from "./itemVat";
 import { logger } from "@/lib/logger";
 
 /**
@@ -54,6 +55,9 @@ import { logger } from "@/lib/logger";
  *   - `categoryName` ← KRS `ItemTypename` (POS Category name; null when blank/unmapped)
  *   - `imageUrl`     ← KRS `PictureName`  (raw image filename, e.g. "F01-0001.JPG";
  *                                          null when blank/unmapped)
+ *   - `vatable`      ← KRS `itemvat`      (per-item-vat program: "คิดภาษี" → true,
+ *                                          "ไม่คิดภาษี" → false; blank/unmapped/unknown
+ *                                          → true, the safe VAT-applicable default)
  *
  * `price` is a plain JS number rounded to 2dp here for transport. The importer
  * re-derives the exact 2dp Decimal string and bounds it to Decimal(10,2) — this
@@ -69,6 +73,10 @@ export type KrsProductRecord = {
   /** Raw KRS image filename (e.g. "F01-0001.JPG"); null when KRS PictureName is
    *  blank/unmapped. Served (FTP-proxied) by /api/products/image. */
   imageUrl: string | null;
+  /** Per-item VAT (per-item-vat program): KRS `itemvat` parsed by parseItemVat.
+   *  true = VAT-applicable ("คิดภาษี"), false = exempt ("ไม่คิดภาษี"); an unmapped/blank/
+   *  unknown value defaults to true (the current uniform behavior). */
+  vatable: boolean;
 };
 
 /** Trim a nullable string to a non-empty value, or null. */
@@ -242,6 +250,10 @@ export async function fetchKrsProducts(
         // Raw image filename (e.g. "F01-0001.JPG"); optional/unmapped → key absent
         // from the row → cleanString → null. The importer stores it on imageUrl.
         imageUrl: cleanString(row.imageUrl),
+        // Per-item VAT (per-item-vat program): KRS `itemvat` text → boolean. When the
+        // `vatable` field is UNMAPPED, `row.vatable` is absent (undefined) → parseItemVat
+        // returns true (safe VAT-applicable default = current uniform behavior).
+        vatable: parseItemVat(row.vatable),
       });
     }
     return records;
