@@ -8,6 +8,7 @@ import {
   SyncJobStatus,
   StockMovementType,
   AuditAction,
+  PointsTxType,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
@@ -385,6 +386,13 @@ export async function PATCH(
         status: true,
         syncStatus: true,
         total: true,
+        // Loyalty reversal (loyalty program — void must not drift a member's balance):
+        // the linked member + the points this sale EARNED / REDEEMED, so the void can
+        // back them out in the same tx below. All nullable/defaulted, so a walk-in or a
+        // pre-loyalty bill just reads customerId null / 0 / 0 (no reversal).
+        customerId: true,
+        pointsEarned: true,
+        pointsRedeemed: true,
         // Items drive the stock restore — a void returns the sold units to inventory.
         items: { select: { productId: true, quantity: true } },
       },
@@ -520,6 +528,46 @@ export async function PATCH(
         // async, unlike the checkout outbox which IS in-tx because sale+outbox
         // atomicity is the invariant). Left as a documented gap — not implemented in
         // Track A (no guessed reversal).
+      }
+
+      // === Loyalty points REVERSAL (loyalty program — void must not drift a balance) ===
+      // A voided bill that earned or redeemed points must return the member's wallet to
+      // where it was BEFORE the sale: RE-CREDIT the points they SPENT (pointsRedeemed) and
+      // REMOVE the points the sale EARNED (pointsEarned). Net delta = pointsRedeemed −
+      // pointsEarned, applied atomically ON THE CURRENT row value with a non-negative floor
+      // (mirrors the LEAST/GREATEST clamp in src/lib/krs/stockReconcile.ts): GREATEST(0, …)
+      // guards the case where the earned points were already spent on a later bill, so the
+      // balance can NEVER go negative. This ALSO closes the pre-existing Phase 1B
+      // earn-on-void gap. NOTE: a fuller lot-tracking reversal (which specific points were
+      // spent where) is out of scope — the GREATEST(0,…) floor is the documented v1 safety.
+      if (
+        existing.customerId &&
+        (existing.pointsEarned > 0 || existing.pointsRedeemed > 0)
+      ) {
+        const delta = existing.pointsRedeemed - existing.pointsEarned;
+        // delta === 0 (earned === redeemed, unusual) is a true no-op — no balance write and
+        // no ledger row (nothing moved).
+        if (delta !== 0) {
+          await tx.$executeRaw`UPDATE "Customer" SET "pointsBalance" = GREATEST(0, "pointsBalance" + ${delta}) WHERE "id" = ${existing.customerId}`;
+          // Read the post-clamp balance back for the ledger's self-verifying `balanceAfter`
+          // (the GREATEST floor means it can't be derived arithmetically from the prior value).
+          const afterReversal = await tx.customer.findUnique({
+            where: { id: existing.customerId },
+            select: { pointsBalance: true },
+          });
+          await tx.pointsTransaction.create({
+            data: {
+              customerId: existing.customerId,
+              orderId: existing.id,
+              type: PointsTxType.REVERSAL,
+              // Signed net movement: + re-credits redeemed points, − removes earned points.
+              points: delta,
+              balanceAfter: afterReversal?.pointsBalance ?? 0,
+              note: `void: +${existing.pointsRedeemed} redeemed / -${existing.pointsEarned} earned`,
+              actorId: session.user.id,
+            },
+          });
+        }
       }
 
       // enqueue-void: the SALE reached KRS (status SYNCED) → enqueue the VOID SyncJob IN

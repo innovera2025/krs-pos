@@ -58,6 +58,11 @@ export const OrderPostBodySchema = z.object({
   // returns the coded 400 BAD_CUSTOMER; a Zod cap would shadow it with VALIDATION.
   customerId: z.string().nullish(),
   taxRequested: z.boolean().optional(),
+  // Loyalty redemption (loyalty program, Phase 2). SHAPE ONLY — a number; the route
+  // validates non-negative integer / Int4 range (→ 400 BAD_REDEEM) and recomputes the
+  // ฿ value server-side. MUST be declared here: z.object() strips unknown keys, so an
+  // undeclared redeemPoints would be silently dropped and never applied.
+  redeemPoints: z.number().optional(),
   idempotencyKey: z.string().nullish(),
 });
 

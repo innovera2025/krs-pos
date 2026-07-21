@@ -326,6 +326,13 @@ export type OrderDTO = {
   // legacy pre-loyalty reprints; 0 for a walk-in / non-member / loyalty-off bill.
   // The receipt shows "แต้มที่ได้รับ +N" when > 0; the POS reads it for the earn toast.
   pointsEarned?: number;
+  // Loyalty REDEEM (loyalty program, Phase 2): whole points SPENT (Int, passed through
+  // untouched) + the baht slice of `discount` they bought (`pointsRedemptionDiscount`,
+  // a 2dp baht string via serializeOrder — "0.00" when none). Optional/absent for legacy
+  // reprints; both 0 for a no-redeem bill. The receipt renders a separate
+  // "ใช้แต้มแลกส่วนลด −฿Y (−N แต้ม)" row and the POS reads them for the success toast.
+  pointsRedeemed?: number;
+  pointsRedemptionDiscount?: string | number;
   // Phase 6a — customer linkage (null/undefined = walk-in / ลูกค้าทั่วไป).
   customerId?: string | null;
   customer?: CustomerDTO | null;

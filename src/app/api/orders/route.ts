@@ -50,11 +50,13 @@ import {
 // recompute and GET /api/promotions?view=pos can never drift on which fields each
 // promotion type exposes to the engine.
 import { serializePosPromotion } from "@/lib/promotionSerialize";
-// Loyalty program (Phase 1B) — the pure, isomorphic points engine. `pointsEarned`
+// Loyalty program (Phase 1B/2) — the pure, isomorphic points engine. `pointsEarned`
 // turns the bill's NET total (integer satang) + the store earn rate into whole
-// points. Imports no Prisma/mssql (driver-free), the same discipline as the promo
-// engine, so the checkout route's module graph stays clean.
-import { pointsEarned } from "@/lib/loyalty";
+// points; `computeRedemption` (Phase 2) resolves a redeem REQUEST into the exact
+// points spent + satang discount (the third bill-discount slice). Imports no
+// Prisma/mssql (driver-free), the same discipline as the promo engine, so the
+// checkout route's module graph stays clean.
+import { pointsEarned, computeRedemption } from "@/lib/loyalty";
 // Shared wire serializer + satang helpers (FIX 1): every order response
 // (GET/POST here, and every PATCH return in [id]/route.ts) emits identical 2dp
 // string money fields. The serializer lives in its own module so both route
@@ -282,6 +284,12 @@ type OrderRequestBody = {
   // walk-in. taxRequested requires a customerId whose Customer has a taxId.
   customerId?: string | null;
   taxRequested?: boolean;
+  // Loyalty redemption (loyalty program, Phase 2). Optional non-negative integer:
+  // the whole points the cashier wants to spend as a baht discount. NO money is sent
+  // — the server recomputes the satang value from the store point value and folds it
+  // in as the third bill-discount slice. Applies ONLY when loyalty is on AND the
+  // linked customer is an enrolled member; otherwise it is ignored (no redemption).
+  redeemPoints?: number;
   // Checkout idempotency (Sub-phase C). A client-generated UUID per checkout
   // ATTEMPT — the SAME key is reused across retries of one submission, and a NEW
   // key is generated for a new sale. The server collapses a double-submit to a
@@ -447,6 +455,7 @@ export async function POST(req: Request) {
     customerId,
     taxRequested = false,
     idempotencyKey,
+    redeemPoints,
   } = body;
 
   // --- idempotency key boundary (Sub-phase C) ---
@@ -578,6 +587,29 @@ export async function POST(req: Request) {
     );
   }
 
+  // --- points-redemption input boundary (loyalty program, Phase 2) ---
+  // Optional; when present it MUST be a non-negative integer (whole points) that fits
+  // the Int4 column. A member customer must be attached for it to APPLY (checked after
+  // the recompute), but a malformed value is rejected at the boundary here rather than
+  // silently ignored, so a buggy client fails loudly. Absent/null/0 = no redemption
+  // (byte-identical to a pre-loyalty bill). The server NEVER trusts the redeemed value
+  // — it recomputes the satang from the store point value below.
+  let requestedRedeemPoints = 0;
+  if (redeemPoints !== undefined && redeemPoints !== null) {
+    if (
+      !Number.isFinite(redeemPoints) ||
+      !Number.isInteger(redeemPoints) ||
+      redeemPoints < 0 ||
+      redeemPoints > INT4_MAX
+    ) {
+      return NextResponse.json(
+        { error: "Invalid redeem points", code: "BAD_REDEEM" },
+        { status: 400 }
+      );
+    }
+    requestedRedeemPoints = redeemPoints;
+  }
+
   if (!Array.isArray(paymentLines) || paymentLines.length === 0) {
     return NextResponse.json(
       { error: "No payment lines", code: "NO_PAYMENT" },
@@ -687,14 +719,16 @@ export async function POST(req: Request) {
     // BAD_CUSTOMER / TAX_REQUIRES_TAX_CUSTOMER short-circuit returns behave
     // identically here as outside the try.
     let resolvedCustomer:
-      | { id: string; taxId: string | null; isMember: boolean }
+      | { id: string; taxId: string | null; isMember: boolean; pointsBalance: number }
       | null = null;
     if (normalizedCustomerId) {
       resolvedCustomer = await prisma.customer.findUnique({
         where: { id: normalizedCustomerId },
-        // `isMember` (loyalty program, Phase 1B) is selected here so the earn
-        // decision below reuses this SAME anti-tamper customer read — no extra query.
-        select: { id: true, taxId: true, isMember: true },
+        // `isMember` + `pointsBalance` (loyalty program, Phase 1B/2) are selected here
+        // so the earn AND redeem decisions below reuse this SAME anti-tamper customer
+        // read — no extra query. `pointsBalance` is the last-read balance for the
+        // FRIENDLY pre-tx overdraw check only; the atomic in-tx guard is the real gate.
+        select: { id: true, taxId: true, isMember: true, pointsBalance: true },
       });
       if (!resolvedCustomer) {
         return NextResponse.json(
@@ -754,14 +788,20 @@ export async function POST(req: Request) {
     // --- Loyalty EARN config (loyalty program, Phase 1B) ---
     // A single pre-tx read of the store loyalty singleton (this route has no prior
     // ShopSettings read of its own — getSellerConfig reads a DIFFERENT column set).
-    // Selects ONLY the earn-side config; the redemption fields are Phase 2. Runs
+    // Selects the earn-side config AND the redemption config (Phase 2:
+    // redeemPointValueSatang = satang per point, minRedeemPoints = redeem floor). Runs
     // inside the sanitized try, so a DB failure maps to the route's INTERNAL 500 like
     // every other pre-tx read. A missing row (null) or loyaltyEnabled=false disables
-    // earning entirely, keeping a non-member / loyalty-off bill byte-identical to
-    // before this feature.
+    // earning AND redemption entirely, keeping a non-member / loyalty-off bill
+    // byte-identical to before this feature.
     const loyaltySettings = await prisma.shopSettings.findUnique({
       where: { id: "singleton" },
-      select: { loyaltyEnabled: true, earnBahtPerPoint: true },
+      select: {
+        loyaltyEnabled: true,
+        earnBahtPerPoint: true,
+        redeemPointValueSatang: true,
+        minRedeemPoints: true,
+      },
     });
 
     // Per-item catalog price in integer satang, keyed by productId. Uses the SAME
@@ -800,28 +840,118 @@ export async function POST(req: Request) {
       lineDiscountSatang: application.lines[idx].combinedLineDiscountSatang,
     }));
 
+    // --- Loyalty REDEEM: points → the THIRD bill-discount slice (loyalty program, Phase 2) ---
+    // Money Contract: points redemption is a bill-level discount applied AFTER the
+    // promo-threshold + manual slices (both already resolved by applyPromotions), each
+    // clamped to what remains. `remainingBillSatang` = what a FURTHER bill discount can
+    // still cover = subtotal − promoBill − manual (always ≥ 0: both are clamped so their
+    // sum never exceeds the subtotal). Redemption applies ONLY when loyalty is ENABLED
+    // AND the linked customer is an enrolled member AND a >0 redeem was requested;
+    // otherwise redemptionSatang / effectiveRedeemPoints stay 0, byte-identical to a
+    // no-redeem bill. Server is authoritative — the client-sent points are recomputed.
+    let redemptionSatang = 0;
+    let effectiveRedeemPoints = 0;
+    let redeemCustomerId: string | null = null;
+    if (
+      loyaltySettings?.loyaltyEnabled === true &&
+      resolvedCustomer?.isMember === true &&
+      requestedRedeemPoints > 0
+    ) {
+      const remainingBillSatang =
+        application.subtotalSatang -
+        application.promoBillDiscountSatang -
+        application.manualBillDiscountSatang;
+      // Pure, satang-exact: caps points to min(request, balance, floor(remaining /
+      // pointValue)) so every redeemed point maps EXACTLY to pointValue satang (no
+      // fractional point spent for a partial-satang remainder), and returns the two
+      // pre-tx guard flags below.
+      const plan = computeRedemption(
+        requestedRedeemPoints,
+        resolvedCustomer.pointsBalance,
+        remainingBillSatang,
+        loyaltySettings.redeemPointValueSatang,
+        loyaltySettings.minRedeemPoints
+      );
+      // FRIENDLY pre-tx overdraw check (the in-tx atomic `updateMany WHERE balance >= n`
+      // is the REAL, race-proof gate; this only avoids doing work for an obvious overdraw).
+      if (plan.exceedsBalance) {
+        return NextResponse.json(
+          { error: "แต้มสะสมไม่เพียงพอ", code: "POINTS_INSUFFICIENT" },
+          { status: 422 }
+        );
+      }
+      // Min-redeem floor. Distinguish two "below the floor" cases (FIX 3) so the cashier
+      // gets an ACTIONABLE message:
+      //  - `billTooSmallForMin`: the REMAINING bill can't reach the floor no matter what —
+      //    the redeem control should never have been offered (the client hides it too). A
+      //    "redeem more" message would be impossible to satisfy, so return a clearer
+      //    "bill too small" code. Checked FIRST because a too-small bill also trips belowMin.
+      //  - `belowMin`: the bill COULD support the floor but the request was under it → tell
+      //    the client to redeem more (or clear) rather than silently zeroing the redemption
+      //    (a phantom "you redeemed" state would diverge from the total → PAYMENT_MISMATCH).
+      if (plan.billTooSmallForMin) {
+        return NextResponse.json(
+          {
+            error: `ยอดบิลนี้ไม่พอสำหรับการใช้แต้ม (ขั้นต่ำ ${loyaltySettings.minRedeemPoints} แต้ม)`,
+            code: "POINTS_REDEEM_UNAVAILABLE",
+          },
+          { status: 422 }
+        );
+      }
+      if (plan.belowMin) {
+        return NextResponse.json(
+          {
+            error: `ต้องแลกอย่างน้อย ${loyaltySettings.minRedeemPoints} แต้ม`,
+            code: "POINTS_BELOW_MIN",
+          },
+          { status: 422 }
+        );
+      }
+      redemptionSatang = plan.redemptionSatang;
+      effectiveRedeemPoints = plan.effectiveRedeemPoints;
+      // Only spend (and write a REDEEM ledger row) when points actually resolve to > 0.
+      if (effectiveRedeemPoints > 0) {
+        redeemCustomerId = resolvedCustomer.id;
+      }
+    }
+
+    // The single combined bill discount handed to pricing = the THREE bill-discount
+    // slices: promo threshold + manual + points redemption. This REPLACES the engine's
+    // `application.combinedBill` (which carried only promo + manual). `redemptionSatang`
+    // is ≤ remaining by construction, so promoBill + manual + redemption ≤ subtotal, and
+    // `computeTotals` clamps to the subtotal anyway. Round-trip: combinedBillSatang is an
+    // integer, so `roundSatang((combinedBillSatang / 100) * 100) === combinedBillSatang`
+    // exactly across the Decimal(10,2) range (same proof as promotionEngine.combinedBill).
+    const combinedBillSatang =
+      application.promoBillDiscountSatang +
+      application.manualBillDiscountSatang +
+      redemptionSatang;
+
     // computeOrderTotals throws OrderProductMissingError for an unknown/inactive
     // product (→ 404 below) and RangeError for an out-of-range discount (already
     // validated at the boundary above, so this is a belt-and-braces guard). The bill
-    // discount is the engine's COMBINED bill discount (promo threshold + manual), so
-    // Order.discount keeps its combined meaning and `subtotal − discount === total`.
-    const totals = computeOrderTotals(
-      products,
-      requestedLines,
-      application.combinedBill
-    );
+    // discount is the COMBINED 3-slice bill discount (promo threshold + manual +
+    // redemption), so Order.discount keeps its combined meaning and
+    // `subtotal − discount === total` still holds automatically.
+    const totals = computeOrderTotals(products, requestedLines, {
+      type: "amount",
+      value: combinedBillSatang / 100,
+    });
 
     // --- Engine/pricing drift guard (belt-and-braces) ---
     // The engine and pricing compute the subtotal with the identical formula
     // (Σ max(gross − combinedLineDiscount, 0)) over the same integer-satang inputs, so
-    // they MUST match. Likewise the combined bill discount round-trips exactly, so
-    // pricing's billDiscountSatang MUST equal promoBill + manualBill. A mismatch means
-    // the two modules diverged (a real bug) — it must NEVER ship a silently wrong sale,
-    // so log both values and return 500 INTERNAL instead of persisting a bad total.
+    // they MUST match. Likewise the combined 3-slice bill discount round-trips exactly,
+    // so pricing's billDiscountSatang MUST equal promoBill + manualBill + redemption. A
+    // mismatch means the modules diverged (a real bug) — it must NEVER ship a silently
+    // wrong sale, so log the values and return 500 INTERNAL instead of persisting a bad
+    // total. (`subtotal − discount === total` follows automatically once this holds.)
     if (
       totals.subtotalSatang !== application.subtotalSatang ||
       totals.billDiscountSatang !==
-        application.promoBillDiscountSatang + application.manualBillDiscountSatang
+        application.promoBillDiscountSatang +
+          application.manualBillDiscountSatang +
+          redemptionSatang
     ) {
       logger.error(
         {
@@ -830,6 +960,7 @@ export async function POST(req: Request) {
           pricingBillDiscount: totals.billDiscountSatang,
           enginePromoBill: application.promoBillDiscountSatang,
           engineManualBill: application.manualBillDiscountSatang,
+          redemptionSatang,
         },
         "promotion engine / pricing drift detected"
       );
@@ -1003,6 +1134,14 @@ export async function POST(req: Request) {
           // off bill (the column default) — the customer increment + EARN ledger row
           // below run ONLY when > 0, so a non-earning bill writes exactly this default.
           pointsEarned: pointsToEarn,
+          // Loyalty REDEEM (loyalty program, Phase 2): the points SPENT + the baht slice
+          // of `discount` they bought. `pointsRedemptionDiscount` is already inside the
+          // combined `discount` above (so it is NOT double-counted), stored separately so
+          // the receipt/reports can split it out from the manual bill discount. Both are
+          // 0 for a no-redeem bill (the column defaults); the atomic spend + REDEEM ledger
+          // row below run ONLY when effectiveRedeemPoints > 0.
+          pointsRedeemed: effectiveRedeemPoints,
+          pointsRedemptionDiscount: satangToString(redemptionSatang),
           shiftId,
           items: { create: lineItems },
           payments: {
@@ -1037,6 +1176,55 @@ export async function POST(req: Request) {
             type: StockMovementType.SALE,
             qty: -item.quantity,
             reference: orderNumber,
+          },
+        });
+      }
+
+      // === Loyalty points REDEEM (loyalty program, Phase 2) ===
+      // Runs BEFORE the EARN block (Money Contract ordering): SPEND first, then EARN on
+      // the net total the member paid. `totals.totalSatang` already nets out the
+      // redemption (it is folded into the combined bill discount), so EARN below credits
+      // exactly what they paid — no change to the earn computation.
+      //
+      // ATOMIC overdraw guard — the SAME `updateMany WHERE balance >= n` + `count === 1`
+      // pattern as the stock decrement above: two concurrent redeems of the last points
+      // cannot both succeed, and `pointsBalance` can NEVER go negative. A 0-count means
+      // the balance dropped below the redeemed amount between the pre-tx read and here (a
+      // concurrent redeem / manual adjust), so we throw → the WHOLE sale rolls back (order
+      // + stock + this redeem), never recording a redeem without its discount or a discount
+      // without the spend. `orderId` is a plain String snapshot (no FK, matching EARN).
+      // Skipped entirely when nothing was redeemed (redeemCustomerId null) — byte-identical
+      // to a no-redeem bill (no customer touch, no ledger row).
+      if (effectiveRedeemPoints > 0 && redeemCustomerId) {
+        const spent = await tx.customer.updateMany({
+          where: {
+            id: redeemCustomerId,
+            isMember: true,
+            pointsBalance: { gte: effectiveRedeemPoints },
+          },
+          data: { pointsBalance: { decrement: effectiveRedeemPoints } },
+        });
+        if (spent.count !== 1) {
+          throw new InsufficientPointsError(redeemCustomerId);
+        }
+        // `updateMany` returns no row, so read the post-decrement balance for the
+        // ledger's self-verifying `balanceAfter`. Inside the tx this reads the value THIS
+        // tx just wrote (the decrement above), which the EARN block then increments — so
+        // the two ledger rows carry the correct SEQUENTIAL running balance (spend first,
+        // then earn on top).
+        const afterRedeem = await tx.customer.findUnique({
+          where: { id: redeemCustomerId },
+          select: { pointsBalance: true },
+        });
+        await tx.pointsTransaction.create({
+          data: {
+            customerId: redeemCustomerId,
+            orderId: created.id,
+            type: PointsTxType.REDEEM,
+            // Signed: NEGATIVE = points spent (the mirror of EARN's positive delta).
+            points: -effectiveRedeemPoints,
+            balanceAfter: afterRedeem?.pointsBalance ?? 0,
+            actorId: cashierId,
           },
         });
       }
@@ -1267,6 +1455,16 @@ export async function POST(req: Request) {
         { status: 409 }
       );
     }
+    // Loyalty redeem overdraw lost the atomic race (loyalty program, Phase 2): the
+    // in-tx conditional decrement matched 0 rows, so the whole sale rolled back. Map
+    // to the SAME coded 422 as the friendly pre-tx check so the client handles both
+    // identically (re-check the balance + retry). Never a silent 500.
+    if (err instanceof InsufficientPointsError) {
+      return NextResponse.json(
+        { error: "แต้มสะสมไม่เพียงพอ", code: "POINTS_INSUFFICIENT" },
+        { status: 422 }
+      );
+    }
     // P2002 unique-constraint violations on checkout (Sub-phase C). Inspect the
     // violated index (`err.meta.target`) and branch by which constraint lost the
     // race:
@@ -1347,5 +1545,21 @@ class InsufficientStockError extends Error {
   constructor(public readonly productId: string) {
     super(`Insufficient stock: ${productId}`);
     this.name = "InsufficientStockError";
+  }
+}
+
+/**
+ * Thrown inside the checkout transaction when the atomic conditional points
+ * decrement (`updateMany WHERE isMember AND pointsBalance >= n`) matches 0 rows —
+ * i.e. the member's balance dropped below the redeemed amount between the pre-tx
+ * read and the spend (a concurrent redeem / manual adjust), or the customer was
+ * un-enrolled. Throwing rolls back the whole transaction (order + stock + earn +
+ * this redeem) and maps to a clean 422 POINTS_INSUFFICIENT — the money mirror of
+ * the stock oversell guard, so a member's balance can never go negative.
+ */
+class InsufficientPointsError extends Error {
+  constructor(public readonly customerId: string) {
+    super(`Insufficient points: ${customerId}`);
+    this.name = "InsufficientPointsError";
   }
 }

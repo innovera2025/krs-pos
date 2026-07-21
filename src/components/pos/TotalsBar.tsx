@@ -35,6 +35,13 @@ type TotalsBarProps = {
   /** Name of the applied threshold promo (shown small beside the promo row). */
   billPromoName?: string | null;
   /**
+   * Points-redemption slice of `totals.billDiscountSatang` (loyalty program, Phase 2) —
+   * the gold discount row. The manual bill-discount row subtracts BOTH the promo AND this
+   * redemption, so the footing stays `subtotal − promoBill − redemption − manual = total`
+   * (the redeem is never absorbed into the manual row). 0/omitted → the row is hidden.
+   */
+  pointsRedemptionSatang?: number;
+  /**
    * Nearest UNMET spend-&-save promo (promotions program, Phase 7): buy `missingSatang`
    * more to unlock `rewardLabel`. Null when none is unmet or one is already applied.
    */
@@ -64,13 +71,19 @@ export function TotalsBar({
   checkingOut,
   promoBillDiscountSatang,
   billPromoName,
+  pointsRedemptionSatang,
   thresholdHint,
 }: TotalsBarProps) {
-  // Split the combined bill discount into its promo + manual slices for the two rows.
-  // `totals.billDiscountSatang` is the combined value the engine handed to pricing;
-  // the manual portion is whatever is left after the promo portion.
+  // Split the combined bill discount into its promo + redemption + manual slices for the
+  // rows. `totals.billDiscountSatang` is the combined value the engine handed to pricing;
+  // the manual portion is whatever is left after the promo AND redemption slices (so a
+  // points redemption is never double-counted into the manual "ส่วนลดท้ายบิล" row).
   const promoBill = promoBillDiscountSatang ?? 0;
-  const manualBill = Math.max(totals.billDiscountSatang - promoBill, 0);
+  const redemption = pointsRedemptionSatang ?? 0;
+  const manualBill = Math.max(
+    totals.billDiscountSatang - promoBill - redemption,
+    0
+  );
   return (
     <div
       className="border-t px-[18px] pb-[18px] pt-4"
@@ -164,6 +177,14 @@ export function TotalsBar({
           <div className="flex justify-between text-[12.5px]" style={{ color: "#dc2626" }}>
             <span>ส่วนลดท้ายบิล · Discount</span>
             <span className="mono">-{formatSatang(manualBill)}</span>
+          </div>
+        )}
+        {/* Points redemption (loyalty program, Phase 2) — gold/amber, distinct from the
+            mint promo + red manual rows so the cashier reads the three slices apart. */}
+        {redemption > 0 && (
+          <div className="flex justify-between text-[12.5px]" style={{ color: "#B45309" }}>
+            <span>ใช้แต้มแลกส่วนลด · Points</span>
+            <span className="mono">-{formatSatang(redemption)}</span>
           </div>
         )}
         <div className="flex justify-between text-[12.5px]" style={{ color: "#667085" }}>

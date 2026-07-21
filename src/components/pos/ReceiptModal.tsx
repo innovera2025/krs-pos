@@ -134,8 +134,19 @@ export function ReceiptModal({
   const subtotalNum = Number(order.subtotal);
   const discountNum = Number(order.discount);
   const promoBillDiscountNum = Number(order.promoBillDiscount ?? 0);
-  // Manual bill discount = the non-promo slice of `discount` (Money Contract).
-  const manualBillDiscountNum = Math.max(discountNum - promoBillDiscountNum, 0);
+  // Loyalty redemption (loyalty program, Phase 2): the points-redemption slice of
+  // `discount` + the points spent. `discount` is the COMBINED bill discount (promo +
+  // manual + redemption), so the manual slice must subtract BOTH the promo AND the
+  // redemption — otherwise the "ส่วนลดท้ายบิล" (manual) row would double-count the
+  // redemption. This keeps the totals block footing subtotal − promo − manual −
+  // redemption = total, with redemption shown as its OWN row below.
+  const pointsRedemptionDiscountNum = Number(order.pointsRedemptionDiscount ?? 0);
+  const pointsRedeemedNum = Number(order.pointsRedeemed ?? 0);
+  // Manual bill discount = the non-promo, non-redemption slice of `discount`.
+  const manualBillDiscountNum = Math.max(
+    discountNum - promoBillDiscountNum - pointsRedemptionDiscountNum,
+    0
+  );
   const grossNum = order.items.reduce(
     (sum, it) => sum + Number(it.unitPrice) * it.quantity,
     0
@@ -348,6 +359,22 @@ export function ReceiptModal({
               >
                 <span>ส่วนลดท้ายบิล</span>
                 <span>-{money(manualBillDiscountNum)}</span>
+              </div>
+            )}
+            {/* Points redemption (loyalty program, Phase 2) — its OWN row, SEPARATE from
+                the manual + promo discount rows so a redeem is never silently absorbed
+                into "ส่วนลดท้ายบิล". One concise Thai line (points suffix inline) to
+                keep the 1-bit thermal raster height controlled. */}
+            {pointsRedemptionDiscountNum > 0 && (
+              <div
+                className="flex justify-between"
+                style={{ fontFamily: "var(--font-sans)" }}
+              >
+                <span>
+                  ใช้แต้มแลกส่วนลด
+                  {pointsRedeemedNum > 0 ? ` (-${pointsRedeemedNum} แต้ม)` : ""}
+                </span>
+                <span>-{money(pointsRedemptionDiscountNum)}</span>
               </div>
             )}
             <div

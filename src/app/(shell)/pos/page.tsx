@@ -32,6 +32,11 @@ import {
   type ActivePromotion,
   type PromoCartLine,
 } from "@/lib/promotionEngine";
+// Loyalty redemption preview (loyalty program, Phase 2). The SAME pure satang-exact
+// value helper the server folds in, so the client preview equals the server recompute
+// to the satang. The input is clamped to min(balance, maxByBill) before this, so every
+// previewed point maps exactly to its value (no fractional point).
+import { computeRedemption } from "@/lib/loyalty";
 import {
   promoBadgeLabel,
   promoRewardLabel,
@@ -153,6 +158,14 @@ export default function POSPage() {
   // Bill discount: text draft + ฿/% mode.
   const [discountDraft, setDiscountDraft] = useState("");
   const [discountType, setDiscountType] = useState<DiscountType>("amount");
+
+  // ---- points redemption (loyalty program, Phase 2) ----
+  // Whole points the cashier wants to spend as a baht discount (raw text mirror so it
+  // can be cleared). The totals memo below folds the resolved ฿ value into the bill as
+  // the THIRD bill-discount slice (after promo + manual), so the displayed total reflects
+  // the redemption live. Clamped to the member's redeemable max on change; reset on a new
+  // sale / customer switch / PAYMENT_MISMATCH. Server stays authoritative (it recomputes).
+  const [redeemDraft, setRedeemDraft] = useState("");
 
   // ---- customer + tax-invoice state (Phase 6a) ----
   // Selected customer (null = walk-in / ลูกค้าทั่วไป) and whether a tax invoice
@@ -566,7 +579,13 @@ export default function POSPage() {
   // server uses (parity guaranteed by promotionEngine tests), so the on-screen total
   // equals the server's authoritative recompute. `application` carries the per-line +
   // bill promo breakdown for the cart/totals/payment surfaces.
-  const { totals, application } = useMemo(() => {
+  const {
+    totals,
+    application,
+    redemptionSatang,
+    effectiveRedeemPoints,
+    maxRedeemablePoints,
+  } = useMemo(() => {
     const promoLines: PromoCartLine[] = cart.map((i) => ({
       productId: i.product.id,
       priceSatang: bahtToSatang(i.product.price),
@@ -579,14 +598,69 @@ export default function POSPage() {
       value: Number.isFinite(value) ? value : 0,
     };
     const application = applyPromotions(promoLines, activePromos, manualBill);
+
+    // --- points-redemption preview (loyalty program, Phase 2) — client mirror of the
+    // server. remainingBill = subtotal − promoBill − manual (what a further bill discount
+    // can still cover). The cap + value are derived from the SHARED `computeRedemption`
+    // engine so client and server agree EXACTLY — including the never-zero-the-bill floor
+    // (`maxByBill = floor((remaining − 1) / pointValue)`, FIX 2): the UI never advertises a
+    // points count that would drive the bill to 0. The redeem input is clamped to
+    // `maxRedeemablePoints` on change, so `effectiveRedeemPoints` == the typed value here.
+    // Only a loyalty-ON store with an enrolled member redeems; otherwise 0 (byte-identical). ---
+    const loyaltyOn = receiptSettings?.loyaltyEnabled === true;
+    const perPointSatang = receiptSettings?.redeemPointValueSatang ?? 0;
+    const minRedeemPoints = receiptSettings?.minRedeemPoints ?? 0;
+    const isMember = customer?.isMember === true;
+    const balance = isMember ? customer?.pointsBalance ?? 0 : 0;
+    const remainingBillSatang = Math.max(
+      application.subtotalSatang -
+        application.promoBillDiscountSatang -
+        application.manualBillDiscountSatang,
+      0
+    );
+    const requestedRedeem = (() => {
+      const n = Math.trunc(Number(redeemDraft.trim()));
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    })();
+    // Shared engine — identical math to the server's authoritative recompute at checkout.
+    const redeemPlan = computeRedemption(
+      requestedRedeem,
+      balance,
+      remainingBillSatang,
+      perPointSatang,
+      minRedeemPoints
+    );
+    // maxByBill already carries the `remaining − 1` floor; maxRedeemable also caps by balance.
+    const maxRedeemablePoints =
+      loyaltyOn && isMember ? Math.min(balance, redeemPlan.maxByBillPoints) : 0;
+    const effectiveRedeemPoints =
+      loyaltyOn && isMember ? redeemPlan.effectiveRedeemPoints : 0;
+    const redemptionSatang = loyaltyOn && isMember ? redeemPlan.redemptionSatang : 0;
+
+    // Feed the combined 3-slice bill discount (promo + manual + redemption) to pricing —
+    // the IDENTICAL input the server uses, so the on-screen total equals the authoritative
+    // recompute. Replaces `application.combinedBill` (which carried only promo + manual).
+    const combinedBillSatang =
+      application.promoBillDiscountSatang +
+      application.manualBillDiscountSatang +
+      redemptionSatang;
     const items: PricingItem[] = cart.map((i, idx) => ({
       priceSatang: bahtToSatang(i.product.price),
       qty: i.quantity,
       lineDiscountSatang: application.lines[idx]?.combinedLineDiscountSatang ?? 0,
     }));
-    const totals = computeTotals(items, application.combinedBill);
-    return { totals, application };
-  }, [cart, discountDraft, discountType, activePromos]);
+    const totals = computeTotals(items, {
+      type: "amount",
+      value: combinedBillSatang / 100,
+    });
+    return {
+      totals,
+      application,
+      redemptionSatang,
+      effectiveRedeemPoints,
+      maxRedeemablePoints,
+    };
+  }, [cart, discountDraft, discountType, activePromos, redeemDraft, customer, receiptSettings]);
 
   // Total promotion savings on this bill (Σ line promos + bill promo) — informational,
   // shown in the payment modal under the total due.
@@ -712,11 +786,33 @@ export default function POSPage() {
     setDiscountType("amount");
     setCustomer(null);
     setTaxRequested(false);
+    // Reset the points redemption (loyalty program, Phase 2) — a new/abandoned bill
+    // starts with no redemption (the customer is cleared above too).
+    setRedeemDraft("");
     // Drop the idempotency key — the bill is gone, so the NEXT checkout is a new
     // sale and must mint a fresh key (a successful checkout calls clearBill, as do
     // cancel/hold). Without this, the next sale would replay the just-completed
     // order (200) and never actually record the new sale.
     idemKeyRef.current = null;
+  }
+
+  // ---- points redemption input (loyalty program, Phase 2) ----
+  // Keep only digits and CLAMP to the member's redeemable max (min(balance, maxByBill))
+  // so the cashier can never request more than the balance or the bill can absorb —
+  // which also guarantees the previewed points map EXACTLY to their value (no fractional
+  // point). Empty → cleared. `maxRedeemablePoints` comes from the totals memo and does
+  // NOT depend on `redeemDraft`, so this clamp can never feed back into itself.
+  function onRedeemChange(value: string) {
+    const digits = value.replace(/[^\d]/g, "");
+    if (digits === "") {
+      setRedeemDraft("");
+      return;
+    }
+    const clamped = Math.min(
+      Math.max(Math.trunc(Number(digits)), 0),
+      maxRedeemablePoints
+    );
+    setRedeemDraft(clamped > 0 ? String(clamped) : "");
   }
 
   // ---- silent-print onboarding handlers (Plan A) ----
@@ -749,6 +845,9 @@ export default function POSPage() {
       setTaxRequested(false);
       setPayError("");
     }
+    // Switching customer invalidates any in-progress redemption (it was scoped to the
+    // previous member's balance) — reset it (loyalty program, Phase 2).
+    setRedeemDraft("");
     setCustPickerOpen(false);
   }
 
@@ -757,6 +856,8 @@ export default function POSPage() {
   function pickWalkIn() {
     setCustomer(null);
     setTaxRequested(false);
+    // A walk-in has no points to redeem — reset it (loyalty program, Phase 2).
+    setRedeemDraft("");
     setCustPickerOpen(false);
   }
 
@@ -995,6 +1096,10 @@ export default function POSPage() {
         : null
     );
     setTaxRequested(bill.taxRequested);
+    // A resumed bill starts with no redemption (park did not snapshot redeem points, and
+    // the member's balance may have changed since) — the cashier re-redeems if they want
+    // (loyalty program, Phase 2).
+    setRedeemDraft("");
     // A resumed bill is a fresh checkout attempt — drop any stale idempotency key so the
     // next pay mints a new one (and never replays a previous order).
     idemKeyRef.current = null;
@@ -1297,6 +1402,14 @@ export default function POSPage() {
           })(),
           customerId: customer?.id ?? null,
           taxRequested,
+          // Points redemption (loyalty program, Phase 2): the whole points to spend as a
+          // discount. NO money is sent — the server recomputes the ฿ value + folds it in
+          // as the third bill-discount slice, and re-validates the balance atomically.
+          // Sent only when > 0 (input already clamped to the redeemable max). Omitted for
+          // a non-member / no-redeem bill (byte-identical to before).
+          ...(effectiveRedeemPoints > 0
+            ? { redeemPoints: effectiveRedeemPoints }
+            : {}),
           // Per-attempt idempotency key (Sub-phase C) — same key across retries
           // of THIS submission; the server replays the existing order on a dupe.
           idempotencyKey,
@@ -1321,7 +1434,14 @@ export default function POSPage() {
         // their server message untouched).
         if (code === "PAYMENT_MISMATCH") {
           loadPromotions();
-          msg = "โปรโมชันมีการเปลี่ยนแปลง ยอดถูกคำนวณใหม่ กรุณาตรวจสอบ";
+          // Reset the points redemption preview (loyalty program, Phase 2): a stale
+          // redeem preview is a possible cause of the mismatch (a promo shifted the
+          // remaining bill, or another terminal spent the member's points). Clearing it
+          // recomputes the total to 0 redemption so the cashier re-enters against the
+          // fresh figures. The member's balance is re-validated ATOMICALLY at checkout
+          // (the in-tx guard), so no separate balance refetch is required for safety.
+          setRedeemDraft("");
+          msg = "โปรโมชันหรือแต้มมีการเปลี่ยนแปลง ยอดถูกคำนวณใหม่ กรุณาตรวจสอบ";
         }
         setPayError(msg);
         return;
@@ -1334,6 +1454,10 @@ export default function POSPage() {
       // so `pointsEarned` on the response is authoritative; adding it to the member's
       // pre-sale balance reproduces the server value with NO extra fetch.
       const earnedPoints = order.pointsEarned ?? 0;
+      // Loyalty REDEEM feedback (loyalty program, Phase 2): the points the server SPENT on
+      // this bill (authoritative — the in-tx atomic decrement already applied). Folded into
+      // the same success toast + the optimistic new-balance math below.
+      const redeemedPoints = order.pointsRedeemed ?? 0;
       const earnMember = customer?.isMember ? customer : null;
       // Optimistic display-only stock decrement (pos-instant-stock): subtract each
       // just-sold line's quantity from that product's `stock` in local state so the
@@ -1380,11 +1504,17 @@ export default function POSPage() {
       // this SAME single toast (loyalty program, Phase 1B) — showToast replaces the
       // prior message, so one combined pill preserves both the payment/print
       // confirmation and the points feedback.
-      if (earnMember && earnedPoints > 0) {
-        const newBalance = earnMember.pointsBalance + earnedPoints;
-        showToast(
-          `ชำระเงินสำเร็จ · ได้รับ ${earnedPoints} แต้ม · คงเหลือ ${newBalance} แต้ม`
-        );
+      if (earnMember && (earnedPoints > 0 || redeemedPoints > 0)) {
+        // New balance = pre-sale balance − redeemed + earned. The server applied the SPEND
+        // (REDEEM) then the accrual (EARN) atomically in the checkout tx, so reproducing
+        // both deltas off the captured pre-sale balance matches the server with no refetch.
+        const newBalance =
+          earnMember.pointsBalance - redeemedPoints + earnedPoints;
+        const parts = ["ชำระเงินสำเร็จ"];
+        if (redeemedPoints > 0) parts.push(`ใช้ ${redeemedPoints} แต้ม`);
+        if (earnedPoints > 0) parts.push(`ได้รับ ${earnedPoints} แต้ม`);
+        parts.push(`คงเหลือ ${newBalance} แต้ม`);
+        showToast(parts.join(" · "));
       } else {
         showToast("ชำระเงินสำเร็จ · กำลังพิมพ์ใบเสร็จ");
       }
@@ -1777,6 +1907,7 @@ export default function POSPage() {
           checkingOut={submitting}
           promoBillDiscountSatang={application.promoBillDiscountSatang}
           billPromoName={application.billPromo?.promotionName ?? null}
+          pointsRedemptionSatang={redemptionSatang}
           thresholdHint={thresholdHint}
         />
       </aside>
@@ -1811,6 +1942,29 @@ export default function POSPage() {
         promoSavingsSatang={promoSavingsSatang}
         customer={customer}
         taxRequested={taxRequested}
+        redeem={
+          // Points-redemption control (loyalty program, Phase 2) — shown only for an
+          // enrolled member on a loyalty-ON store. The memo above owns all the math; the
+          // modal only renders + surfaces the below-min warning. FIX 3: also HIDE the
+          // control when the remaining bill can't reach the redeem floor
+          // (`maxRedeemablePoints < minRedeemPoints`) — an impossible redemption must never
+          // be offered (server mirrors this with POINTS_REDEEM_UNAVAILABLE). A 0 floor
+          // (no minimum) never hides the control.
+          receiptSettings?.loyaltyEnabled === true &&
+          customer?.isMember === true &&
+          maxRedeemablePoints >= (receiptSettings.minRedeemPoints ?? 0)
+            ? {
+                pointsBalance: customer.pointsBalance,
+                maxRedeemablePoints,
+                minRedeemPoints: receiptSettings.minRedeemPoints ?? 0,
+                draft: redeemDraft,
+                redemptionSatang,
+                effectiveRedeemPoints,
+                onChange: onRedeemChange,
+                onClear: () => setRedeemDraft(""),
+              }
+            : null
+        }
         payLines={payLines}
         cashReceived={cashReceived}
         reference={reference}

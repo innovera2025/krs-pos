@@ -28,6 +28,31 @@ type PaymentModalProps = {
   /** Whether a tax invoice was requested (tax toggle state). Phase 6a. */
   taxRequested: boolean;
 
+  /**
+   * Points-redemption control state (loyalty program, Phase 2). Null when redemption is
+   * unavailable (loyalty off, or the attached customer is not an enrolled member) → the
+   * gold control is not rendered. When present the parent owns ALL the math: the page's
+   * totals memo folds `redemptionSatang` into the bill total (so `totalSatang` above is
+   * already net of the redemption), and clamps `draft` to `maxRedeemablePoints` on change.
+   * This component only renders the control + surfaces the below-min warning.
+   */
+  redeem?: {
+    /** Member's current points balance (display). */
+    pointsBalance: number;
+    /** min(balance, floor(remainingBill / pointValue)) — the input's ceiling + the hint. */
+    maxRedeemablePoints: number;
+    /** Store redeem floor (0 = none); a >0 redeem below this blocks confirm + warns. */
+    minRedeemPoints: number;
+    /** Raw points text in the input (mirror so it can be cleared). */
+    draft: string;
+    /** The ฿ discount those points buy, in satang (client preview = server math). */
+    redemptionSatang: number;
+    /** The points that actually resolve after the balance/bill clamp (for the min check). */
+    effectiveRedeemPoints: number;
+    onChange: (value: string) => void;
+    onClear: () => void;
+  } | null;
+
   payLines: PayLine[];
   /** Cash received (baht text mirror). */
   cashReceived: string;
@@ -67,6 +92,7 @@ export function PaymentModal({
   promoSavingsSatang,
   customer,
   taxRequested,
+  redeem,
   payLines,
   cashReceived,
   reference,
@@ -142,11 +168,21 @@ export function PaymentModal({
     onSetAmount(0, (totalSatang / 100).toFixed(2));
   }, [payLines, totalSatang, onSetAmount]);
 
+  // Below-min redemption block (loyalty program, Phase 2): a >0 redeem that resolves to
+  // fewer than the store minimum is rejected server-side (422 POINTS_BELOW_MIN). Block
+  // confirm client-side too so the cashier isn't bounced by a round-trip — they must
+  // redeem ≥ min or clear it. Mirrors the server's `belowMin` condition exactly.
+  const redeemBelowMin =
+    redeem != null &&
+    redeem.effectiveRedeemPoints > 0 &&
+    redeem.effectiveRedeemPoints < redeem.minRedeemPoints;
+
   // Split sum vs total (satang-exact) → confirm enablement.
   const paidSatang = sumPaySatang(payLines.map((l) => l.amount));
   const sumMatches = Math.abs(paidSatang - totalSatang) <= 1; // ≤ 0.01 baht
   const cashOk = !showCash || receivedSatang + 1 >= cashDueSatang;
-  const canConfirm = !submitting && sumMatches && cashOk && payLines.length > 0;
+  const canConfirm =
+    !submitting && sumMatches && cashOk && payLines.length > 0 && !redeemBelowMin;
 
   // Quick-cash presets: exact total, ฿100, ฿500, ฿1,000.
   const quickCash: { label: string; satang: number }[] = [
@@ -286,6 +322,87 @@ export function PaymentModal({
               <X size={18} strokeWidth={2} />
             </button>
           </div>
+
+          {/* Points-redemption control (loyalty program, Phase 2) — gold/amber, distinct
+              from the mint promo + blue tax accents. Rendered only for an enrolled member
+              on a loyalty-ON store (redeem != null). The parent's totals memo already
+              folded redemptionSatang into totalSatang above, so the ยอดที่ต้องชำระ shown
+              reflects the redemption live as the cashier types. */}
+          {redeem != null && (
+            <div
+              className="mb-4 rounded-[12px] border p-[13px]"
+              style={{ background: "#FFFBEB", borderColor: "#FCD34D" }}
+            >
+              <div className="mb-2 flex items-center justify-between">
+                <span
+                  className="text-[13px] font-semibold"
+                  style={{ color: "#B45309" }}
+                >
+                  ใช้แต้มแลกส่วนลด · Redeem points
+                </span>
+                <span
+                  className="text-[11.5px] font-semibold"
+                  style={{ color: "#B45309" }}
+                >
+                  คงเหลือ {redeem.pointsBalance} แต้ม
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  inputMode="numeric"
+                  value={redeem.draft}
+                  onChange={(e) => redeem.onChange(e.target.value)}
+                  onFocus={(e) => e.currentTarget.select()}
+                  placeholder="0"
+                  aria-label="จำนวนแต้มที่ใช้แลก"
+                  className="mono h-10 w-[96px] rounded-[9px] border px-3 text-right text-[15px] font-semibold"
+                  style={{ borderColor: "#FCD34D", color: "#B45309" }}
+                />
+                <span className="text-[13px]" style={{ color: "#B45309" }}>
+                  แต้ม
+                </span>
+                <span
+                  className="mono flex-1 text-right text-[16px] font-bold"
+                  style={{ color: "#B45309" }}
+                >
+                  -{formatSatang(redeem.redemptionSatang)}
+                </span>
+                {redeem.draft.trim().length > 0 && (
+                  <button
+                    type="button"
+                    onClick={redeem.onClear}
+                    className="text-[12px] font-semibold underline-offset-2 hover:underline"
+                    style={{ color: "#B45309" }}
+                  >
+                    ล้าง
+                  </button>
+                )}
+              </div>
+              <div
+                className="mt-1.5 flex items-center justify-between text-[11px]"
+                style={{ color: "#B45309", opacity: 0.85 }}
+              >
+                <span>แลกได้สูงสุด {redeem.maxRedeemablePoints} แต้ม</span>
+                {redeem.minRedeemPoints > 0 && (
+                  <span>ขั้นต่ำ {redeem.minRedeemPoints} แต้ม</span>
+                )}
+              </div>
+              {/* Below-min warning: a >0 redeem under the store floor blocks confirm. */}
+              {redeemBelowMin && (
+                <div
+                  className="mt-1.5 flex items-center gap-1.5 text-[11px] font-medium"
+                  style={{ color: "#dc2626" }}
+                >
+                  <AlertTriangle
+                    size={13}
+                    strokeWidth={1.8}
+                    className="flex-shrink-0"
+                  />
+                  <span>ต้องแลกอย่างน้อย {redeem.minRedeemPoints} แต้ม</span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* 6 method tiles */}
           <div

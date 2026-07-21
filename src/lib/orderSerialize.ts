@@ -59,6 +59,16 @@ type SerializableOrder = {
   // through to the wire untouched. Declared here to make it an explicit part of the
   // serialized order contract (the receipt + POS read it as `order.pointsEarned`).
   pointsEarned: number;
+  // Loyalty points redeemed on this sale (loyalty program, Phase 2). A plain Int, like
+  // `pointsEarned` — rides the `...order` spread untouched. The receipt renders it as
+  // "(−N แต้ม)" beside the redemption discount row.
+  pointsRedeemed: number;
+  // Baht slice of `discount` bought with redeemed points (loyalty program, Phase 2). A
+  // 2dp Decimal(10,2) that MUST NOT leak as a raw Decimal (trailing-zero pitfall: "0"
+  // instead of "0.00"), so it JOINS the money map below — mirroring `promoBillDiscount`.
+  // The receipt derives the separate redemption row from it (and subtracts it from the
+  // manual bill discount so the manual row never double-counts the redemption).
+  pointsRedemptionDiscount: Money;
   items: Array<
     // `promoDiscount` is the per-line promo slice of `lineTotal` (2dp Decimal) — it
     // joins the item money map for the same trailing-zero reason. `promotionId`/
@@ -81,6 +91,7 @@ export type SerializedOrder<T extends SerializableOrder> = Omit<
   | "amountPaid"
   | "change"
   | "promoBillDiscount"
+  | "pointsRedemptionDiscount"
   | "items"
   | "payments"
 > & {
@@ -91,6 +102,7 @@ export type SerializedOrder<T extends SerializableOrder> = Omit<
   amountPaid: string;
   change: string;
   promoBillDiscount: string;
+  pointsRedemptionDiscount: string;
   items: Array<
     Omit<T["items"][number], "unitPrice" | "lineTotal" | "promoDiscount"> & {
       unitPrice: string;
@@ -123,6 +135,10 @@ export function serializeOrder<T extends SerializableOrder>(
     // Promotions program (Phase 6): the bill-level promo slice is a 2dp string in the
     // same money contract; `billPromotionId`/`billPromotionName` flow through `...order`.
     promoBillDiscount: money(order.promoBillDiscount),
+    // Loyalty redemption (loyalty program, Phase 2): the points-redemption slice of
+    // `discount` as a 2dp string ("0.00" when none). Same trailing-zero fix as
+    // `promoBillDiscount`; `pointsRedeemed` (Int) flows through `...order` untouched.
+    pointsRedemptionDiscount: money(order.pointsRedemptionDiscount),
     items: order.items.map((it) => ({
       ...it,
       unitPrice: money(it.unitPrice),
